@@ -1,0 +1,14 @@
+version: 1
+library_root: /music
+manifest_path: /data/manifests/library.jsonl
+identity:
+  algorithm: uuid5
+  audio_hash: sha256
+extensions: [flac, mp3, m4a, ogg, opus, wav, aac]
+lyrics:
+  embedded: true
+  sidecar_extensions: [lrc, txt]
+  transcribe_missing: false
+pilot:
+  target_size: 200
+  seed: 20260823

@@ -1,0 +1,86 @@
+name: echora
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-echora}
+      POSTGRES_USER: ${POSTGRES_USER:-echora}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-echora-local}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports: ["5432:5432"]
+
+  analysis:
+    build:
+      context: .
+      dockerfile: services/analysis/docker/Dockerfile.gpu
+    environment: &analysis-environment
+      DATABASE_URL: ${DATABASE_URL:-postgresql://echora:echora-local@postgres:5432/echora}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?Set CREDENTIAL_ENCRYPTION_KEY in .env}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:3000/analysis/auth/oidc/callback}
+      OIDC_POST_LOGIN_REDIRECT: ${OIDC_POST_LOGIN_REDIRECT:-http://localhost:3000/home}
+      OIDC_BOOTSTRAP_ADMIN_EMAIL: ${OIDC_BOOTSTRAP_ADMIN_EMAIL:-}
+      OIDC_REQUIRE_VERIFIED_EMAIL: ${OIDC_REQUIRE_VERIFIED_EMAIL:-false}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email}
+      OIDC_SESSION_SECRET: ${OIDC_SESSION_SECRET:?Set OIDC_SESSION_SECRET in .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      NAVIDROME_URL: ${NAVIDROME_URL:-}
+      NAVIDROME_USERNAME: ${NAVIDROME_USERNAME:-}
+      NAVIDROME_PASSWORD: ${NAVIDROME_PASSWORD:-}
+      MUQ_MODEL_ID: ${MUQ_MODEL_ID:-OpenMuQ/MuQ-MuLan-large}
+      MUQ_REVISION: ${MUQ_REVISION:-2e01c796b71dca71b45251384c04cd7b237c9020}
+      MERT_MODEL_ID: ${MERT_MODEL_ID:-m-a-p/MERT-v1-95M}
+      MERT_REVISION: ${MERT_REVISION:-12af15fef9d0ac838c3f475bfbbf26d2060dd4f5}
+      LYRICS_MODEL_ID: ${LYRICS_MODEL_ID:-BAAI/bge-m3}
+      LYRICS_REVISION: ${LYRICS_REVISION:-5617a9f61b028005a4858fdac845db406aefb181}
+      HF_HOME: /models/huggingface
+      HF_HUB_OFFLINE: "1"
+    volumes: &analysis-volumes
+      - ${MUSIC_LIBRARY_PATH:-./testdata/music}:/music:ro
+      - ./data:/data
+      - ./data/models/huggingface:/models/huggingface
+    depends_on:
+      postgres: { condition: service_healthy }
+    gpus: all
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports: ["8000:8000"]
+
+  analysis-cpu:
+    profiles: ["cpu"]
+    build:
+      context: .
+      dockerfile: services/analysis/docker/Dockerfile.cpu
+    environment: *analysis-environment
+    volumes: *analysis-volumes
+    depends_on:
+      postgres: { condition: service_healthy }
+    ports: ["8001:8000"]
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://echora:echora-local@postgres:5432/echora}
+      ANALYSIS_URL: http://analysis:8000
+      NAVIDROME_URL: ${NAVIDROME_URL:-}
+      NAVIDROME_USERNAME: ${NAVIDROME_USERNAME:-}
+      NAVIDROME_PASSWORD: ${NAVIDROME_PASSWORD:-}
+    depends_on:
+      postgres: { condition: service_healthy }
+      analysis: { condition: service_started }
+    ports: ["3000:3000"]
+
+volumes:
+  postgres-data:

@@ -1,0 +1,50 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# JavaScript
+node_modules/
+.next/
+*.tsbuildinfo
+coverage/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Runtime data and downloaded models
+data/**
+!data/**/
+!data/**/.gitkeep
+testdata/music/**
+!testdata/music/.gitkeep
+
+# Audio files
+*.flac
+*.mp3
+*.m4a
+*.ogg
+*.wav
+
+# Local databases, logs, and process files
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.pid
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

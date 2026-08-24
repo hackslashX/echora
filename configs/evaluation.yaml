@@ -1,0 +1,18 @@
+version: 1
+retrieval:
+  top_k: 20
+  review_k: 10
+  metrics_at: [5, 10]
+  clearly_relevant_threshold: 2
+  blind_review: true
+neighbors:
+  anchors_minimum: 20
+  review_k: 10
+  dimensions: [sonic, mood, lyrics, overall]
+clustering:
+  seed: 20260823
+  min_cluster_sizes: [5, 10, 20]
+queries:
+  minimum: 30
+personal_concepts:
+  labels: [positive, negative, unsure]

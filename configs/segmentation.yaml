@@ -1,0 +1,11 @@
+version: 1
+channel_policy: mono
+windows:
+  positions: [0.15, 0.50, 0.85]
+  duration_seconds: 10
+  short_track_policy: wrap
+aggregation:
+  per_window_normalization: l2
+  method: normalized_mean
+  output_normalization: l2
+retain_window_embeddings: true

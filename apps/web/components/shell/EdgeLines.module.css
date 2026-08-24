@@ -1,0 +1,1 @@
+.lines{position:absolute;inset:0;pointer-events:none;z-index:-1}.lines i{position:absolute;display:block;background:var(--line)}.top,.bottom{height:1px;left:-100vw;right:-100vw}.top{top:0}.bottom{bottom:0}.left,.right{width:1px;top:-100vh;bottom:-100vh}.left{left:0}.right{right:0}
