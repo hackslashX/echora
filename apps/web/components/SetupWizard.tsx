@@ -100,7 +100,7 @@ export default function SetupWizard({ initialStep = 0 }: { initialStep?: number 
 
         {step === 0 && <form className="wizard-card connect-card" onSubmit={discover}>
           <EdgeLines />
-          <h1>Let&apos;s meet<br /><em>your library.</em></h1>
+          <h1>Meet your<br />music library.</h1>
           <div className="fields">
             <label className="wide"><span>Server URL</span><input required type="url" value={credentials.url} onChange={event => setCredentials({ ...credentials, url: event.target.value })} /></label>
             <label><span>Username</span><input required autoComplete="username" value={credentials.username} onChange={event => setCredentials({ ...credentials, username: event.target.value })} /></label>
@@ -113,7 +113,7 @@ export default function SetupWizard({ initialStep = 0 }: { initialStep?: number 
 
         {step === 1 && <div className="wizard-card review-card">
           <EdgeLines />
-          <div className="review-heading"><div><p className="kicker">Connected · {server}</p><h1>Pick a first<br /><em>listen.</em></h1></div><div className="found-count"><strong>{tracks.length}</strong><span>tracks found</span></div></div>
+          <div className="review-heading"><div><h1>Choose tracks<br />to analyze.</h1><p className="connection-meta"><span>Navidrome {server}</span><b>Connected</b></p></div><div className="found-count"><strong>{tracks.length}</strong><span>tracks found</span></div></div>
           <div className="table-tools"><button onClick={() => setSelected(selected.size === tracks.length ? new Set() : new Set(tracks.map(track => track.id)))}>{selected.size === tracks.length ? "Clear selection" : "Select all"}</button><span>{selected.size} selected</span></div>
           <div className="song-list">{tracks.map((track, index) => <label key={track.id} className={selected.has(track.id) ? "song chosen" : "song"}>
             <input type="checkbox" checked={selected.has(track.id)} onChange={() => toggle(track.id)} />
@@ -127,9 +127,8 @@ export default function SetupWizard({ initialStep = 0 }: { initialStep?: number 
 
         {step === 2 && <div className="wizard-card processing-card">
           <EdgeLines />
-          <p className="kicker">{job?.status === "complete" ? "Complete" : "Processing"}</p>
-          <h1>{job?.status === "complete" ? <>Processing<br /><em>complete.</em></> : <>Building music<br /><em>embeddings.</em></>}</h1>
-          <div className="progress-summary"><div><small>{job?.phase || "Queued"}</small><strong>{job?.message || "Waiting for worker"}</strong><span>{job?.track ? `${job.track.artist || "Unknown artist"} — ${job.track.title}` : `${job?.completed || 0} of ${job?.total || chosen.length} ${job?.unit || "tracks"}`}</span></div><b>{percent}%</b></div>
+          <h1>{job?.status === "complete" ? <>Analysis<br />complete.</> : <>Build music<br />embeddings.</>}</h1>
+          <div className="progress-summary"><div><span className="phase">{job?.status === "complete" ? "Complete" : job?.phase || "Queued"}</span><strong>{job?.message || "Waiting for worker"}</strong><span>{job?.track ? `${job.track.artist || "Unknown artist"} — ${job.track.title}` : `${job?.completed || 0} of ${job?.total || chosen.length} ${job?.unit || "tracks"}`}</span></div><b>{percent}%</b></div>
           <div className="meter"><i style={{ width: `${job?.phase === "models" ? 5 : percent}%` }} /></div>
           <div className="process-stages">
             {[{ key: "models", label: "Load models" }, { key: "processing", label: "Process tracks" }, { key: "finalizing", label: "Save index" }].map((stage, index) => {
