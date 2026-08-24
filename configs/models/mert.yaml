@@ -1,0 +1,11 @@
+model: mert
+model_id: m-a-p/MERT-v1-95M
+revision: main
+sample_rate: 24000
+clip_seconds: 10
+precision: float32
+expected_dimension: 768
+weight_license: CC-BY-NC-4.0
+trust_remote_code: true
+status: available
+notes: Pin revision to a commit SHA before the benchmark run.

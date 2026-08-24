@@ -1,0 +1,10 @@
+model: muq_mulan
+model_id: OpenMuQ/MuQ-MuLan-large
+revision: TO_BE_PINNED_AFTER_DOWNLOAD
+sample_rate: 24000
+clip_seconds: 10
+precision: float32
+parallel_processing: false
+expected_dimension: 512
+weight_license: CC-BY-NC-4.0
+status: available

@@ -1,0 +1,1 @@
+.notice{display:flex;flex-direction:column;gap:4px;padding:0 16px;font-family:var(--ui-font);font-size:var(--type-caption);font-weight:500;line-height:1.35;color:rgba(255,255,255,.82);letter-spacing:.35px;text-transform:uppercase}.notice span{display:block}

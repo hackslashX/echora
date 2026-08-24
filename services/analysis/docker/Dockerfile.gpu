@@ -1,0 +1,24 @@
+FROM pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+WORKDIR /service
+# ffmpeg follows the pinned Ubuntu base image security repository.
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ffmpeg libchromaprint-tools python3.12-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 1001 echora
+COPY services/analysis/pyproject.toml ./
+RUN mkdir -p src/echora_analysis \
+    && touch src/echora_analysis/__init__.py \
+    && python -m venv --system-site-packages /opt/venv \
+    && /opt/venv/bin/pip install . \
+    && rm -rf src
+COPY services/analysis/src ./src
+COPY services/analysis/alembic.ini ./alembic.ini
+COPY services/analysis/alembic ./alembic
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONPATH="/service/src" \
+    HF_HOME="/models/huggingface"
+RUN mkdir -p /models/huggingface && chown -R echora /models
+EXPOSE 8000
+CMD ["sh", "-c", "chown -R echora /models && runuser -u echora -- alembic upgrade head && exec runuser -u echora -- uvicorn echora_analysis.main:app --host 0.0.0.0 --port 8000"]

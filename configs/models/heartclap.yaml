@@ -1,0 +1,7 @@
+model: heartclap
+revision: unavailable
+status: blocked_upstream_release
+notes: >-
+  No official public HeartCLAP checkpoint or inference API was available when this
+  project was scaffolded. Keep this contestant disabled until its model card,
+  weights, preprocessing contract, and weight license can be pinned.
