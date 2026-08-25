@@ -1,7 +1,7 @@
 "use client";
 
 import { Disc3, LocateFixed, Network, Pause, Play, Route, ScanSearch, Search, X } from "lucide-react";
-import Image from "next/image";
+import LoadingImage from "../media/LoadingImage";
 import { PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { usePlayer } from "../player/PlayerProvider";
 import AppShell from "../shell/AppShell";
@@ -18,15 +18,35 @@ type Concept = { name: string; group?: string };
 type ConceptScore = { name: string; raw_score: number; percentile: number; semantic_percentile?: number; lyrics_percentile?: number; lyrics_available?: boolean };
 type JourneyStep = { id: string; title: string; artist?: string; album?: string; duration_seconds: number; source_id?: string; cover_art?: string; position: number; target_progress: number; target_similarity: number; transition_similarity: number };
 type View = { x: number; y: number; zoom: number };
+type GalaxySession = {
+  view: View;
+  showConnections: boolean;
+  selectedConcepts: string[];
+  conceptScores: Record<string, ConceptScore[]>;
+  conceptThreshold: number;
+  model: string;
+  semanticWeight: number;
+  selected: Point | null;
+  query: string;
+  journeyStart: Point | null;
+  journey: JourneyStep[];
+};
+
+const galaxySession: GalaxySession = {
+  view: { x: 0, y: 0, zoom: 1 }, showConnections: true, selectedConcepts: [], conceptScores: {},
+  conceptThreshold: .8, model: "muq_mulan", semanticWeight: 1, selected: null, query: "",
+  journeyStart: null, journey: [],
+};
 const palette = ["#8ff5e7", "#b9a2ff", "#86bcff", "#ff9bc8", "#f4d889", "#9de79b", "#e7a3ff", "#83e2ff", "#ffae8c", "#d4f3ba"];
 const clusterColor = (cluster: number) => cluster < 0 ? "#a5b0b5" : palette[cluster % palette.length];
 
 export default function MusicGalaxy() {
   const canvas = useRef<HTMLCanvasElement>(null);
   const drag = useRef<{ x: number; y: number; viewX: number; viewY: number } | null>(null);
-  const view = useRef<View>({ x: 0, y: 0, zoom: 1 });
+  const view = useRef<View>({ ...galaxySession.view });
   const region = useRef<{ startX: number; startY: number; x: number; y: number } | null>(null);
-  const selectedId = useRef("");
+  const selectedId = useRef(galaxySession.selected?.id || "");
+  const restoringSession = useRef(Boolean(galaxySession.selected));
   const loadSequence = useRef(0);
   const pointsRef = useRef<Point[]>([]);
   const transition = useRef<{ started: number; from: Map<string, { x: number; y: number }> } | null>(null);
@@ -35,22 +55,22 @@ export default function MusicGalaxy() {
   const [communities, setCommunities] = useState<Community[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [clustering, setClustering] = useState<Clustering | null>(null);
-  const [showConnections, setShowConnections] = useState(true);
+  const [showConnections, setShowConnections] = useState(galaxySession.showConnections);
   const [concepts, setConcepts] = useState<Concept[]>([]);
-  const [selectedConcepts, setSelectedConcepts] = useState<string[]>([]);
-  const [conceptScores, setConceptScores] = useState<Record<string, ConceptScore[]>>({});
-  const [conceptThreshold, setConceptThreshold] = useState(.8);
-  const [model, setModel] = useState("muq_mulan");
-  const [semanticWeight, setSemanticWeight] = useState(1);
-  const [selected, setSelected] = useState<Point | null>(null);
+  const [selectedConcepts, setSelectedConcepts] = useState<string[]>(galaxySession.selectedConcepts);
+  const [conceptScores, setConceptScores] = useState<Record<string, ConceptScore[]>>(galaxySession.conceptScores);
+  const [conceptThreshold, setConceptThreshold] = useState(galaxySession.conceptThreshold);
+  const [model, setModel] = useState(galaxySession.model);
+  const [semanticWeight, setSemanticWeight] = useState(galaxySession.semanticWeight);
+  const [selected, setSelected] = useState<Point | null>(galaxySession.selected);
   const [hovered, setHovered] = useState<Point | null>(null);
   const [connectionId, setConnectionId] = useState("");
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(galaxySession.query);
   const [loading, setLoading] = useState(true);
   const [transitioning, setTransitioning] = useState(false);
   const [regionMode, setRegionMode] = useState(false);
-  const [journeyStart, setJourneyStart] = useState<Point | null>(null);
-  const [journey, setJourney] = useState<JourneyStep[]>([]);
+  const [journeyStart, setJourneyStart] = useState<Point | null>(galaxySession.journeyStart);
+  const [journey, setJourney] = useState<JourneyStep[]>(galaxySession.journey);
   const [journeyLoading, setJourneyLoading] = useState(false);
   const regions = useMemo(() => {
     type Coordinate = { x: number; y: number };
@@ -69,6 +89,11 @@ export default function MusicGalaxy() {
     if (!activeId) return [];
     return edges.filter(edge => edge.source_id === activeId || edge.target_id === activeId);
   }, [edges, hovered?.id, selected?.id, showConnections]);
+
+  useEffect(() => {
+    Object.assign(galaxySession, { showConnections, selectedConcepts, conceptScores, conceptThreshold, model, semanticWeight, selected, query, journeyStart, journey });
+    return () => { galaxySession.view = { ...view.current }; };
+  }, [conceptScores, conceptThreshold, journey, journeyStart, model, query, selected, selectedConcepts, semanticWeight, showConnections]);
 
   useEffect(() => {
     window.dispatchEvent(new CustomEvent("echora:backdrop-mode", { detail: { waveOpacity: .34 } }));
@@ -92,7 +117,7 @@ export default function MusicGalaxy() {
       const sequence = ++loadSequence.current;
       const blend = semanticWeight > 0 && semanticWeight < 1;
       const url = blend ? `/analysis/library/map?model=blend&semantic_weight=${semanticWeight}` : `/analysis/library/map?model=${model}`;
-      fetch(url, { signal: controller.signal }).then(response => response.json()).then(body => { const next: Point[] = body.points || []; transition.current = { started: performance.now(), from: new Map(pointsRef.current.map(point => [point.id, { x: point.x, y: point.y }])) }; pointsRef.current = next; setTransitioning(true); window.setTimeout(() => { transition.current = null; setTransitioning(false); }, 900); setPoints(next); setCommunities(body.communities || []); setEdges(body.edges || []); setClustering(body.clustering || null); const match = next.find(point => point.id === selectedId.current); if (!match && selectedId.current) { selectedId.current = ""; setSelected(null); } if (match) requestAnimationFrame(() => { const box = canvas.current?.getBoundingClientRect(); if (!box) return; view.current = { x: -match.x * box.width * .37, y: -match.y * box.height * .37, zoom: 2.2 }; setSelected(match); }); }).catch(error => { if (error.name !== "AbortError") console.error(error); }).finally(() => { if (loadSequence.current === sequence) setLoading(false); });
+      fetch(url, { signal: controller.signal }).then(response => response.json()).then(body => { const next: Point[] = body.points || []; transition.current = { started: performance.now(), from: new Map(pointsRef.current.map(point => [point.id, { x: point.x, y: point.y }])) }; pointsRef.current = next; setTransitioning(true); window.setTimeout(() => { transition.current = null; setTransitioning(false); }, 900); setPoints(next); setCommunities(body.communities || []); setEdges(body.edges || []); setClustering(body.clustering || null); const match = next.find(point => point.id === selectedId.current); if (!match && selectedId.current) { selectedId.current = ""; setSelected(null); } if (match) { if (restoringSession.current) { restoringSession.current = false; setSelected(match); } else requestAnimationFrame(() => { const box = canvas.current?.getBoundingClientRect(); if (!box) return; view.current = { x: -match.x * box.width * .37, y: -match.y * box.height * .37, zoom: 2.2 }; setSelected(match); }); } setJourneyStart(current => current ? next.find(point => point.id === current.id) || current : null); }).catch(error => { if (error.name !== "AbortError") console.error(error); }).finally(() => { if (loadSequence.current === sequence) setLoading(false); });
     }, 280);
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [model, semanticWeight]);
@@ -172,7 +197,7 @@ export default function MusicGalaxy() {
       <aside className={styles.conceptPanel}><header><div><strong>Concept lens</strong><span>{selectedConcepts.length}/4 selected</span></div>{selectedConcepts.length > 0 && <button onClick={() => { setSelectedConcepts([]); setConceptScores({}); }}>Clear</button>}</header><div className={styles.conceptList}>{concepts.map(concept => { const checked = selectedConcepts.includes(concept.name); return <label key={concept.name}><input type="checkbox" checked={checked} disabled={!checked && selectedConcepts.length >= 4} onChange={() => setSelectedConcepts(current => { const next = checked ? current.filter(name => name !== concept.name) : [...current, concept.name]; if (!next.length) setConceptScores({}); return next; })} /><i style={{ background: checked ? palette[selectedConcepts.indexOf(concept.name) % palette.length] : "transparent" }} /> <span>{concept.name}</span><small>{concept.group || "PERSONAL"}</small></label>; })}</div><footer><label><span>SHOW TOP {Math.round((1 - conceptThreshold) * 100)}%</span><input type="range" min="0.5" max="0.95" step="0.05" value={conceptThreshold} onChange={event => setConceptThreshold(Number(event.target.value))} /></label><p>Colors combine MuQ-MuLan sound evidence with BGE-M3 lyrics evidence. Tracks without lyrics receive a neutral lyrics score. Concepts may overlap.</p></footer></aside>
       {(journeyStart || journey.length > 0 || journeyLoading) && <aside className={styles.journeyPanel}><header><div><strong>Sonic journey</strong><span>{journeyLoading ? "Building path" : journeyStart ? "Select a destination star" : `${journey.length} stops`}</span></div><button onClick={() => { setJourneyStart(null); setJourney([]); }} aria-label="Close journey"><X /></button></header>{journey.length > 0 && <><div>{journey.map((step, index) => <button key={step.id} onClick={() => { const point = pointsById.get(step.id); if (point) focus(point); }}><i>{index + 1}</i><span><strong>{step.title}</strong><small>{step.artist || "Unknown artist"}</small></span></button>)}</div><footer><button onClick={() => { const queue = journey.map(playerTrack).filter((track): track is NonNullable<typeof track> => Boolean(track)); if (queue.length) player.playQueue(queue); }}><Play /> Play journey</button></footer></>}</aside>}
       {hovered && <span className={styles.hover}>{hovered.title}<small>{hovered.artist}</small></span>}
-      {selected && <aside className={styles.card}>{cover ? <Image unoptimized src={cover} width={150} height={150} alt="" /> : <span className={styles.noArt}><Disc3 /></span>}<div><small>{model === "lyrics" ? "BGE-M3 lyrics position" : model === "blend" ? "Blended model position" : model === "mert" ? "MERT acoustic position" : "MuQ-MuLan semantic position"}</small><h1>{selected.title}</h1>{selected.artist ? <TransitionLink className={styles.artistLink} href={`/artists/${encodeURIComponent(selected.artist)}`}>{selected.artist}</TransitionLink> : <p>Unknown artist</p>}<span>{selected.album}</span><dl><div><dt>COMMUNITY</dt><dd>{selectedCommunity?.label || String(selected.cluster + 1).padStart(2, "0")}</dd></div><div><dt>COMMUNITY AFFINITY</dt><dd>{Math.round(selected.cluster_affinity * 100)}%</dd></div><div><dt>POSITION</dt><dd>{selected.x.toFixed(2)}, {selected.y.toFixed(2)}</dd></div><div><dt>COMMUNITY MIX</dt><dd>{selected.cluster_memberships.slice(0, 3).map(item => `C${item.cluster + 1} ${Math.round(item.strength * 100)}%`).join(" · ")}</dd></div><div><dt>BRIDGE SCORE</dt><dd>{Math.round(selected.bridge_score * 100)}%</dd></div>{selectedCommunity && <div><dt>COMMUNITY EVIDENCE</dt><dd>{selectedCommunity.top_genres.map(item => item.name).join(" · ") || "Embedding cohesion and representative tracks"}</dd></div>}{selectedConceptMatches.length > 0 && <div><dt>CONCEPT MATCHES</dt><dd>{selectedConceptMatches.map(item => `${item.name} ${Math.round(item.percentile * 100)}p · sound ${Math.round((item.semantic_percentile ?? .5) * 100)} · lyrics ${item.lyrics_available ? Math.round((item.lyrics_percentile ?? .5) * 100) : "n/a"}`).join(" / ")}</dd></div>}</dl><section><label>NEAREST IN {model === "lyrics" ? "LYRICS" : model === "blend" ? "BLENDED" : model === "mert" ? "ACOUSTIC" : "SEMANTIC"} SPACE</label>{selected.neighbors.map(neighbor => <button key={neighbor.id} onClick={() => { const point = points.find(item => item.id === neighbor.id); if (point) focus(point); }}><b>{neighbor.title}</b><i>{Math.round(neighbor.similarity * 100)}%</i></button>)}</section></div><button onClick={() => player.track?.id === selected.id ? player.toggle() : play(selected)}>{player.track?.id === selected.id && player.playing ? <Pause /> : <Play />}{player.track?.id === selected.id && player.playing ? "Pause" : "Play star"}</button></aside>}
+      {selected && <aside className={styles.card}>{cover ? <LoadingImage className={styles.cardArtwork} src={cover} sizes="170px" alt="" /> : <span className={styles.noArt}><Disc3 /></span>}<div><small>{model === "lyrics" ? "BGE-M3 lyrics position" : model === "blend" ? "Blended model position" : model === "mert" ? "MERT acoustic position" : "MuQ-MuLan semantic position"}</small><h1>{selected.title}</h1>{selected.artist ? <TransitionLink className={styles.artistLink} href={`/artists/${encodeURIComponent(selected.artist)}`}>{selected.artist}</TransitionLink> : <p>Unknown artist</p>}<span>{selected.album}</span><dl><div><dt>COMMUNITY</dt><dd>{selectedCommunity?.label || String(selected.cluster + 1).padStart(2, "0")}</dd></div><div><dt>COMMUNITY AFFINITY</dt><dd>{Math.round(selected.cluster_affinity * 100)}%</dd></div><div><dt>POSITION</dt><dd>{selected.x.toFixed(2)}, {selected.y.toFixed(2)}</dd></div><div><dt>COMMUNITY MIX</dt><dd>{selected.cluster_memberships.slice(0, 3).map(item => `C${item.cluster + 1} ${Math.round(item.strength * 100)}%`).join(" · ")}</dd></div><div><dt>BRIDGE SCORE</dt><dd>{Math.round(selected.bridge_score * 100)}%</dd></div>{selectedCommunity && <div><dt>COMMUNITY EVIDENCE</dt><dd>{selectedCommunity.top_genres.map(item => item.name).join(" · ") || "Embedding cohesion and representative tracks"}</dd></div>}{selectedConceptMatches.length > 0 && <div><dt>CONCEPT MATCHES</dt><dd>{selectedConceptMatches.map(item => `${item.name} ${Math.round(item.percentile * 100)}p · sound ${Math.round((item.semantic_percentile ?? .5) * 100)} · lyrics ${item.lyrics_available ? Math.round((item.lyrics_percentile ?? .5) * 100) : "n/a"}`).join(" / ")}</dd></div>}</dl><section><label>NEAREST IN {model === "lyrics" ? "LYRICS" : model === "blend" ? "BLENDED" : model === "mert" ? "ACOUSTIC" : "SEMANTIC"} SPACE</label>{selected.neighbors.map(neighbor => <button key={neighbor.id} onClick={() => { const point = points.find(item => item.id === neighbor.id); if (point) focus(point); }}><b>{neighbor.title}</b><i>{Math.round(neighbor.similarity * 100)}%</i></button>)}</section></div><button onClick={() => player.track?.id === selected.id ? player.toggle() : play(selected)}>{player.track?.id === selected.id && player.playing ? <Pause /> : <Play />}{player.track?.id === selected.id && player.playing ? "Pause" : "Play star"}</button></aside>}
       <div className={styles.hint}>Drag to pan&nbsp;&nbsp; / &nbsp;&nbsp;Scroll to explore&nbsp;&nbsp; / &nbsp;&nbsp;Use region select to frame a cluster</div>
     </main>
   </AppShell>;
