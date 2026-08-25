@@ -61,7 +61,7 @@ if _oidc_issuer and os.environ.get("OIDC_CLIENT_ID") and os.environ.get("OIDC_CL
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="echora-ingest")
 _jobs: dict[str, dict[str, object]] = {}
 _jobs_lock = threading.Lock()
-_stream_cache: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
+_stream_cache: OrderedDict[tuple[str, str, str], tuple[bytes, str]] = OrderedDict()
 _stream_cache_lock = threading.Lock()
 _STREAM_CACHE_LIMIT = 12
 _scheduler_started = False
@@ -907,12 +907,33 @@ def track_recording_group(track_id: uuid.UUID) -> dict[str, object]:
     return {"group": {**group, "members": members, "evidence": evidence}, "fingerprinted": True}
 
 
+@app.get("/library/tracks/{track_id}/lyrics")
+def track_lyrics(track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT l.text, l.language, l.source, l.provenance
+               FROM user_track_links link
+               LEFT JOIN lyrics l ON l.track_id=link.track_id
+               WHERE link.user_id=%s AND link.track_id=%s LIMIT 1""",
+            (user["id"], track_id),
+        )
+        row = cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Track is not in your library")
+    return {"available": bool(row.get("text")), **row}
+
+
 @app.get("/navidrome/connections/{connection_id}/stream/{song_id}")
 def stream_track(connection_id: str, song_id: str, request: Request) -> Response:
     credentials = _load_connection(connection_id)
     if credentials is None:
         raise HTTPException(status_code=404, detail="Connection expired")
-    cache_key = (connection_id, song_id)
+    quality = request.query_params.get("quality", "original")
+    if quality not in {"original", "320", "120"}:
+        raise HTTPException(status_code=422, detail="Quality must be original, 320, or 120")
+    bit_rate = None if quality == "original" else int(quality)
+    cache_key = (connection_id, song_id, quality)
     with _stream_cache_lock:
         cached = _stream_cache.get(cache_key)
         if cached is not None:
@@ -922,7 +943,7 @@ def stream_track(connection_id: str, song_id: str, request: Request) -> Response
     if cached is None and starts_at_zero:
         client = NavidromeClient(*credentials)
         try:
-            upstream = client.open_transcode_stream(song_id, 320, range_header)
+            upstream = client.open_transcode_stream(song_id, bit_rate, range_header)
         except Exception as error:
             client.close()
             raise HTTPException(status_code=502, detail="Could not open this track") from error
@@ -955,7 +976,7 @@ def stream_track(connection_id: str, song_id: str, request: Request) -> Response
     if cached is None:
         try:
             with NavidromeClient(*credentials) as client:
-                cached = client.transcode(song_id, 320)
+                cached = client.transcode(song_id, bit_rate)
         except Exception as error:
             raise HTTPException(status_code=502, detail="Could not open this track") from error
         with _stream_cache_lock:
@@ -988,13 +1009,13 @@ def stream_track(connection_id: str, song_id: str, request: Request) -> Response
 
 
 @app.get("/navidrome/connections/{connection_id}/cover/{cover_id:path}")
-def cover_art(connection_id: str, cover_id: str) -> Response:
+def cover_art(connection_id: str, cover_id: str, size: int = 160) -> Response:
     credentials = _load_connection(connection_id)
     if credentials is None:
         raise HTTPException(status_code=404, detail="Connection expired")
     try:
         with NavidromeClient(*credentials) as client:
-            content, content_type = client.cover_art(cover_id)
+            content, content_type = client.cover_art(cover_id, min(max(size, 64), 1600))
     except Exception as error:
         raise HTTPException(status_code=404, detail="Artwork unavailable") from error
     return Response(content=content, media_type=content_type, headers={"Cache-Control": "private, max-age=3600"})

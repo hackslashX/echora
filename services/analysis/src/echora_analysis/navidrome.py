@@ -165,11 +165,14 @@ class NavidromeClient:
             response.raise_for_status()
             yield from response.iter_bytes(64 * 1024)
 
-    def open_transcode_stream(self, song_id: str, max_bit_rate: int = 320, range_header: str | None = None) -> httpx.Response:
+    def open_transcode_stream(self, song_id: str, max_bit_rate: int | None = 320, range_header: str | None = None) -> httpx.Response:
+        stream_params = {**self._auth(), "id": song_id, "format": "raw" if max_bit_rate is None else "mp3", "estimateContentLength": "true"}
+        if max_bit_rate is not None:
+            stream_params["maxBitRate"] = max_bit_rate
         request = self.client.build_request(
             "GET",
             self._endpoint("stream"),
-            params={**self._auth(), "id": song_id, "format": "mp3", "maxBitRate": max_bit_rate, "estimateContentLength": "true"},
+            params=stream_params,
             headers={"Range": range_header} if range_header else {},
         )
         response = self.client.send(request, stream=True)
@@ -195,10 +198,13 @@ class NavidromeClient:
         headers = {key: value for key, value in response.headers.items() if key.lower() in {"content-length", "content-range", "accept-ranges"}}
         return response.content, headers, response.status_code
 
-    def transcode(self, song_id: str, max_bit_rate: int = 320) -> tuple[bytes, str]:
+    def transcode(self, song_id: str, max_bit_rate: int | None = 320) -> tuple[bytes, str]:
+        stream_params = {**self._auth(), "id": song_id, "format": "raw" if max_bit_rate is None else "mp3", "estimateContentLength": "true"}
+        if max_bit_rate is not None:
+            stream_params["maxBitRate"] = max_bit_rate
         response = self.client.get(
             self._endpoint("stream"),
-            params={**self._auth(), "id": song_id, "format": "mp3", "maxBitRate": max_bit_rate, "estimateContentLength": "true"},
+            params=stream_params,
         )
         response.raise_for_status()
         content_type = response.headers.get("content-type", "audio/mpeg")

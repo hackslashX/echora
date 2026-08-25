@@ -1,7 +1,7 @@
 "use client";
 
 import { Disc3, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX } from "lucide-react";
-import Image from "next/image";
+import LoadingImage from "../media/LoadingImage";
 import { usePlayer } from "../player/PlayerProvider";
 import styles from "./MusicWidget.module.css";
 
@@ -11,9 +11,9 @@ const stamp = (seconds: number) => {
 };
 
 export default function MusicWidget() {
-  const { track, playing, buffering, currentTime, duration, buffered, muted, queue, queueIndex, previous, next, toggle, seek, toggleMute } = usePlayer();
+  const { track, playing, buffering, currentTime, duration, buffered, muted, queue, queueIndex, previous, next, toggle, seek, toggleMute, setExpanded } = usePlayer();
   return <section className={styles.widget} aria-label="Music player">
-    <span className={styles.art}>{track?.coverUrl ? <Image unoptimized width={54} height={54} src={track.coverUrl} alt="" /> : <Disc3 />}</span>
+    <button className={styles.art} type="button" onClick={() => track && setExpanded(true)} disabled={!track} aria-label="Open full screen player">{track?.coverUrl ? <LoadingImage sizes="54px" src={track.coverUrl} alt="" /> : <Disc3 />}</button>
     <button className={styles.skip} type="button" onClick={previous} disabled={!track} aria-label="Previous track"><SkipBack /></button>
     <button className={styles.play} type="button" onClick={toggle} disabled={!track} aria-label={playing ? "Pause" : "Play"}>{playing ? <Pause /> : <Play />}</button>
     <button className={styles.skip} type="button" onClick={next} disabled={queueIndex < 0 || queueIndex >= queue.length - 1} aria-label="Next track"><SkipForward /></button>
