@@ -1,7 +1,7 @@
 "use client";
 
 import { Disc3, Search } from "lucide-react";
-import Image from "next/image";
+import LoadingImage from "../media/LoadingImage";
 import { useEffect, useRef, useState } from "react";
 import { usePlayer } from "../player/PlayerProvider";
 import AppShell from "../shell/AppShell";
@@ -91,7 +91,7 @@ export default function BrowseLibrary() {
         <header><h2>Tracks</h2><strong>{total}</strong></header>
         <div className={styles.search}><label><Search /><input value={query} onChange={event => { setQuery(event.target.value); resetResults(); }} placeholder="Search tracks" /></label><select aria-label="Sort tracks" value={sortBy} onChange={event => { setSortBy(event.target.value as "name" | "artist" | "released"); resetResults(); }}><option value="name">Name</option><option value="artist">Artist</option><option value="released">Date released</option></select></div>
         <div className={styles.list} ref={listRef}>{loading && tracks.length === 0 ? <div className={styles.empty}>Loading library</div> : error ? <div className={styles.empty}>{error}</div> : tracks.length === 0 ? <div className={styles.empty}>No matching tracks</div> : <>{tracks.map(track => <button type="button" className={`${styles.row} ${player.track?.id === track.id ? styles.current : ""}`} key={track.id} onClick={() => play(track)} disabled={!connectionId || !track.source_id}>
-          <span className={styles.art}>{track.cover_art && connectionId ? <Image unoptimized width={48} height={48} alt="" src={`/analysis/navidrome/connections/${connectionId}/cover/${encodeURIComponent(track.cover_art)}`} /> : <Disc3 />}</span>
+          <span className={styles.art}>{track.cover_art && connectionId ? <LoadingImage sizes="48px" alt="" src={`/analysis/navidrome/connections/${connectionId}/cover/${encodeURIComponent(track.cover_art)}`} /> : <Disc3 />}</span>
           <span className={styles.track}><strong>{track.title}</strong><small>{track.artist || "Unknown artist"}</small></span><span className={styles.album}>{track.album || "Unknown album"}</span><time>{duration(track.duration_seconds)}</time>
         </button>)}<div ref={sentinelRef} className={styles.sentinel}>{loading ? "Loading more tracks" : tracks.length < total ? "Scroll for more" : `${tracks.length} tracks loaded`}</div></>}</div>
       </section>
