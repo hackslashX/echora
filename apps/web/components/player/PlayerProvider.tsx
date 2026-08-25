@@ -1,14 +1,16 @@
 "use client";
 
 import { createContext, ReactNode, useContext, useEffect, useRef, useState } from "react";
+import FullscreenPlayer from "./FullscreenPlayer";
+import { readPlaybackPreferences, streamUrlForQuality } from "./playbackPreferences";
 
 export type PlayerTrack = { id: string; title: string; artist?: string; album?: string; durationSeconds?: number; streamUrl: string; coverUrl?: string };
 type PlayerState = {
-  track: PlayerTrack | null; playing: boolean; buffering: boolean; currentTime: number; duration: number; buffered: number; muted: boolean;
+  track: PlayerTrack | null; playing: boolean; buffering: boolean; currentTime: number; duration: number; buffered: number; muted: boolean; expanded: boolean;
   queue: PlayerTrack[]; queueIndex: number;
   play: (track: PlayerTrack) => void; playQueue: (tracks: PlayerTrack[], startIndex?: number) => void;
   next: () => void; previous: () => void; clearQueue: () => void;
-  toggle: () => void; seek: (seconds: number) => void; toggleMute: () => void;
+  toggle: () => void; seek: (seconds: number) => void; toggleMute: () => void; setExpanded: (value: boolean) => void;
 };
 
 const PlayerContext = createContext<PlayerState | null>(null);
@@ -76,6 +78,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [duration, setDuration] = useState(0);
   const [buffered, setBuffered] = useState(0);
   const [muted, setMuted] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [queue, setQueue] = useState<PlayerTrack[]>([]);
   const [queueIndex, setQueueIndex] = useState(-1);
 
@@ -138,7 +141,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       paletteRef.current = palette;
       if (!audio.current?.paused) publishPalette(palette);
     }).catch(() => {});
-    startAnalysis(); player.src = next.streamUrl; setTrack(next); setCurrentTime(0); setDuration(next.durationSeconds || 0);
+    startAnalysis(); player.src = streamUrlForQuality(next.streamUrl, readPlaybackPreferences().quality); setTrack(next); setCurrentTime(0); setDuration(next.durationSeconds || 0);
     player.play().catch(() => setPlaying(false));
   }
   function activateQueueIndex(index: number) {
@@ -167,7 +170,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   function seek(seconds: number) { const player = audio.current; if (!player || !Number.isFinite(seconds)) return; player.currentTime = seconds; setCurrentTime(seconds); }
   function toggleMute() { const player = audio.current; if (!player) return; player.muted = !player.muted; setMuted(player.muted); }
 
-  return <PlayerContext.Provider value={{ track, playing, buffering, currentTime, duration, buffered, muted, queue, queueIndex, play, playQueue, next, previous, clearQueue, toggle, seek, toggleMute }}>{children}</PlayerContext.Provider>;
+  return <PlayerContext.Provider value={{ track, playing, buffering, currentTime, duration, buffered, muted, expanded, queue, queueIndex, play, playQueue, next, previous, clearQueue, toggle, seek, toggleMute, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
 }
 
 export function usePlayer() {

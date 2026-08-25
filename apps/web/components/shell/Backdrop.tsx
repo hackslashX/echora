@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { PlaybackPreferences, readPlaybackPreferences } from "../player/playbackPreferences";
 import styles from "./Backdrop.module.css";
 
 type RenderLayer = { render: (time: number) => void };
@@ -44,12 +45,14 @@ export default function Backdrop() {
     let animation = 0;
     let removeResize = () => {};
     const target: Reactivity = { bass: 0, mid: 0, treble: 0, level: 0 };
+    let preferences = readPlaybackPreferences();
     let paletteTarget: { background: Color; waves: Color[] } | null = null;
     let opacityScale = 1;
     let targetOpacityScale = 1;
     const reactive: Reactivity = { ...target };
     const receiveAudio = (event: Event) => Object.assign(target, (event as CustomEvent<Reactivity>).detail);
     const receiveMode = (event: Event) => { targetOpacityScale = (event as CustomEvent<{ waveOpacity: number }>).detail.waveOpacity; };
+    const receivePreferences = (event: Event) => { preferences = (event as CustomEvent<PlaybackPreferences>).detail; };
     const receivePalette = (event: Event) => {
       const detail = (event as CustomEvent<{ active: boolean; palette: { background: Color; waves: Color[] } | null }>).detail;
       paletteTarget = detail.active ? detail.palette : null;
@@ -57,6 +60,7 @@ export default function Backdrop() {
     window.addEventListener("echora:audio-reactivity", receiveAudio);
     window.addEventListener("echora:backdrop-mode", receiveMode);
     window.addEventListener("echora:track-palette", receivePalette);
+    window.addEventListener("echora:playback-preferences", receivePreferences);
 
     async function start() {
       for (const file of scripts) await loadScript(file);
@@ -97,10 +101,10 @@ export default function Backdrop() {
         opacityScale += (targetOpacityScale - opacityScale) * .035;
         if (baseline && splineSettings && particleSettings) {
           splineSettings.opacity = baseline.spline.opacity * opacityScale;
-          splineSettings.layerAmplitudes[0] = baseline.spline.layerAmplitudes[0] + reactive.bass * 1.65;
-          splineSettings.layerAmplitudes[1] = baseline.spline.layerAmplitudes[1] + reactive.mid * 1.3;
-          splineSettings.layerAmplitudes[2] = baseline.spline.layerAmplitudes[2] + reactive.treble * 1.05;
-          particleSettings.count = Math.round((baseline.particles.count + reactive.treble * 2600) / 100) * 100;
+          splineSettings.layerAmplitudes[0] = preferences.wavesEnabled ? baseline.spline.layerAmplitudes[0] + reactive.bass * 1.65 * preferences.bassReactivity : 0;
+          splineSettings.layerAmplitudes[1] = preferences.wavesEnabled ? baseline.spline.layerAmplitudes[1] + reactive.mid * 1.3 * preferences.vocalReactivity : 0;
+          splineSettings.layerAmplitudes[2] = preferences.wavesEnabled ? baseline.spline.layerAmplitudes[2] + reactive.treble * 1.05 * preferences.trebleReactivity : 0;
+          particleSettings.count = preferences.wavesEnabled ? Math.round((baseline.particles.count + reactive.treble * 2600) / 100) * 100 : 0;
           const background = paletteTarget?.background || baseline.spline.background;
           splineSettings.colorR += (background[0] - splineSettings.colorR) * .025;
           splineSettings.colorG += (background[1] - splineSettings.colorG) * .025;
@@ -118,7 +122,7 @@ export default function Backdrop() {
     }
 
     start().catch(() => {});
-    return () => { cancelled = true; cancelAnimationFrame(animation); removeResize(); window.removeEventListener("echora:audio-reactivity", receiveAudio); window.removeEventListener("echora:backdrop-mode", receiveMode); window.removeEventListener("echora:track-palette", receivePalette); };
+    return () => { cancelled = true; cancelAnimationFrame(animation); removeResize(); window.removeEventListener("echora:audio-reactivity", receiveAudio); window.removeEventListener("echora:backdrop-mode", receiveMode); window.removeEventListener("echora:track-palette", receivePalette); window.removeEventListener("echora:playback-preferences", receivePreferences); };
   }, []);
 
   return <div className={styles.backdrop} aria-hidden="true"><canvas ref={canvasRef} /></div>;
