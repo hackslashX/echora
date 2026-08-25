@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" fill="#07100f"/>
-  <path d="M39 11v31.5a10 10 0 1 1-5-8.66V18l19-4v23.5a10 10 0 1 1-5-8.66V11.9L39 14v-3Z" fill="#9be4dd"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Echora music note">
+  <rect width="64" height="64" rx="8" fill="#07100f"/>
+  <path d="M25 16v29M49 11v28M25 16l24-5v8l-24 5z" fill="none" stroke="#9be4dd" stroke-width="6" stroke-linecap="square" stroke-linejoin="miter"/>
+  <ellipse cx="18" cy="46" rx="10" ry="7" transform="rotate(-18 18 46)" fill="#9be4dd"/>
+  <ellipse cx="42" cy="40" rx="10" ry="7" transform="rotate(-18 42 40)" fill="#9be4dd"/>
 </svg>
