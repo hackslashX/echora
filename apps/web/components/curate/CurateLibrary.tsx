@@ -1,7 +1,7 @@
 "use client";
 
 import { Clock3, Disc3, ListMusic, MessageSquareText, Pause, Play, RefreshCw, Save, WandSparkles } from "lucide-react";
-import Image from "next/image";
+import LoadingImage from "../media/LoadingImage";
 import { useEffect, useState } from "react";
 import { usePlayer, type PlayerTrack } from "../player/PlayerProvider";
 import AppShell from "../shell/AppShell";
@@ -89,7 +89,7 @@ export default function CurateLibrary() {
       <section className={styles.results}>
         <header><h2>{name || "Playlist preview"}</h2><strong>{shown.length}</strong></header>
         {preview?.references && <div className={styles.references}>{(["positive", "negative"] as const).map(kind => preview.references[kind].map(reference => <span className={kind === "negative" ? styles.negative : ""} key={`${kind}-${reference.kind}-${reference.name}`}>{reference.kind} · {reference.name}</span>))}</div>}
-        <div className={styles.trackList}>{shown.length ? shown.map((track, index) => <article key={track.id}><b>{String(index + 1).padStart(2, "0")}</b><div className={styles.art}>{track.cover_art && connectionId ? <Image unoptimized width={46} height={46} src={`/analysis/navidrome/connections/${connectionId}/cover/${track.cover_art}`} alt="" /> : <Disc3 />}</div><div><strong>{track.title}</strong><small>{track.artist || "Unknown artist"} · {track.album || "Unknown album"}</small></div><span>{track.percentile == null ? track.score.toFixed(2) : `TOP ${Math.max(1, Math.round((1 - track.percentile) * 100))}%`}</span><button onClick={() => current?.id === track.id ? toggle() : playQueue(playerTracks(shown), index)} aria-label={`Play ${track.title}`}>{current?.id === track.id && playing ? <Pause /> : <Play />}</button></article>) : <p>Write a recipe and preview it. Resolved references and ranked tracks will appear here.</p>}</div>
+        <div className={styles.trackList}>{shown.length ? shown.map((track, index) => <article key={track.id}><b>{String(index + 1).padStart(2, "0")}</b><div className={styles.art}>{track.cover_art && connectionId ? <LoadingImage sizes="46px" src={`/analysis/navidrome/connections/${connectionId}/cover/${track.cover_art}`} alt="" /> : <Disc3 />}</div><div><strong>{track.title}</strong><small>{track.artist || "Unknown artist"} · {track.album || "Unknown album"}</small></div><span>{track.percentile == null ? track.score.toFixed(2) : `TOP ${Math.max(1, Math.round((1 - track.percentile) * 100))}%`}</span><button onClick={() => current?.id === track.id ? toggle() : playQueue(playerTracks(shown), index)} aria-label={`Play ${track.title}`}>{current?.id === track.id && playing ? <Pause /> : <Play />}</button></article>) : <p>Write a recipe and preview it. Resolved references and ranked tracks will appear here.</p>}</div>
         {shown.length > 0 && <footer><button onClick={() => playQueue(playerTracks(shown), 0)}><Play /> PLAY PREVIEW</button><span>{preview?.familiarity?.active ? `${preview.familiarity.familiar_tracks} familiar · ${preview.familiarity.discovery_tracks} discovery · shuffled` : "45% MuQ-MuLan sound · 55% BGE-M3 lyrics"}</span></footer>}
       </section>
     </main>
