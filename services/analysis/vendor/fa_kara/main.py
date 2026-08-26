@@ -1,5 +1,6 @@
 import argparse
 from functools import partial
+import json
 import librosa
 import os
 import re
@@ -43,6 +44,7 @@ def main():
     parser.add_argument('-m', '--model', type=str.lower, default='mms', choices=['mms', 'yohane'], help='底层模型选择')
     parser.add_argument('-hf', '--hf_model_path', default=None, help='HuggingFace模型ID或本地路径')
     parser.add_argument('--head_correct', type=int, default=-999, help='是否进行静音检测')
+    parser.add_argument('--timeline_json', default=None, help='Source lyric line timestamps for anchored alignment')
     args = parser.parse_args()
     sokuon_split = args.sokuon_split
     hatsuon_split = args.hatsuon_split
@@ -108,11 +110,17 @@ def main():
         result_list = func_tail_correct_v250611(result_list, tail_correct)
 
     alignment_tokens = []
+    alignment_token_lines = [[]]
     token_to_index_map = {}
     for i, item in enumerate(result_list):
-        if 'pron' in item and item['pron']:
+        if item.get('orig') == '\n':
+            alignment_token_lines.append([])
+        elif 'pron' in item and item['pron']:
             alignment_tokens.append(item['pron'])
+            alignment_token_lines[-1].append(item['pron'])
             token_to_index_map[len(alignment_tokens) - 1] = i
+    if alignment_token_lines and not alignment_token_lines[-1]:
+        alignment_token_lines.pop()
 
     for item in alignment_tokens:
         if hn.is_english(item):
@@ -141,7 +149,20 @@ def main():
 
     y_processed = time_stretch_audio(audio_file, audio_speed)
     print('Adding timelines...')
-    alignment_results = align_func(y_processed, alignment_tokens, non_silent_ranges, sr, audio_speed, use_gpu=align_use_gpu)
+    if args.timeline_json:
+        with open(os.path.join(real_io_path, args.timeline_json), 'r', encoding='utf-8') as timeline_file:
+            timeline = json.load(timeline_file)
+        if len(timeline) != len(alignment_token_lines):
+            raise ValueError(f"Timeline has {len(timeline)} lines but parsed lyrics have {len(alignment_token_lines)}")
+        timed_token_lines = [(tokens, line) for tokens, line in zip(alignment_token_lines, timeline) if tokens]
+        from align_yohane import align_audio_with_timeline
+        alignment_results = align_audio_with_timeline(
+            y_processed, [tokens for tokens, _ in timed_token_lines],
+            [line['start_ms'] for _, line in timed_token_lines],
+            sr=sr, speed=audio_speed, use_gpu=align_use_gpu, hf_model_id=hf_model_path,
+        )
+    else:
+        alignment_results = align_func(y_processed, alignment_tokens, non_silent_ranges, sr, audio_speed, use_gpu=align_use_gpu)
 
     for i, result in enumerate(alignment_results):
         if i in token_to_index_map:

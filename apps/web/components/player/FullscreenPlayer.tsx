@@ -20,10 +20,12 @@ function clampKaraokeLeadIns(karaoke: LyricsLine[], source: LyricsLine[]): Lyric
     const matchIndex = source.findIndex((candidate, index) => index >= sourceIndex && lyricKey(candidate.text) === key);
     if (matchIndex < 0 || !line.syllables?.length || !Number.isFinite(source[matchIndex].start_ms)) return line;
     sourceIndex = matchIndex + 1;
+    const sourceStart = Number(source[matchIndex].start_ms);
     const first = line.syllables[0];
-    const start_ms = Math.min(first.end_ms, Math.max(first.start_ms, Number(source[matchIndex].start_ms)));
-    if (start_ms === first.start_ms) return line;
-    return { ...line, syllables: [{ ...first, start_ms }, ...line.syllables.slice(1)] };
+    const firstStart = Math.min(first.end_ms, Math.max(first.start_ms, sourceStart));
+    const lineStart = Math.max(Number(line.start_ms), sourceStart - 750);
+    if (firstStart === first.start_ms && lineStart === line.start_ms) return line;
+    return { ...line, start_ms: lineStart, syllables: [{ ...first, start_ms: firstStart }, ...line.syllables.slice(1)] };
   });
 }
 

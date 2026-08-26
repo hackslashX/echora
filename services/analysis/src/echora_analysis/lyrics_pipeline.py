@@ -13,6 +13,7 @@ import torch
 
 from .lyrics_analysis import LyricsEmbeddingModel
 from .navidrome import NavidromeClient
+from .processing_plan import plan_lyrics
 
 
 def _vector_literal(vector) -> str:
@@ -84,36 +85,24 @@ def backfill_lyrics(
     only_missing: bool = False,
 ) -> dict[str, int]:
     report = progress or (lambda _: None)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    report({"phase": "models", "message": "Loading BGE-M3 lyrics model", "completed": 3, "total": 4, "unit": "models"})
-    model = LyricsEmbeddingModel(
-        os.environ.get("LYRICS_MODEL_ID", "BAAI/bge-m3"),
-        os.environ.get("LYRICS_REVISION", "5617a9f61b028005a4858fdac845db406aefb181"), device,
-    )
     summary = {"total": 0, "available": 0, "missing": 0, "unavailable": 0, "embedded": 0, "failed": 0}
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection, NavidromeClient(url, username, password) as client:
-        run_id = _create_run(connection, model)
+        planned = plan_lyrics(connection, external_ids).lyrics_external_ids
+        if not planned:
+            report({"phase": "planning", "message": "Lyrics analysis already current",
+                    "completed": 0, "total": 0, "unit": "tracks"})
+            return summary
         with connection.cursor() as cursor:
-            clauses = ["ts.source_type='subsonic'"]
-            parameters: list[object] = []
-            if external_ids is not None:
-                clauses.append("ts.external_id=ANY(%s)")
-                parameters.append(external_ids)
-            if only_missing:
-                clauses.append(
-                    "(l.track_id IS NULL OR NOT EXISTS (SELECT 1 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id "
-                    "WHERE e.track_id=ts.track_id AND e.embedding_type='lyrics' AND e.window_index IS NULL AND ar.model_name='bge_m3'))"
-                )
             cursor.execute(
-                f"""SELECT DISTINCT ON (ts.track_id) ts.track_id, ts.external_id, t.title
-                    FROM track_sources ts JOIN tracks t ON t.id=ts.track_id
-                    LEFT JOIN lyrics l ON l.track_id=ts.track_id
-                    WHERE {' AND '.join(clauses)} ORDER BY ts.track_id, ts.id""",
-                parameters,
+                """SELECT DISTINCT ON (ts.track_id) ts.track_id, ts.external_id, t.title
+                   FROM track_sources ts JOIN tracks t ON t.id=ts.track_id
+                   WHERE ts.source_type='subsonic' AND ts.external_id=ANY(%s)
+                   ORDER BY ts.track_id, ts.id""",
+                (list(planned),),
             )
             tracks = cursor.fetchall()
         summary["total"] = len(tracks)
-        connection.commit()
+        embeddable: list[tuple[uuid.UUID, str, dict[str, object]]] = []
         for index, (track_id, external_id, title) in enumerate(tracks):
             try:
                 lyrics = client.lyrics(external_id)
@@ -121,14 +110,38 @@ def backfill_lyrics(
                 status = str(lyrics.get("status") or "unavailable")
                 summary[status] = summary.get(status, 0) + 1
                 if lyrics.get("text"):
-                    embedded = model.embed(str(lyrics["text"]))
-                    _store_embeddings(connection, track_id, run_id, embedded)
-                    summary["embedded"] += 1
+                    embeddable.append((track_id, title, lyrics))
                 connection.commit()
             except Exception:
-                connection.rollback(); summary["failed"] += 1
-            report({"phase": "lyrics", "message": f"Analyzing lyrics for {title}", "completed": index + 1,
-                    "total": len(tracks), "unit": "tracks", "summary": summary})
+                connection.rollback()
+                summary["failed"] += 1
+            report({"phase": "lyrics", "message": f"Retrieving lyrics for {title}",
+                    "completed": index + 1, "total": len(tracks), "unit": "tracks",
+                    "summary": summary})
+
+        if not embeddable:
+            return summary
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        report({"phase": "models", "message": "Loading BGE-M3 lyrics model",
+                "completed": 0, "total": 1, "unit": "models"})
+        model = LyricsEmbeddingModel(
+            os.environ.get("LYRICS_MODEL_ID", "BAAI/bge-m3"),
+            os.environ.get("LYRICS_REVISION", "5617a9f61b028005a4858fdac845db406aefb181"), device,
+        )
+        run_id = _create_run(connection, model)
+        connection.commit()
+        for index, (track_id, title, lyrics) in enumerate(embeddable):
+            try:
+                embedded = model.embed(str(lyrics["text"]))
+                _store_embeddings(connection, track_id, run_id, embedded)
+                summary["embedded"] += 1
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                summary["failed"] += 1
+            report({"phase": "lyrics", "message": f"Embedding lyrics for {title}",
+                    "completed": index + 1, "total": len(embeddable), "unit": "tracks",
+                    "summary": summary})
         with connection.cursor() as cursor:
             cursor.execute("UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id=%s", (run_id,))
         connection.commit()
