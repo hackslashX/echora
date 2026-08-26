@@ -39,10 +39,11 @@ from .db_models import Curation, NavidromeConnection, OidcAllowedEmail, OidcSett
 from .ingest import ingest_navidrome
 from .journeys import normalize_rows as normalize_journey_rows, select_journey, spherical_targets
 from .listening_history import recent_listens, track_listen_counts
-from .karaoke_pipeline import backfill_karaoke
+from .karaoke_pipeline import KARAOKE_PIPELINE_REVISION, backfill_karaoke
 from .lyrics_analysis import shared_lyrics_model
 from .lyrics_pipeline import backfill_lyrics
 from .navidrome import NavidromeClient
+from .processing_plan import plan_karaoke, plan_lyrics
 from .recordings import store_and_match_fingerprint
 
 app = FastAPI(title="Echora analysis", version="0.3.0")
@@ -113,6 +114,10 @@ class TimezoneSettingsRequest(BaseModel):
 class LastFmSettingsRequest(BaseModel):
     username: str = Field(min_length=1, max_length=120)
     api_key: SecretStr
+
+
+class KaraokeProcessingSettingsRequest(BaseModel):
+    bound_to_synced_lines: bool
 
 
 class OnboardingPreference(BaseModel):
@@ -343,19 +348,10 @@ def _run_fingerprint_backfill(job_id: str, credentials: tuple[str, str, str]) ->
 
 
 def _lyrics_work_count(external_ids: list[str]) -> int:
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
-        cursor.execute(
-            """SELECT count(DISTINCT ts.track_id) FROM track_sources ts
-               LEFT JOIN lyrics l ON l.track_id=ts.track_id
-               WHERE ts.source_type='subsonic' AND ts.external_id=ANY(%s)
-                 AND (l.track_id IS NULL OR NOT EXISTS (
-                   SELECT 1 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
-                   WHERE e.track_id=ts.track_id AND e.embedding_type='lyrics'
-                     AND e.window_index IS NULL AND ar.model_name='bge_m3'
-                 ) OR (coalesce((l.provenance->>'synced')::boolean, false) AND l.karaoke_lines IS NULL))""",
-            (external_ids,),
-        )
-        return int(cursor.fetchone()[0])
+    with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
+        lyrics = plan_lyrics(connection, external_ids).lyrics_external_ids
+        karaoke = plan_karaoke(connection, KARAOKE_PIPELINE_REVISION, external_ids).karaoke_external_ids
+    return len(set(lyrics) | set(karaoke))
 
 
 def _run_ingest(
@@ -380,20 +376,16 @@ def _run_ingest(
         combined = {**asdict(summary), **reconciliation}
         lyrics_ids = catalog_ids or request.track_ids
         if include_lyrics:
-            if _lyrics_work_count(lyrics_ids):
-                lyrics_summary = backfill_lyrics(
-                    *_credentials(request), progress=progress, external_ids=lyrics_ids, only_missing=True,
-                )
-                combined.update({f"lyrics_{key}": value for key, value in lyrics_summary.items()})
-                karaoke_summary = backfill_karaoke(
-                    *_credentials(request), progress=progress, external_ids=lyrics_ids,
-                )
-                combined.update({f"karaoke_{key}": value for key, value in karaoke_summary.items()})
-            else:
-                progress({
-                    "phase": "models", "message": "Lyrics analysis already current",
-                    "completed": 4, "total": 4, "unit": "models",
-                })
+            lyrics_summary = backfill_lyrics(
+                *_credentials(request), progress=progress, external_ids=lyrics_ids, only_missing=True,
+            )
+            combined.update({f"lyrics_{key}": value for key, value in lyrics_summary.items()})
+            # Refresh after lyrics retrieval because newly synced lines can create
+            # karaoke work. Each pipeline plans before loading its model.
+            karaoke_summary = backfill_karaoke(
+                *_credentials(request), progress=progress, external_ids=lyrics_ids,
+            )
+            combined.update({f"karaoke_{key}": value for key, value in karaoke_summary.items()})
         with _jobs_lock:
             _jobs[job_id] = {
                 "status": "complete", "phase": "complete", "message": "Audio and lyrics analysis is complete",
@@ -547,14 +539,41 @@ def settings(echora_session: str | None = Cookie(default=None)) -> dict[str, obj
         connection = session.get(NavidromeConnection, preference.navidrome_connection_id) if preference and preference.navidrome_connection_id else None
         if stored_user is None or preference is None:
             raise HTTPException(status_code=404, detail="User settings are unavailable")
+        karaoke_bounded = session.execute(text("SELECT karaoke_bound_to_synced_lines FROM analysis_settings WHERE singleton=true")).scalar_one_or_none()
         return {
             "profile": {"username": stored_user.username, "email": stored_user.email, "display_name": stored_user.display_name, "is_admin": stored_user.is_admin},
+            "models": {"karaoke_bound_to_synced_lines": True if karaoke_bounded is None else bool(karaoke_bounded)},
             "timezone": preference.timezone,
             "navidrome": None if connection is None else {
                 "id": str(connection.id), "url": connection.url, "username": connection.username,
             },
             "lastfm": {"connected": bool(preference.lastfm_username and preference.lastfm_api_key_encrypted), "username": preference.lastfm_username},
         }
+
+
+@app.put("/settings/models/karaoke")
+def update_karaoke_processing_settings(
+    request: KaraokeProcessingSettingsRequest, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    if not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Administrator access required")
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """INSERT INTO analysis_settings (singleton, karaoke_bound_to_synced_lines, updated_at)
+               VALUES (true,%s,now()) ON CONFLICT (singleton) DO UPDATE
+               SET karaoke_bound_to_synced_lines=EXCLUDED.karaoke_bound_to_synced_lines, updated_at=now()""",
+            (request.bound_to_synced_lines,),
+        )
+        cursor.execute(
+            """SELECT count(*) AS pending FROM lyrics l
+               WHERE l.text IS NOT NULL AND coalesce((l.provenance->>'synced')::boolean,false)
+                 AND NOT EXISTS (SELECT 1 FROM karaoke_lyrics_variants kv
+                                 WHERE kv.track_id=l.track_id AND kv.bounded=%s)""",
+            (request.bound_to_synced_lines,),
+        )
+        pending = int(cursor.fetchone()["pending"])
+    return {"bound_to_synced_lines": request.bound_to_synced_lines, "pending": pending}
 
 
 @app.put("/settings/profile")
@@ -974,10 +993,19 @@ def track_lyrics(track_id: uuid.UUID, echora_session: str | None = Cookie(defaul
     user = _session_user(echora_session)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
-            """SELECT l.text, l.language, l.source, l.provenance, l.karaoke_lines,
-                      l.karaoke_ass, l.karaoke_lrc, l.karaoke_model, l.karaoke_model_revision
+            """SELECT l.text, l.language, l.source, l.provenance,
+                      karaoke.lines AS karaoke_lines, karaoke.ass AS karaoke_ass,
+                      karaoke.lrc AS karaoke_lrc, karaoke.model AS karaoke_model,
+                      karaoke.model_revision AS karaoke_model_revision,
+                      karaoke.bounded AS karaoke_bounded
                FROM user_track_links link
                LEFT JOIN lyrics l ON l.track_id=link.track_id
+               LEFT JOIN LATERAL (
+                 SELECT kv.* FROM karaoke_lyrics_variants kv
+                 WHERE kv.track_id=link.track_id AND kv.bounded=coalesce(
+                   (SELECT karaoke_bound_to_synced_lines FROM analysis_settings WHERE singleton=true), true
+                 ) LIMIT 1
+               ) karaoke ON true
                WHERE link.user_id=%s AND link.track_id=%s LIMIT 1""",
             (user["id"], track_id),
         )

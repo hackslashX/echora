@@ -94,12 +94,15 @@ def process_norm2assV2(struc, pretime = 20, posttime = 20):
         elif item['type'] == 2 and 'start' not in item:
             asstxt += item.get('ruby', '')
         else:
-            if struc[i+1].get('start'):
-                item_kdur = parse_time_to_hundredths(struc[i+1]['start']) - parse_time_to_hundredths(item['start'])
-                nowtime = parse_time_to_hundredths(struc[i+1]['start'])
-            else:
-                item_kdur = parse_time_to_hundredths(item['end']) - parse_time_to_hundredths(item['start'])
-                nowtime = parse_time_to_hundredths(item['end'])
+            # Use the aligner's token end. Extending a token to the next token's
+            # start makes karaoke freeze on a word during pauses, then race
+            # through the remaining words. Untimed spaces below represent gaps.
+            item_start = parse_time_to_hundredths(item['start'])
+            item_end = parse_time_to_hundredths(item['end'])
+            if nowtime is not None and item_start > nowtime:
+                asstxt += r'{\k'+str(item_start - nowtime)+'}'
+            item_kdur = max(0, item_end - item_start)
+            nowtime = item_end
             asstxt += r'{\k'+str(item_kdur)+'}'
             if item['type'] == 2:
                 asstxt += ('#|' if item['orig']=='' else item['orig'] + '|<') + item['ruby']

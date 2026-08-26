@@ -9,6 +9,7 @@ os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 import time
 
 import torch
+import torchaudio
 from torchaudio.functional import TokenSpan, merge_tokens, resample
 from torchaudio.pipelines import MMS_FA
 from torchaudio.pipelines._wav2vec2 import aligner
@@ -130,6 +131,181 @@ def _unflatten_token_spans(
     return grouped_spans
 
 
+def _format_time(time_sec):
+    minutes, remainder = divmod(max(0.0, time_sec), 60)
+    seconds, centiseconds = divmod(remainder, 1)
+    return f"[{int(minutes):02d}:{int(seconds):02d}:{math.floor(centiseconds * 100):02d}]"
+
+
+def _block_ranges(line_count):
+    """Partition lines into contextual blocks of three to five."""
+    ranges = []
+    start = 0
+    while start < line_count:
+        remaining = line_count - start
+        if remaining <= 5:
+            size = remaining
+        else:
+            size = 4
+            if remaining - size < 3:
+                size = remaining - 3
+        ranges.append((start, start + size))
+        start += size
+    return ranges
+
+
+def _span_result(token, spans, frame_duration, offset=0.0):
+    if not spans:
+        return {'token': token, 'start': '[error]', 'end': '[error]', 'score': 0.0}
+    start = offset + spans[0].start * frame_duration
+    end = offset + spans[-1].end * frame_duration
+    score = sum(float(span.score) for span in spans) / len(spans)
+    return {
+        'token': token, 'start': _format_time(start), 'end': _format_time(end),
+        'original_start': start, 'original_end': end, 'score': score,
+    }
+
+
+def _candidate_cost(item, line_start, line_end, final_token, isolated):
+    start = float(item.get('original_start', line_start))
+    end = float(item.get('original_end', start))
+    duration = max(0.0, end - start)
+    score = max(0.001, float(item.get('score', 0.001)))
+    cost = -math.log(score) * 0.35
+    if duration < 0.04:
+        cost += 0.4
+    hold_limit = 2.5 if final_token else 1.2
+    if duration > hold_limit:
+        cost += (duration - hold_limit) * 1.5
+    if start < line_start - 0.25:
+        cost += (line_start - 0.25 - start) * 2.0
+    if end > line_end + 0.25:
+        cost += (end - line_end - 0.25) * 2.0
+    if isolated and end >= line_end - 0.08:
+        cost += 0.8
+    return cost
+
+
+def _hybrid_path(contextual, isolated, line_start, line_end):
+    """Choose contextual or isolated timing per token with a monotonic DP."""
+    if len(contextual) != len(isolated) or not contextual:
+        return contextual
+    candidates = [[contextual[index], isolated[index]] for index in range(len(contextual))]
+    costs = [[float('inf'), float('inf')] for _ in candidates]
+    previous = [[None, None] for _ in candidates]
+    for state in range(2):
+        costs[0][state] = _candidate_cost(
+            candidates[0][state], line_start, line_end, len(candidates) == 1, state == 1
+        )
+    for index in range(1, len(candidates)):
+        for state in range(2):
+            current = candidates[index][state]
+            current_start = float(current.get('original_start', 0))
+            unary = _candidate_cost(
+                current, line_start, line_end, index == len(candidates) - 1, state == 1
+            )
+            for prior_state in range(2):
+                prior = candidates[index - 1][prior_state]
+                prior_end = float(prior.get('original_end', 0))
+                if current_start < prior_end - 0.02:
+                    continue
+                gap = max(0.0, current_start - prior_end)
+                transition = max(0.0, gap - 1.0) * 0.4
+                if state != prior_state:
+                    transition += 0.12
+                total = costs[index - 1][prior_state] + unary + transition
+                if total < costs[index][state]:
+                    costs[index][state] = total
+                    previous[index][state] = prior_state
+    state = min(range(2), key=lambda value: costs[-1][value])
+    if math.isinf(costs[-1][state]):
+        return contextual
+    states = [state]
+    for index in range(len(candidates) - 1, 0, -1):
+        state = previous[index][state]
+        if state is None:
+            return contextual
+        states.append(state)
+    states.reverse()
+    return [candidates[index][state] for index, state in enumerate(states)]
+
+
+def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=None, speed=1, use_gpu=True, hf_model_id=None):
+    """Align sequential lyric blocks with non-overlapping intelligent padding."""
+    if isinstance(audio_file_path, str):
+        waveform, sample_rate = torchaudio.load(audio_file_path)
+    else:
+        waveform = torch.tensor(audio_file_path).float().unsqueeze(0)
+        sample_rate = sr
+
+    aligner_model = Wav2Vec2ForcedAligner(hf_model_id)
+    duration = waveform.shape[1] / sample_rate
+    starts = [max(0.0, float(value) / 1000.0) for value in line_starts_ms]
+    results = []
+    previous_core_end = 0.0
+    for line_start, line_end in _block_ranges(len(token_lines)):
+        # Keep the following line as disposable context so CTC can locate the
+        # real end of the block. Do not include the previous line: repeated
+        # words there can attract the next block's first tokens.
+        context_start = line_start
+        context_end = min(len(token_lines), line_end + 1)
+        context_tokens = [token for line in token_lines[context_start:context_end] for token in line if token]
+        core_token_count = sum(len(line) for line in token_lines[line_start:line_end])
+        padded_start = starts[line_start] - 0.75
+        # Reuse at most 750 ms of already-aligned audio. This keeps context for
+        # early vocals without feeding the same previous lyric into two blocks.
+        predicted_boundary = min(previous_core_end, starts[line_start] + 0.75)
+        window_start = max(0.0, padded_start, predicted_boundary)
+        if context_end < len(starts):
+            window_end = min(duration, starts[context_end] + 0.75)
+        else:
+            window_end = min(duration, starts[context_end - 1] + 8.0)
+        if not context_tokens or core_token_count == 0 or window_end <= window_start:
+            raise RuntimeError(f"Invalid anchored alignment window for lyric line {line_start}")
+
+        segment = waveform[:, int(window_start * sample_rate):int(window_end * sample_rate)]
+        encoded = aligner_model.tokenize(context_tokens)
+        _, local_spans, local_sample_rate = aligner_model.align(encoded, segment, sample_rate)
+        local_frame_duration = 320.0 / local_sample_rate * speed
+        context_results = [
+            _span_result(token, spans, local_frame_duration, window_start)
+            for token, spans in zip(context_tokens, local_spans)
+        ]
+        local_results = context_results[:core_token_count]
+        results.extend(local_results)
+        valid_ends = [float(item['original_end']) for item in local_results if 'original_end' in item]
+        if valid_ends:
+            previous_core_end = max(valid_ends)
+
+    # Produce an isolated proposal for every line, then solve a two-state path
+    # across its tokens. This can use precise isolated onsets and contextual
+    # endings without permitting reversed or overlapping timestamps.
+    line_offset = 0
+    for index, line_tokens in enumerate(token_lines):
+        count = len(line_tokens)
+        line_results = results[line_offset:line_offset + count]
+        isolated_start = starts[index]
+        isolated_end = starts[index + 1] if index + 1 < len(starts) else min(duration, isolated_start + 8.0)
+        if isolated_end > isolated_start and count:
+            segment = waveform[:, int(isolated_start * sample_rate):int(isolated_end * sample_rate)]
+            encoded = aligner_model.tokenize(line_tokens)
+            _, isolated_spans, isolated_sample_rate = aligner_model.align(encoded, segment, sample_rate)
+            isolated_frame_duration = 320.0 / isolated_sample_rate * speed
+            isolated_results = [
+                _span_result(token, spans, isolated_frame_duration, isolated_start)
+                for token, spans in zip(line_tokens, isolated_spans)
+            ]
+            if len(isolated_results) == count and all('original_end' in item for item in isolated_results):
+                results[line_offset:line_offset + count] = _hybrid_path(
+                    line_results, isolated_results, isolated_start, isolated_end
+                )
+        line_offset += count
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return results
+
+
 def align_audio_with_text(audio_file_path, text_tokens, non_silent_ranges=[], sr=None, speed=1, use_gpu=True, hf_model_id=None):
     ' Hugging Face 微调模型 '
 
@@ -189,12 +365,6 @@ def align_audio_with_text(audio_file_path, text_tokens, non_silent_ranges=[], sr
                 cumulative_duration += segment_duration
             return non_silent_ranges[-1][1]  # 超出范围返回最后时间
         
-        # 时间格式化函数
-        def format_time(time_sec):
-            minutes, remainder = divmod(time_sec, 60)
-            seconds, centiseconds = divmod(remainder, 1)
-            return f"[{int(minutes):02d}:{int(seconds):02d}:{math.floor(centiseconds * 100):02d}]"
-
         # 处理每个token的时间对齐
         for i, spans in enumerate(token_spans):
             if not spans:
@@ -215,8 +385,8 @@ def align_audio_with_text(audio_file_path, text_tokens, non_silent_ranges=[], sr
             
             results.append({
                 'token': valid_tokens[i],
-                'start': format_time(original_start),
-                'end': format_time(original_end),
+                'start': _format_time(original_start),
+                'end': _format_time(original_end),
                 'original_start': original_start,
                 'original_end': original_end
             })
