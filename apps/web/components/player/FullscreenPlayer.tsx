@@ -1,24 +1,47 @@
 "use client";
 
-import { Disc3, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX, X } from "lucide-react";
+import { Disc3, ListMusic, MicVocal, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX, X } from "lucide-react";
 import LoadingImage from "../media/LoadingImage";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { trackTemplate } from "../shell/gridGeometry";
+import { audioQualityLabel } from "./audioQuality";
 import { usePlayer } from "./PlayerProvider";
 import styles from "./FullscreenPlayer.module.css";
 
 const stamp = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
-type LyricsLine = { start_ms: number | null; text: string };
-type Lyrics = { trackId: string; available: boolean; text?: string; language?: string; provenance?: { synced?: boolean; lines?: LyricsLine[] } }; 
+type LyricsLine = { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] };
+type Lyrics = { trackId: string; available: boolean; karaoke?: boolean; lines?: LyricsLine[]; text?: string; language?: string; provenance?: { synced?: boolean; lines?: LyricsLine[] } };
+
+const lyricKey = (text: string) => text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+function clampKaraokeLeadIns(karaoke: LyricsLine[], source: LyricsLine[]): LyricsLine[] {
+  let sourceIndex = 0;
+  return karaoke.map(line => {
+    const key = lyricKey(line.text);
+    const matchIndex = source.findIndex((candidate, index) => index >= sourceIndex && lyricKey(candidate.text) === key);
+    if (matchIndex < 0 || !line.syllables?.length || !Number.isFinite(source[matchIndex].start_ms)) return line;
+    sourceIndex = matchIndex + 1;
+    const first = line.syllables[0];
+    const start_ms = Math.min(first.end_ms, Math.max(first.start_ms, Number(source[matchIndex].start_ms)));
+    if (start_ms === first.start_ms) return line;
+    return { ...line, syllables: [{ ...first, start_ms }, ...line.syllables.slice(1)] };
+  });
+}
 
 export default function FullscreenPlayer() {
   const player = usePlayer();
   const [lyrics, setLyrics] = useState<Lyrics | null>(null);
+  const [karaokeMode, setKaraokeMode] = useState(true);
+  const [playbackTime, setPlaybackTime] = useState(player.currentTime);
   const [closing, setClosing] = useState(false);
   const [viewport, setViewport] = useState({ width: 1440, height: 900 });
   const [playbackContentHeight, setPlaybackContentHeight] = useState(260);
   const detailsContent = useRef<HTMLDivElement>(null);
   useEffect(() => { document.body.classList.add("echora-fullscreen-player"); return () => { document.body.classList.remove("echora-fullscreen-player"); document.body.classList.remove("echora-fullscreen-player-closing"); }; }, []);
+  useEffect(() => {
+    const update = (event: Event) => setPlaybackTime((event as CustomEvent<number>).detail);
+    window.addEventListener("echora:playback-time", update);
+    return () => window.removeEventListener("echora:playback-time", update);
+  }, []);
   useEffect(() => {
     const update = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
     const frame = requestAnimationFrame(update);
@@ -40,8 +63,10 @@ export default function FullscreenPlayer() {
     return () => controller.abort();
   }, [player.track]);
   const currentLyrics = lyrics?.trackId === player.track?.id ? lyrics : null;
-  const timedLines = currentLyrics?.provenance?.synced ? (currentLyrics.provenance.lines || []).filter(line => Number.isFinite(line.start_ms)) : [];
-  const activeLine = timedLines.reduce((active, line, index) => Number(line.start_ms) <= player.currentTime * 1000 ? index : active, -1);
+  const karaokeAvailable = Boolean(currentLyrics?.karaoke && currentLyrics.lines?.length);
+  const karaokeLines = useMemo(() => clampKaraokeLeadIns(currentLyrics?.lines || [], currentLyrics?.provenance?.lines || []), [currentLyrics]);
+  const timedLines = ((karaokeMode && karaokeAvailable ? karaokeLines : currentLyrics?.provenance?.lines) || []).filter(line => Number.isFinite(line.start_ms));
+  const activeLine = timedLines.reduce((active, line, index) => Number(line.start_ms) <= playbackTime * 1000 ? index : active, -1);
   if (!player.track) return null;
   const progress = player.duration ? Math.min(100, player.currentTime / player.duration * 100) : 0;
   const fullCover = player.track.coverUrl ? `${player.track.coverUrl}${player.track.coverUrl.includes("?") ? "&" : "?"}size=1200` : "";
@@ -53,20 +78,31 @@ export default function FullscreenPlayer() {
   const artworkWeight = playbackHeight / innerWidth;
   const spacerWeight = Math.min(.08, Math.max(.045, 72 / innerWidth), (1 - artworkWeight) * .2);
   const columns = [artworkWeight, spacerWeight, 1 - artworkWeight - spacerWeight];
+  function karaokeLine(line: LyricsLine, active: boolean) {
+    if (!active || !karaokeMode || !currentLyrics?.karaoke || !line.syllables?.length) return line.text || "...";
+    const now = playbackTime * 1000;
+    return <span className={styles.syllables}>{line.syllables.map((syllable, index) => {
+      const state = now >= syllable.end_ms ? styles.syllablePast : now >= syllable.start_ms ? styles.syllableActive : styles.syllableNext;
+      return <span key={`${syllable.start_ms}-${index}`} className={state}>{syllable.text}</span>;
+    })}</span>;
+  }
   function close() { if (closing) return; document.body.classList.add("echora-fullscreen-player-closing"); setClosing(true); window.setTimeout(() => player.setExpanded(false), 520); }
   return <main className={`${styles.player} ${closing ? styles.closing : ""}`}  role="dialog" aria-modal="true" aria-label="Now playing">
     <div className={styles.vignette} />
     <section className={styles.unsupported}><strong>THIS VIEW NEEDS MORE ROOM</strong><p>Resize the window to at least 900 pixels wide or open Echora on a larger screen.</p></section>
     <button className={styles.close} onClick={close} aria-label="Close full screen player"><X /></button>
+    {karaokeAvailable && <div className={styles.modeToggle} role="group" aria-label="Lyrics timing mode"><button className={karaokeMode ? styles.selectedMode : ""} onClick={() => setKaraokeMode(true)} aria-pressed={karaokeMode}><MicVocal />KARAOKE</button><button className={!karaokeMode ? styles.selectedMode : ""} onClick={() => setKaraokeMode(false)} aria-pressed={!karaokeMode}><ListMusic />SYNCED</button></div>}
     <section className={styles.grid} style={{ gridTemplateColumns: trackTemplate(columns, 180), gridTemplateRows: trackTemplate(rows, 152) }}> 
       <section className={styles.playbackPanel}>
         <div className={styles.art}>{fullCover ? <LoadingImage sizes="520px" src={fullCover} alt="" priority /> : <Disc3 />}</div>
-        <div className={styles.details}><div className={styles.detailsContent} ref={detailsContent}><span>NOW PLAYING</span><h1>{player.track.title}</h1><strong>{player.track.artist || "Unknown artist"}</strong><p>{player.track.album}</p>
+        <div className={styles.details}><div className={styles.detailsContent} ref={detailsContent}><span>NOW PLAYING</span><h1>{player.track.title}</h1><strong>{player.track.artist || "Unknown artist"}</strong><p className={styles.metadata}>{player.track.album || "Unknown album"}<span>{audioQualityLabel(player.audioQuality)}</span></p>
           <div className={styles.timeline}><input aria-label="Seek" type="range" min="0" max={player.duration || 0} step="0.1" value={Math.min(player.currentTime, player.duration || 0)} onChange={event => player.seek(Number(event.target.value))} style={{ "--progress": `${progress}%` } as React.CSSProperties} /><div><time>{stamp(player.currentTime)}</time><time>{stamp(player.duration)}</time></div></div>
           <div className={styles.controls}><button onClick={player.previous}><SkipBack /></button><button className={styles.play} onClick={player.toggle}>{player.playing ? <Pause /> : <Play />}</button><button onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1}><SkipForward /></button><button onClick={player.toggleMute}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div>
         </div></div>
       </section>
-      {timedLines.length > 0 && <aside className={styles.lyrics} key={activeLine}>{[-1, 0, 1].map(offset => { const index = activeLine + offset, line = timedLines[index]; return line ? <button className={offset === 0 ? styles.activeLine : offset < 0 ? styles.pastLine : styles.nextLine} key={`${line.start_ms}-${index}`} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{line.text || "..."}</button> : null; })}</aside>}
+      {timedLines.length > 0 && <aside className={styles.lyrics} key={`${activeLine}-${karaokeMode}`}>
+        {[-1, 0, 1].map(offset => { const index = activeLine + offset, line = timedLines[index]; return line ? <button className={offset === 0 ? styles.activeLine : offset < 0 ? styles.pastLine : styles.nextLine} key={`${line.start_ms}-${index}`} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, offset === 0)}</button> : null; })}
+      </aside>}
     </section>
   </main>;
 }

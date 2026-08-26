@@ -39,6 +39,7 @@ from .db_models import Curation, NavidromeConnection, OidcAllowedEmail, OidcSett
 from .ingest import ingest_navidrome
 from .journeys import normalize_rows as normalize_journey_rows, select_journey, spherical_targets
 from .listening_history import recent_listens, track_listen_counts
+from .karaoke_pipeline import backfill_karaoke
 from .lyrics_analysis import shared_lyrics_model
 from .lyrics_pipeline import backfill_lyrics
 from .navidrome import NavidromeClient
@@ -273,12 +274,32 @@ def _run_lyrics_backfill(
         summary = backfill_lyrics(
             *credentials, progress=progress, external_ids=external_ids, only_missing=only_missing,
         )
-        combined = {**(base_summary or {}), **{f"lyrics_{key}": value for key, value in summary.items()}}
+        karaoke_summary = backfill_karaoke(*credentials, progress=progress, external_ids=external_ids)
+        combined = {**(base_summary or {}),
+                    **{f"lyrics_{key}": value for key, value in summary.items()},
+                    **{f"karaoke_{key}": value for key, value in karaoke_summary.items()}}
         with _jobs_lock:
             _jobs[job_id] = {"status": "complete", "phase": "complete", "message": "Audio and lyrics analysis is complete",
                              "completed": summary["total"], "total": summary["total"], "unit": "tracks", "summary": combined}
     except Exception as error:
         logger.exception("Lyrics backfill failed")
+        with _jobs_lock:
+            _jobs[job_id] = {"status": "failed", "phase": "failed", "error": str(error)}
+
+
+def _run_karaoke_backfill(job_id: str, credentials: tuple[str, str, str]) -> None:
+    def progress(update: dict[str, object]) -> None:
+        with _jobs_lock:
+            _jobs[job_id] = {**_jobs[job_id], **update, "status": "running"}
+    try:
+        summary = backfill_karaoke(*credentials, progress=progress)
+        with _jobs_lock:
+            _jobs[job_id] = {"status": "complete", "phase": "complete",
+                             "message": "Karaoke lyric alignment is complete",
+                             "completed": summary["total"], "total": summary["total"],
+                             "unit": "tracks", "summary": summary}
+    except Exception as error:
+        logger.exception("FA-Kara backfill failed")
         with _jobs_lock:
             _jobs[job_id] = {"status": "failed", "phase": "failed", "error": str(error)}
 
@@ -331,7 +352,7 @@ def _lyrics_work_count(external_ids: list[str]) -> int:
                    SELECT 1 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                    WHERE e.track_id=ts.track_id AND e.embedding_type='lyrics'
                      AND e.window_index IS NULL AND ar.model_name='bge_m3'
-                 ))""",
+                 ) OR (coalesce((l.provenance->>'synced')::boolean, false) AND l.karaoke_lines IS NULL))""",
             (external_ids,),
         )
         return int(cursor.fetchone()[0])
@@ -350,7 +371,7 @@ def _run_ingest(
         _jobs[job_id] = {"status": "running", "phase": "starting", "completed": 0, "total": len(request.track_ids)}
     try:
         summary = ingest_navidrome(
-            *_credentials(request), request.track_ids, progress, model_total=3 if include_lyrics else 2,
+            *_credentials(request), request.track_ids, progress, model_total=4 if include_lyrics else 2,
         )
         reconciliation = {"linked": 0, "unlinked": 0}
         if user_id is not None:
@@ -364,10 +385,14 @@ def _run_ingest(
                     *_credentials(request), progress=progress, external_ids=lyrics_ids, only_missing=True,
                 )
                 combined.update({f"lyrics_{key}": value for key, value in lyrics_summary.items()})
+                karaoke_summary = backfill_karaoke(
+                    *_credentials(request), progress=progress, external_ids=lyrics_ids,
+                )
+                combined.update({f"karaoke_{key}": value for key, value in karaoke_summary.items()})
             else:
                 progress({
                     "phase": "models", "message": "Lyrics analysis already current",
-                    "completed": 3, "total": 3, "unit": "models",
+                    "completed": 4, "total": 4, "unit": "models",
                 })
         with _jobs_lock:
             _jobs[job_id] = {
@@ -874,6 +899,18 @@ def start_lyrics_backfill(connection_id: str) -> dict[str, object]:
     return {"job_id": job_id, "status": "queued"}
 
 
+@app.post("/navidrome/connections/{connection_id}/lyrics/karaoke/backfill", status_code=202)
+def start_karaoke_backfill(connection_id: str) -> dict[str, object]:
+    credentials = _load_connection(connection_id)
+    if credentials is None:
+        raise HTTPException(status_code=404, detail="Connection expired")
+    job_id = str(uuid.uuid4())
+    with _jobs_lock:
+        _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": 0}
+    _executor.submit(_run_karaoke_backfill, job_id, credentials)
+    return {"job_id": job_id, "status": "queued"}
+
+
 @app.get("/library/tracks/{track_id}/recording-group")
 def track_recording_group(track_id: uuid.UUID) -> dict[str, object]:
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
@@ -907,12 +944,38 @@ def track_recording_group(track_id: uuid.UUID) -> dict[str, object]:
     return {"group": {**group, "members": members, "evidence": evidence}, "fingerprinted": True}
 
 
+@app.get("/library/tracks/{track_id}/audio-quality")
+def track_audio_quality(track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT ts.source_data->>'suffix' AS codec,
+                      ts.source_data->>'contentType' AS content_type,
+                      (ts.source_data->>'bitRate')::integer AS bit_rate_kbps,
+                      (ts.source_data->>'bitDepth')::integer AS bit_depth,
+                      (ts.source_data->>'samplingRate')::integer AS sample_rate_hz,
+                      (ts.source_data->>'channelCount')::integer AS channels
+               FROM user_track_links link
+               JOIN track_sources ts ON ts.track_id=link.track_id AND ts.library_id=link.library_id
+                                    AND ts.external_id=link.external_id
+               WHERE link.user_id=%s AND link.track_id=%s
+               ORDER BY ts.id LIMIT 1""",
+            (user["id"], track_id),
+        )
+        row = cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Track is not in your library")
+    codec = str(row.get("codec") or "").lower()
+    return {**row, "lossless": codec in {"flac", "alac", "wav", "aiff", "ape", "wv"}}
+
+
 @app.get("/library/tracks/{track_id}/lyrics")
 def track_lyrics(track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
-            """SELECT l.text, l.language, l.source, l.provenance
+            """SELECT l.text, l.language, l.source, l.provenance, l.karaoke_lines,
+                      l.karaoke_ass, l.karaoke_lrc, l.karaoke_model, l.karaoke_model_revision
                FROM user_track_links link
                LEFT JOIN lyrics l ON l.track_id=link.track_id
                WHERE link.user_id=%s AND link.track_id=%s LIMIT 1""",
@@ -921,7 +984,11 @@ def track_lyrics(track_id: uuid.UUID, echora_session: str | None = Cookie(defaul
         row = cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Track is not in your library")
-    return {"available": bool(row.get("text")), **row}
+    provenance = row.get("provenance") or {}
+    source_lines = provenance.get("lines") or []
+    karaoke_lines = row.get("karaoke_lines") or []
+    return {"available": bool(row.get("text")), **row,
+            "lines": karaoke_lines or source_lines, "karaoke": bool(karaoke_lines)}
 
 
 @app.get("/navidrome/connections/{connection_id}/stream/{song_id}")

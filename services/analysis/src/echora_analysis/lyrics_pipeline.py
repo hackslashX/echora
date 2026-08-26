@@ -85,7 +85,7 @@ def backfill_lyrics(
 ) -> dict[str, int]:
     report = progress or (lambda _: None)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    report({"phase": "models", "message": "Loading lyrics model", "completed": 2, "total": 3, "unit": "models"})
+    report({"phase": "models", "message": "Loading BGE-M3 lyrics model", "completed": 3, "total": 4, "unit": "models"})
     model = LyricsEmbeddingModel(
         os.environ.get("LYRICS_MODEL_ID", "BAAI/bge-m3"),
         os.environ.get("LYRICS_REVISION", "5617a9f61b028005a4858fdac845db406aefb181"), device,

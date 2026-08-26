@@ -8,6 +8,7 @@ MODELS = (
     ("xlm-roberta-base", "e73636d4f797dec63c3081bb6ed5c7b0bb3f2089", True),
     ("m-a-p/MERT-v1-95M", "12af15fef9d0ac838c3f475bfbbf26d2060dd4f5", False),
     ("BAAI/bge-m3", "5617a9f61b028005a4858fdac845db406aefb181", False),
+    ("NextFire/mms-300m-ForcedAligner-karaoke-ja-Latn", "2ab2b5f46539ee284703c281f286b01d2410ee12", False),
 )
 
 
