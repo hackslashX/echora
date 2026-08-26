@@ -5,8 +5,9 @@ import FullscreenPlayer from "./FullscreenPlayer";
 import { readPlaybackPreferences, streamUrlForQuality } from "./playbackPreferences";
 
 export type PlayerTrack = { id: string; title: string; artist?: string; album?: string; durationSeconds?: number; streamUrl: string; coverUrl?: string };
+export type AudioQuality = { codec?: string; content_type?: string; bit_rate_kbps?: number; bit_depth?: number; sample_rate_hz?: number; channels?: number; lossless?: boolean; streamQuality: "original" | "320" | "120" };
 type PlayerState = {
-  track: PlayerTrack | null; playing: boolean; buffering: boolean; currentTime: number; duration: number; buffered: number; muted: boolean; expanded: boolean;
+  track: PlayerTrack | null; audioQuality: AudioQuality | null; playing: boolean; buffering: boolean; currentTime: number; duration: number; buffered: number; muted: boolean; expanded: boolean;
   queue: PlayerTrack[]; queueIndex: number;
   play: (track: PlayerTrack) => void; playQueue: (tracks: PlayerTrack[], startIndex?: number) => void;
   next: () => void; previous: () => void; clearQueue: () => void;
@@ -72,6 +73,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const queueIndexRef = useRef(-1);
   const activateQueueIndexRef = useRef<(index: number) => void>(() => {});
   const [track, setTrack] = useState<PlayerTrack | null>(null);
+  const [audioQuality, setAudioQuality] = useState<AudioQuality | null>(null);
   const [playing, setPlaying] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -128,6 +130,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const mid = average(Math.floor(180 / binHz), Math.ceil(2200 / binHz));
       const treble = average(Math.floor(2200 / binHz), Math.ceil(10000 / binHz));
       window.dispatchEvent(new CustomEvent("echora:audio-reactivity", { detail: { bass, mid, treble, level: bass * .45 + mid * .4 + treble * .15 } }));
+      window.dispatchEvent(new CustomEvent("echora:playback-time", { detail: player.currentTime || 0 }));
       analysisFrame.current = requestAnimationFrame(analyze);
     };
     context.resume(); analyze();
@@ -141,7 +144,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       paletteRef.current = palette;
       if (!audio.current?.paused) publishPalette(palette);
     }).catch(() => {});
-    startAnalysis(); player.src = streamUrlForQuality(next.streamUrl, readPlaybackPreferences().quality); setTrack(next); setCurrentTime(0); setDuration(next.durationSeconds || 0);
+    const streamQuality = readPlaybackPreferences().quality;
+    setAudioQuality(null);
+    fetch(`/analysis/library/tracks/${next.id}/audio-quality`).then(response => response.ok ? response.json() : null).then(value => {
+      if (value && trackRef.current?.id === next.id) setAudioQuality({ ...value, streamQuality });
+    }).catch(() => {});
+    startAnalysis(); player.src = streamUrlForQuality(next.streamUrl, streamQuality); setTrack(next); setCurrentTime(0); setDuration(next.durationSeconds || 0);
     player.play().catch(() => setPlaying(false));
   }
   function activateQueueIndex(index: number) {
@@ -170,7 +178,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   function seek(seconds: number) { const player = audio.current; if (!player || !Number.isFinite(seconds)) return; player.currentTime = seconds; setCurrentTime(seconds); }
   function toggleMute() { const player = audio.current; if (!player) return; player.muted = !player.muted; setMuted(player.muted); }
 
-  return <PlayerContext.Provider value={{ track, playing, buffering, currentTime, duration, buffered, muted, expanded, queue, queueIndex, play, playQueue, next, previous, clearQueue, toggle, seek, toggleMute, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
+  return <PlayerContext.Provider value={{ track, audioQuality, playing, buffering, currentTime, duration, buffered, muted, expanded, queue, queueIndex, play, playQueue, next, previous, clearQueue, toggle, seek, toggleMute, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
 }
 
 export function usePlayer() {

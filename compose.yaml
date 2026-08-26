@@ -43,6 +43,8 @@ services:
       MERT_REVISION: ${MERT_REVISION:-12af15fef9d0ac838c3f475bfbbf26d2060dd4f5}
       LYRICS_MODEL_ID: ${LYRICS_MODEL_ID:-BAAI/bge-m3}
       LYRICS_REVISION: ${LYRICS_REVISION:-5617a9f61b028005a4858fdac845db406aefb181}
+      FA_KARA_MODEL_ID: ${FA_KARA_MODEL_ID:-NextFire/mms-300m-ForcedAligner-karaoke-ja-Latn}
+      FA_KARA_REVISION: ${FA_KARA_REVISION:-2ab2b5f46539ee284703c281f286b01d2410ee12}
       HF_HOME: /models/huggingface
       HF_HUB_OFFLINE: "1"
     volumes: &analysis-volumes
