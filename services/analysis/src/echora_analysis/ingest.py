@@ -17,6 +17,7 @@ import torch
 from .audio import decode_audio, deterministic_windows
 from .models import AudioEmbeddingModel, MertModel, MuQMuLanModel
 from .navidrome import NavidromeClient, NavidromeTrack
+from .processing_plan import plan_audio
 from .recordings import store_and_match_fingerprint
 
 CONTENT_NAMESPACE = uuid.UUID("0c300f5d-99d1-48b8-b12a-a52b9556be86")
@@ -174,21 +175,40 @@ def ingest_navidrome(
     model_total: int = 2,
 ) -> IngestSummary:
     report = progress or (lambda _: None)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    report({"phase": "models", "message": "Loading semantic model", "completed": 0, "total": model_total, "unit": "models"})
-    muq = MuQMuLanModel(os.getenv("MUQ_MODEL_ID", "OpenMuQ/MuQ-MuLan-large"), os.getenv("MUQ_REVISION", "main"), device)
-    report({"phase": "models", "message": "Loading acoustic model", "completed": 1, "total": model_total, "unit": "models"})
-    mert = MertModel(os.getenv("MERT_MODEL_ID", "m-a-p/MERT-v1-95M"), os.getenv("MERT_REVISION", "main"), device)
     summary = IngestSummary(requested=len(song_ids))
 
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection, NavidromeClient(
         url, username, password
     ) as navidrome:
         library_id = _library(connection, url)
-        muq_run, mert_run = _create_run(connection, muq), _create_run(connection, mert)
         songs = navidrome.tracks(song_ids)
         summary.discovered = len(songs)
-        report({"phase": "processing", "message": "Models ready", "completed": 0, "total": len(songs), "unit": "tracks"})
+        plan = plan_audio(connection, library_id, [song.id for song in songs])
+        required_models = int(plan.needs_muq) + int(plan.needs_mert)
+        report({"phase": "planning", "message": "Processing plan ready", "completed": 0,
+                "total": len(plan.download_external_ids), "unit": "tracks",
+                "plan": {"muq": len(plan.muq_external_ids), "mert": len(plan.mert_external_ids),
+                         "fingerprint": len(plan.fingerprint_external_ids)}})
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        muq = mert = None
+        muq_run = mert_run = None
+        loaded = 0
+        if plan.needs_muq:
+            report({"phase": "models", "message": "Loading semantic model", "completed": loaded,
+                    "total": required_models, "unit": "models"})
+            muq = MuQMuLanModel(os.getenv("MUQ_MODEL_ID", "OpenMuQ/MuQ-MuLan-large"),
+                                os.getenv("MUQ_REVISION", "main"), device)
+            muq_run = _create_run(connection, muq)
+            loaded += 1
+        if plan.needs_mert:
+            report({"phase": "models", "message": "Loading acoustic model", "completed": loaded,
+                    "total": required_models, "unit": "models"})
+            mert = MertModel(os.getenv("MERT_MODEL_ID", "m-a-p/MERT-v1-95M"),
+                             os.getenv("MERT_REVISION", "main"), device)
+            mert_run = _create_run(connection, mert)
+        report({"phase": "processing", "message": "Required models ready", "completed": 0,
+                "total": len(songs), "unit": "tracks"})
         connection.commit()
 
         for index, song in enumerate(songs):
@@ -199,7 +219,7 @@ def ingest_navidrome(
             })
             try:
                 known_id = _source_track_id(connection, library_id, song.id)
-                if known_id and _has_fingerprint(connection, known_id) and _model_has_embedding(connection, known_id, muq_run) and _model_has_embedding(connection, known_id, mert_run):
+                if song.id not in plan.download_external_ids:
                     summary.already_linked += 1
                     continue
                 audio = navidrome.audio_bytes(song.id)
@@ -207,19 +227,16 @@ def ingest_navidrome(
                 audio_hash = hashlib.sha256(audio).hexdigest()
                 track_id, inserted = _upsert_track(connection, library_id, song, audio_hash)
                 summary.inserted += int(inserted)
-                waveform = decode_audio(audio)
-                windows = deterministic_windows(waveform)
-                del waveform
-                if not _model_has_embedding(connection, track_id, muq_run):
-                    _store_embedding(connection, track_id, muq_run, muq, windows)
-                    summary.embedded_muq += 1
-                else:
-                    summary.reused_embeddings += 1
-                if not _model_has_embedding(connection, track_id, mert_run):
-                    _store_embedding(connection, track_id, mert_run, mert, windows)
-                    summary.embedded_mert += 1
-                else:
-                    summary.reused_embeddings += 1
+                if song.id in plan.muq_external_ids or song.id in plan.mert_external_ids:
+                    waveform = decode_audio(audio)
+                    windows = deterministic_windows(waveform)
+                    del waveform
+                    if song.id in plan.muq_external_ids and muq is not None and muq_run is not None:
+                        _store_embedding(connection, track_id, muq_run, muq, windows)
+                        summary.embedded_muq += 1
+                    if song.id in plan.mert_external_ids and mert is not None and mert_run is not None:
+                        _store_embedding(connection, track_id, mert_run, mert, windows)
+                        summary.embedded_mert += 1
                 if not _has_fingerprint(connection, track_id):
                     try:
                         with connection.transaction():
@@ -239,8 +256,11 @@ def ingest_navidrome(
                 "completed": index + 1, "total": len(songs), "unit": "tracks", "summary": summary.__dict__,
             })
 
-        report({"phase": "finalizing", "message": "Finalizing analysis runs", "completed": len(songs), "total": len(songs), "unit": "tracks"})
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id = ANY(%s)", ([muq_run, mert_run],))
+        report({"phase": "finalizing", "message": "Finalizing analysis runs",
+                "completed": len(songs), "total": len(songs), "unit": "tracks"})
+        run_ids = [run_id for run_id in (muq_run, mert_run) if run_id is not None]
+        if run_ids:
+            with connection.cursor() as cursor:
+                cursor.execute("UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id = ANY(%s)", (run_ids,))
         connection.commit()
     return summary
