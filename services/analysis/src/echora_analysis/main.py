@@ -117,7 +117,7 @@ class LastFmSettingsRequest(BaseModel):
 
 
 class KaraokeProcessingSettingsRequest(BaseModel):
-    bound_to_synced_lines: bool
+    enabled: bool
 
 
 class OnboardingPreference(BaseModel):
@@ -539,10 +539,10 @@ def settings(echora_session: str | None = Cookie(default=None)) -> dict[str, obj
         connection = session.get(NavidromeConnection, preference.navidrome_connection_id) if preference and preference.navidrome_connection_id else None
         if stored_user is None or preference is None:
             raise HTTPException(status_code=404, detail="User settings are unavailable")
-        karaoke_bounded = session.execute(text("SELECT karaoke_bound_to_synced_lines FROM analysis_settings WHERE singleton=true")).scalar_one_or_none()
+        karaoke_enabled = session.execute(text("SELECT karaoke_processing_enabled FROM analysis_settings WHERE singleton=true")).scalar_one_or_none()
         return {
             "profile": {"username": stored_user.username, "email": stored_user.email, "display_name": stored_user.display_name, "is_admin": stored_user.is_admin},
-            "models": {"karaoke_bound_to_synced_lines": True if karaoke_bounded is None else bool(karaoke_bounded)},
+            "models": {"karaoke_processing_enabled": True if karaoke_enabled is None else bool(karaoke_enabled)},
             "timezone": preference.timezone,
             "navidrome": None if connection is None else {
                 "id": str(connection.id), "url": connection.url, "username": connection.username,
@@ -560,20 +560,25 @@ def update_karaoke_processing_settings(
         raise HTTPException(status_code=403, detail="Administrator access required")
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
-            """INSERT INTO analysis_settings (singleton, karaoke_bound_to_synced_lines, updated_at)
-               VALUES (true,%s,now()) ON CONFLICT (singleton) DO UPDATE
-               SET karaoke_bound_to_synced_lines=EXCLUDED.karaoke_bound_to_synced_lines, updated_at=now()""",
-            (request.bound_to_synced_lines,),
+            """INSERT INTO analysis_settings
+                 (singleton, karaoke_processing_enabled, karaoke_bound_to_synced_lines, updated_at)
+               VALUES (true,%s,false,now()) ON CONFLICT (singleton) DO UPDATE
+               SET karaoke_processing_enabled=EXCLUDED.karaoke_processing_enabled,
+                   karaoke_bound_to_synced_lines=false, updated_at=now()""",
+            (request.enabled,),
         )
-        cursor.execute(
-            """SELECT count(*) AS pending FROM lyrics l
-               WHERE l.text IS NOT NULL AND coalesce((l.provenance->>'synced')::boolean,false)
-                 AND NOT EXISTS (SELECT 1 FROM karaoke_lyrics_variants kv
-                                 WHERE kv.track_id=l.track_id AND kv.bounded=%s)""",
-            (request.bound_to_synced_lines,),
-        )
-        pending = int(cursor.fetchone()["pending"])
-    return {"bound_to_synced_lines": request.bound_to_synced_lines, "pending": pending}
+        pending = 0
+        if request.enabled:
+            cursor.execute(
+                """SELECT count(*) AS pending FROM lyrics l
+                   WHERE l.text IS NOT NULL AND coalesce((l.provenance->>'synced')::boolean,false)
+                     AND NOT EXISTS (SELECT 1 FROM karaoke_lyrics_variants kv
+                                     WHERE kv.track_id=l.track_id AND kv.bounded=false
+                                       AND kv.provenance->>'pipeline_revision'=%s)""",
+                (KARAOKE_PIPELINE_REVISION,),
+            )
+            pending = int(cursor.fetchone()["pending"])
+    return {"enabled": request.enabled, "pending": pending}
 
 
 @app.put("/settings/profile")
@@ -1002,9 +1007,7 @@ def track_lyrics(track_id: uuid.UUID, echora_session: str | None = Cookie(defaul
                LEFT JOIN lyrics l ON l.track_id=link.track_id
                LEFT JOIN LATERAL (
                  SELECT kv.* FROM karaoke_lyrics_variants kv
-                 WHERE kv.track_id=link.track_id AND kv.bounded=coalesce(
-                   (SELECT karaoke_bound_to_synced_lines FROM analysis_settings WHERE singleton=true), true
-                 ) LIMIT 1
+                 WHERE kv.track_id=link.track_id AND kv.bounded=false LIMIT 1
                ) karaoke ON true
                WHERE link.user_id=%s AND link.track_id=%s LIMIT 1""",
             (user["id"], track_id),

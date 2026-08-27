@@ -5,7 +5,9 @@ import pykakasi
 import pyphen
 import pypinyin
 from pypinyin import pinyin, Style
+from uroman import Uroman
 import re
+import unicodedata
 # import string
 
 kks = pykakasi.kakasi()
@@ -49,6 +51,7 @@ except LookupError:
     nltk.download('cmudict')
     cmu_dict = cmudict.dict()
 eng_dic = pyphen.Pyphen(lang='en_US')
+uroman = Uroman()
 
 newnums = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩',
            '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳',
@@ -458,6 +461,23 @@ def hanzi_to_phonetic(text, heteronym=False):
         result.append(unique_prons[0])
     return result
 
+def is_hangul(char):
+    return '\uac00' <= char <= '\ud7a3' or '\u1100' <= char <= '\u11ff'
+
+
+def is_arabic_script(char):
+    return ('\u0600' <= char <= '\u06ff' or '\u0750' <= char <= '\u077f'
+            or '\u08a0' <= char <= '\u08ff')
+
+
+def is_devanagari(char):
+    return '\u0900' <= char <= '\u097f' or '\ua8e0' <= char <= '\ua8ff'
+
+
+def is_gurmukhi(char):
+    return '\u0a00' <= char <= '\u0a7f'
+
+
 def process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_split=True):
 
     def haruhi_eng_pron_func(result_list):
@@ -475,10 +495,14 @@ def process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_split=Tru
         return new_list
 
     if lang == 'auto': # 后续考虑langdetect
-        for char in line:
-            if is_hiragana(char) or is_katakana(char):
-                lang = 'jaen'
-                break
+        if any(is_hangul(char) for char in line):
+            lang = 'ko'
+        elif any(is_arabic_script(char) for char in line):
+            lang = 'ur'
+        elif any(is_devanagari(char) or is_gurmukhi(char) for char in line):
+            lang = 'indic'
+        elif any(is_hiragana(char) or is_katakana(char) for char in line):
+            lang = 'jaen'
         else:
             lang = 'zhen'
 
@@ -587,6 +611,61 @@ def process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_split=Tru
                         result[i]['pron'] = 'e'
                 except:
                     print('Ignored errors when trying to correct ha and he...')
+    elif lang == 'ko':
+        for char in line:
+            if is_hangul(char):
+                pronunciation = uroman.romanize_string(char).replace('-', '').replace(' ', '')
+                result.append({'orig': char, 'type': 5, 'pron': pronunciation})
+            elif is_english(char) or is_english_punctuation(char):
+                if result and result[-1].get('type') == 1:
+                    result[-1]['orig'] += char
+                elif is_english(char):
+                    result.append({'orig': char, 'type': 1})
+                else:
+                    result.append({'orig': char, 'type': 0})
+            elif is_number(char):
+                if result and result[-1].get('type') == 4:
+                    result[-1]['orig'] += char
+                else:
+                    result.append({'orig': char, 'type': 4})
+            else:
+                result.append({'orig': char, 'type': 0})
+        result = haruhi_eng_pron_func(result)
+
+    elif lang in ('ur', 'hi', 'pa', 'indic'):
+        if lang == 'ur':
+            script_test = is_arabic_script
+        elif lang == 'hi':
+            script_test = is_devanagari
+        elif lang == 'pa':
+            script_test = is_gurmukhi
+        else:
+            script_test = lambda char: is_devanagari(char) or is_gurmukhi(char)
+        for char in line:
+            if script_test(char) and unicodedata.category(char)[0] in {'L', 'M'}:
+                if result and result[-1].get('type') == 6:
+                    result[-1]['orig'] += char
+                else:
+                    result.append({'orig': char, 'type': 6})
+            elif is_english(char) or is_english_punctuation(char):
+                if result and result[-1].get('type') == 1:
+                    result[-1]['orig'] += char
+                elif is_english(char):
+                    result.append({'orig': char, 'type': 1})
+                else:
+                    result.append({'orig': char, 'type': 0})
+            elif is_number(char):
+                if result and result[-1].get('type') == 4:
+                    result[-1]['orig'] += char
+                else:
+                    result.append({'orig': char, 'type': 4})
+            else:
+                result.append({'orig': char, 'type': 0})
+        for item in result:
+            if item.get('type') == 6:
+                item['pron'] = uroman.romanize_string(item['orig']).replace('-', '').replace(' ', '')
+        result = haruhi_eng_pron_func(result)
+
     elif lang == 'zhen':
         tokens = re.split(r'(\[.*?\])', line)
         
