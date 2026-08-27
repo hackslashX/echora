@@ -10,7 +10,9 @@ from ctc_segmentation import SourcePrior, align_with_source_priors  # noqa: E402
 from align_yohane import (  # noqa: E402
     _calibrate_source_priors,
     _collapsed_token_count,
+    _front_loaded_ratio,
     _is_collapsed_line,
+    _maximum_internal_gap,
 )
 
 
@@ -93,6 +95,40 @@ def test_collapsed_line_rejects_well_occupied_source_interval():
 
     assert _collapsed_token_count(groups, 0.02) == 2
     assert not _is_collapsed_line(groups, 0.02, 0.0, 1.0)
+
+
+def test_internal_gap_marks_line_for_focused_retry():
+    from torchaudio.functional import TokenSpan
+
+    groups = [
+        [TokenSpan(1, 0, 20, 0.8)],
+        [TokenSpan(2, 240, 260, 0.8)],
+    ]
+
+    assert _maximum_internal_gap(groups, 0.02) == 4.4
+    assert _is_collapsed_line(groups, 0.02, 0.0, 6.0)
+
+
+def test_front_loaded_line_marks_dense_early_highlighting_for_retry():
+    from torchaudio.functional import TokenSpan
+
+    groups = [
+        [TokenSpan(token, token * 2, token * 2 + 2, 0.8)]
+        for token in range(8)
+    ]
+
+    assert _front_loaded_ratio(groups, 0.02, 0.0, 4.0) == 1.0
+    assert _is_collapsed_line(groups, 0.02, 0.0, 4.0)
+
+
+def test_front_load_ignores_short_lines_and_even_pacing():
+    from torchaudio.functional import TokenSpan
+
+    short = [[TokenSpan(token, token, token + 1, 0.8)] for token in range(4)]
+    even = [[TokenSpan(token, token * 25, token * 25 + 10, 0.8)] for token in range(8)]
+
+    assert _front_loaded_ratio(short, 0.02, 0.0, 4.0) == 0.0
+    assert _front_loaded_ratio(even, 0.02, 0.0, 4.0) < 0.45
 
 
 def test_impossible_alignment_fails_instead_of_returning_partial_output():
