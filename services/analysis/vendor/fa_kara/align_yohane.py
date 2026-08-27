@@ -278,10 +278,38 @@ def _collapsed_token_count(groups: list[list[TokenSpan]], frame_shift: float,
     )
 
 
+def _maximum_internal_gap(groups: list[list[TokenSpan]], frame_shift: float) -> float:
+    populated = [group for group in groups if group]
+    return max(
+        ((right[0].start - left[-1].end) * frame_shift
+         for left, right in zip(populated, populated[1:])),
+        default=0.0,
+    )
+
+
+def _front_loaded_ratio(groups: list[list[TokenSpan]], frame_shift: float,
+                        interval_start: float, interval_end: float,
+                        early_fraction: float = 0.2) -> float:
+    """Measure how much text finishes in the opening fraction of its source interval."""
+    populated = [group for group in groups if group]
+    interval_duration = interval_end - interval_start
+    if len(populated) < 6 or interval_duration < 2.0:
+        return 0.0
+    cutoff = interval_start + interval_duration * early_fraction
+    completed = sum(1 for group in populated if group[-1].end * frame_shift <= cutoff)
+    return completed / len(populated)
+
+
 def _is_collapsed_line(groups: list[list[TokenSpan]], frame_shift: float,
                        interval_start: float, interval_end: float) -> bool:
     """Identify strict fallback candidates without disturbing normal global CTC."""
-    if _collapsed_token_count(groups, frame_shift) < 2 or not groups:
+    if not groups:
+        return False
+    if _maximum_internal_gap(groups, frame_shift) > 1.5:
+        return True
+    if _front_loaded_ratio(groups, frame_shift, interval_start, interval_end) >= 0.45:
+        return True
+    if _collapsed_token_count(groups, frame_shift) < 2:
         return False
     interval_duration = interval_end - interval_start
     if interval_duration < 0.5:
@@ -470,7 +498,28 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
             }
             boundary_intrusion = max(0.0, local_end - next_start)
             maximum_intrusion = 1.25 if run == [0] else 0.35
-            if local_start < previous_end or boundary_intrusion > maximum_intrusion:
+            source_boundary = (
+                slope * source_starts[last_line + 1] + offset
+                if last_line + 1 < len(source_starts) else float("inf")
+            )
+            # A repeated phrase can make the global path place the following
+            # line early too. If its source cue is well after that path and
+            # the focused recovery finishes near the cue, clip this block at
+            # the calibrated source boundary rather than rejecting it against
+            # an already-invalid neighboring boundary.
+            source_boundary_recovery = (
+                math.isfinite(next_start)
+                and math.isfinite(source_boundary)
+                and (abs(next_start - source_boundary) <= 0.75 or next_start < source_boundary - 1.0)
+                and local_end <= source_boundary + 1.75
+            )
+            effective_boundary = (
+                source_boundary
+                if source_boundary_recovery and next_start < source_boundary - 1.0
+                else next_start
+            )
+            effective_intrusion = max(0.0, local_end - effective_boundary)
+            if local_start < previous_end or (not source_boundary_recovery and boundary_intrusion > maximum_intrusion):
                 candidate["rejected"] = "adjacent_line_overlap"
                 recovery_candidates.append(candidate)
                 continue
@@ -480,8 +529,11 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
                 recovery_candidates.append(candidate)
                 continue
             candidate["accepted"] = True
+            if source_boundary_recovery:
+                candidate["boundary_recovery"] = "calibrated_source_cue"
+                candidate["source_boundary_ms"] = round(source_boundary * 1000)
             recovery_candidates.append(candidate)
-            boundary_frame = round(next_start / frame_shift) if math.isfinite(next_start) else None
+            boundary_frame = round(effective_boundary / frame_shift) if math.isfinite(effective_boundary) else None
             converted = []
             for group in local_spans:
                 converted_group = []
@@ -493,7 +545,7 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
                         end_frame = min(max(start_frame, end_frame), boundary_frame)
                     converted_group.append(TokenSpan(span.token, start_frame, end_frame, span.score))
                 converted.append(converted_group)
-            candidate["boundary_intrusion_ms"] = round(boundary_intrusion * 1000)
+            candidate["boundary_intrusion_ms"] = round(effective_intrusion * 1000)
             spans[acoustic_start:acoustic_end] = converted
             recovered_lines.extend(run)
         source_diagnostics["vocal_focus_attempted_runs"] = recovery_runs
@@ -538,18 +590,37 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
                 local_emission, encoded[acoustic_start:acoustic_end], blank=aligner_model.blank,
                 frame_shift_seconds=local_shift, source_priors=[],
             )
-            old_count = _collapsed_token_count(spans[acoustic_start:acoustic_end], frame_shift)
+            old_groups = spans[acoustic_start:acoustic_end]
+            old_count = _collapsed_token_count(old_groups, frame_shift)
             new_count = _collapsed_token_count(local_spans, local_shift)
+            old_gap = _maximum_internal_gap(old_groups, frame_shift)
+            new_gap = _maximum_internal_gap(local_spans, local_shift)
+            old_front_load = _front_loaded_ratio(
+                old_groups, frame_shift, window_start, window_end,
+            )
+            new_front_load = _front_loaded_ratio(
+                local_spans, local_shift, 0.0, window_end - window_start,
+            )
             local_start = window_start + local_spans[0][0].start * local_shift
             local_end = window_start + local_spans[-1][-1].end * local_shift
             previous_end = spans[acoustic_start - 1][-1].end * frame_shift if acoustic_start else 0.0
             next_start = spans[acoustic_end][0].start * frame_shift if acoustic_end < len(spans) else duration
             candidate.update({"collapsed_tokens_before": old_count, "collapsed_tokens_after": new_count,
+                              "internal_gap_before_ms": round(old_gap * 1000),
+                              "internal_gap_after_ms": round(new_gap * 1000),
+                              "front_loaded_ratio_before": old_front_load,
+                              "front_loaded_ratio_after": new_front_load,
                               "start_ms": round(local_start * 1000), "end_ms": round(local_end * 1000)})
             if local_start < previous_end or local_end > next_start:
                 candidate["rejected"] = "non_monotonic"
-            elif new_count >= old_count:
-                candidate["rejected"] = "collapsed_token_count_not_reduced"
+            elif not (
+                new_count < old_count
+                or (old_gap > 1.5 and new_gap < min(1.0, old_gap * 0.5))
+                or (old_front_load >= 0.45
+                    and new_front_load <= min(0.35, old_front_load - 0.2)
+                    and new_count <= old_count and new_gap <= max(1.0, old_gap))
+            ):
+                candidate["rejected"] = "collapse_gap_or_pacing_not_reduced"
             else:
                 candidate["accepted"] = True
                 spans[acoustic_start:acoustic_end] = [[TokenSpan(
