@@ -550,7 +550,7 @@ def process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_split=Tru
                 token = sylla_split(token, sokuon_split, hatsuon_split)
                 if lang == 'ja':
                     for char in token:
-                        if is_kana(char) or is_english(char):
+                        if is_kana(char) or is_kanji(char) or is_english(char):
                             result.append({'orig': char, 'type': 3})
                         # elif is_number(char):
                         #     result.append({'orig': char, 'type': 4})
@@ -558,7 +558,7 @@ def process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_split=Tru
                             result.append({'orig': char, 'type': 0})
                 elif lang == 'jaen':
                     for char in token:
-                        if is_kana(char):
+                        if is_kana(char) or is_kanji(char):
                             result.append({'orig': char, 'type': 3})
                         elif is_english(char) or is_english_punctuation(char):
                             if result and result[-1].get('type')==1:
