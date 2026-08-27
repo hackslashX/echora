@@ -7,6 +7,14 @@ sys.path.insert(0, str(VENDOR))
 from haruraw2norm import process_haruhi_line  # noqa: E402
 
 
+def test_japanese_auto_detection_pronounces_kanji_and_kana():
+    result = process_haruhi_line("世界中全部 変えてしまえば\n", "auto")
+    spoken = [item for item in result if item.get("pron")]
+
+    assert "".join(item["orig"] for item in spoken).replace(" ", "") == "世界中全部変えてしまえば"
+    assert all(item["pron"] for item in spoken)
+
+
 def test_korean_auto_detection_preserves_hangul_and_adds_latin_pronunciation():
     result = process_haruhi_line("사랑해\n", "auto")
     spoken = [item for item in result if item.get("pron")]
