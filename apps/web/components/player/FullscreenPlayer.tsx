@@ -2,32 +2,22 @@
 
 import { Disc3, ListMusic, MicVocal, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX, X } from "lucide-react";
 import LoadingImage from "../media/LoadingImage";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { trackTemplate } from "../shell/gridGeometry";
 import { audioQualityLabel } from "./audioQuality";
 import { usePlayer } from "./PlayerProvider";
 import styles from "./FullscreenPlayer.module.css";
 
 const stamp = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+const isRtlText = (text: string) => {
+  for (const character of text) {
+    if (/[\u0590-\u08ff]/u.test(character)) return true;
+    if (/\p{L}/u.test(character)) return false;
+  }
+  return false;
+};
 type LyricsLine = { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] };
 type Lyrics = { trackId: string; available: boolean; karaoke?: boolean; lines?: LyricsLine[]; text?: string; language?: string; provenance?: { synced?: boolean; lines?: LyricsLine[] } };
-
-const lyricKey = (text: string) => text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-function clampKaraokeLeadIns(karaoke: LyricsLine[], source: LyricsLine[]): LyricsLine[] {
-  let sourceIndex = 0;
-  return karaoke.map(line => {
-    const key = lyricKey(line.text);
-    const matchIndex = source.findIndex((candidate, index) => index >= sourceIndex && lyricKey(candidate.text) === key);
-    if (matchIndex < 0 || !line.syllables?.length || !Number.isFinite(source[matchIndex].start_ms)) return line;
-    sourceIndex = matchIndex + 1;
-    const sourceStart = Number(source[matchIndex].start_ms);
-    const first = line.syllables[0];
-    const firstStart = Math.min(first.end_ms, Math.max(first.start_ms, sourceStart));
-    const lineStart = Math.max(Number(line.start_ms), sourceStart - 750);
-    if (firstStart === first.start_ms && lineStart === line.start_ms) return line;
-    return { ...line, start_ms: lineStart, syllables: [{ ...first, start_ms: firstStart }, ...line.syllables.slice(1)] };
-  });
-}
 
 export default function FullscreenPlayer() {
   const player = usePlayer();
@@ -66,7 +56,7 @@ export default function FullscreenPlayer() {
   }, [player.track]);
   const currentLyrics = lyrics?.trackId === player.track?.id ? lyrics : null;
   const karaokeAvailable = Boolean(currentLyrics?.karaoke && currentLyrics.lines?.length);
-  const karaokeLines = useMemo(() => clampKaraokeLeadIns(currentLyrics?.lines || [], currentLyrics?.provenance?.lines || []), [currentLyrics]);
+  const karaokeLines = currentLyrics?.lines || [];
   const timedLines = ((karaokeMode && karaokeAvailable ? karaokeLines : currentLyrics?.provenance?.lines) || []).filter(line => Number.isFinite(line.start_ms));
   const activeLine = timedLines.reduce((active, line, index) => Number(line.start_ms) <= playbackTime * 1000 ? index : active, -1);
   if (!player.track) return null;
@@ -83,7 +73,7 @@ export default function FullscreenPlayer() {
   function karaokeLine(line: LyricsLine, active: boolean) {
     if (!active || !karaokeMode || !currentLyrics?.karaoke || !line.syllables?.length) return line.text || "...";
     const now = playbackTime * 1000;
-    return <span className={styles.syllables}>{line.syllables.map((syllable, index) => {
+    return <span className={styles.syllables} dir={isRtlText(line.text) ? "rtl" : "ltr"}>{line.syllables.map((syllable, index) => {
       const state = now >= syllable.end_ms ? styles.syllablePast : now >= syllable.start_ms ? styles.syllableActive : styles.syllableNext;
       return <span key={`${syllable.start_ms}-${index}`} className={state}>{syllable.text}</span>;
     })}</span>;
@@ -103,7 +93,7 @@ export default function FullscreenPlayer() {
         </div></div>
       </section>
       {timedLines.length > 0 && <aside className={styles.lyrics} key={`${activeLine}-${karaokeMode}`}>
-        {[-1, 0, 1].map(offset => { const index = activeLine + offset, line = timedLines[index]; return line ? <button className={offset === 0 ? styles.activeLine : offset < 0 ? styles.pastLine : styles.nextLine} key={`${line.start_ms}-${index}`} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, offset === 0)}</button> : null; })}
+        {[-1, 0, 1].map(offset => { const index = activeLine + offset, line = timedLines[index]; return line ? <button dir={isRtlText(line.text) ? "rtl" : "ltr"} className={offset === 0 ? styles.activeLine : offset < 0 ? styles.pastLine : styles.nextLine} key={`${line.start_ms}-${index}`} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, offset === 0)}</button> : null; })}
       </aside>}
     </section>
   </main>;
