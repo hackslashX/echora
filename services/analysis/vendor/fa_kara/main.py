@@ -1,8 +1,8 @@
 import argparse
 from functools import partial
 import json
-import librosa
 import os
+import soundfile as sf
 import re
 import time
 
@@ -20,7 +20,7 @@ from utils_basic import (
     func_tail_correct_v250611,
 )
 
-def main():
+def main(argv=None):
     start_time = time.time()
     script_dir = os.path.dirname(os.path.realpath(__file__))
     parser = argparse.ArgumentParser(description='可选参数')
@@ -45,7 +45,7 @@ def main():
     parser.add_argument('-hf', '--hf_model_path', default=None, help='HuggingFace模型ID或本地路径')
     parser.add_argument('--head_correct', type=int, default=-999, help='是否进行静音检测')
     parser.add_argument('--timeline_json', default=None, help='Source lyric line timestamps for anchored alignment')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     sokuon_split = args.sokuon_split
     hatsuon_split = args.hatsuon_split
     audio_speed = args.audio_speedx
@@ -103,6 +103,8 @@ def main():
                 line = lrcfmt.moeg_process_line(line)
             if line.strip():
                 result_list.extend(hn.process_haruhi_line(line, lrc_language, sokuon_split, hatsuon_split))
+    if not result_list:
+        raise ValueError("Lyrics contain no alignable text")
     if result_list[-1]['orig']!='\n':
         result_list.append({'orig': '\n', 'type': 0, 'pron': ''})
 
@@ -131,9 +133,12 @@ def main():
     end_time = time.time()
     print("Lyrics text analysis executed in", round(end_time - start_time, 3), "seconds")
 
-    audio_file, sr = librosa.load(input_audio_path, sr=None) 
-    non_silent_ranges = non_silent_recog(audio_file, sr, silent_window_s, tail_thres_pct, tail_thres_ratio)
-    if not head_correct: non_silent_ranges = []
+    audio_channels, sr = sf.read(input_audio_path, dtype='float32', always_2d=True)
+    audio_file = audio_channels.mean(axis=1)
+    non_silent_ranges = (
+        non_silent_recog(audio_file, sr, silent_window_s, tail_thres_pct, tail_thres_ratio)
+        if head_correct else []
+    )
 
     def get_align_function(model_name):
         'Select FA model'
@@ -164,11 +169,63 @@ def main():
     else:
         alignment_results = align_func(y_processed, alignment_tokens, non_silent_ranges, sr, audio_speed, use_gpu=align_use_gpu)
 
+    if len(alignment_results) != len(alignment_tokens):
+        raise RuntimeError(
+            f"Alignment returned {len(alignment_results)} tokens for {len(alignment_tokens)} inputs"
+        )
     for i, result in enumerate(alignment_results):
-        if i in token_to_index_map:
-            original_index = token_to_index_map[i]
-            result_list[original_index]['start'] = result['start']
-            result_list[original_index]['end'] = result['end']
+        original_index = token_to_index_map[i]
+        result_list[original_index]['start'] = result['start']
+        result_list[original_index]['end'] = result['end']
+        result_list[original_index]['alignment_score'] = float(result.get('score', 0.0))
+        result_list[original_index]['alignment_start'] = float(result.get('original_start', 0.0))
+        result_list[original_index]['alignment_end'] = float(result.get('original_end', 0.0))
+
+    canonical_lines = []
+    token_offset = 0
+    source_timeline = timeline if args.timeline_json else []
+    for line_index, line_tokens in enumerate(alignment_token_lines):
+        token_records = []
+        for token_index, _ in enumerate(line_tokens):
+            alignment_index = token_offset + token_index
+            original_item = result_list[token_to_index_map[alignment_index]]
+            token_records.append({
+                'source_index': token_index,
+                'text': str(original_item.get('orig', '')),
+                'acoustic_token': str(original_item.get('pron', '')),
+                'start_ms': round(float(original_item['alignment_start']) * 1000),
+                'end_ms': round(float(original_item['alignment_end']) * 1000),
+                'ctc_score': float(original_item['alignment_score']),
+            })
+        token_offset += len(line_tokens)
+        source = source_timeline[line_index] if line_index < len(source_timeline) else {}
+        canonical_lines.append({
+            'source_index': line_index,
+            'text': str(source.get('text', '')),
+            'source_start_ms': source.get('start_ms'),
+            'start_ms': token_records[0]['start_ms'] if token_records else None,
+            'end_ms': token_records[-1]['end_ms'] if token_records else None,
+            'tokens': token_records,
+        })
+    finite_scores = [token['ctc_score'] for line in canonical_lines for token in line['tokens']]
+    source_diagnostics = alignment_results[0].get('source_diagnostics', {}) if alignment_results else {}
+    alignment_document = {
+        'schema_version': 1,
+        'alignment': {'mode': 'global_ctc_calibrated_source_prior', 'lines': canonical_lines},
+        'diagnostics': {
+            'inference_passes': max((int(result.get('inference_passes', 1)) for result in alignment_results), default=0),
+            'line_count': len(canonical_lines),
+            'token_count': len(finite_scores),
+            'mean_ctc_score': sum(finite_scores) / len(finite_scores) if finite_scores else 0.0,
+            'minimum_ctc_score': min(finite_scores) if finite_scores else 0.0,
+            'interpolated_source_lines': [
+                index for index, line in enumerate(source_timeline) if line.get('interpolated')
+            ],
+            **source_diagnostics,
+        },
+    }
+    with open(os.path.join(real_io_path, 'o.alignment.json'), 'w', encoding='utf-8') as f:
+        json.dump(alignment_document, f, ensure_ascii=False, separators=(',', ':'))
 
     result_list = non_silent_head_adjust(result_list, non_silent_ranges)
     

@@ -72,24 +72,31 @@ def plan_lyrics(connection: psycopg.Connection, external_ids: Iterable[str] | No
 
 
 def plan_karaoke(connection: psycopg.Connection, pipeline_revision: str,
-                  external_ids: Iterable[str] | None = None) -> ProcessingPlan:
+                  external_ids: Iterable[str] | None = None,
+                  model_revision: str | None = None) -> ProcessingPlan:
     restriction, parameters = _id_filter(external_ids)
     with connection.cursor() as cursor:
-        cursor.execute("SELECT karaoke_bound_to_synced_lines FROM analysis_settings WHERE singleton=true")
+        cursor.execute("SELECT karaoke_processing_enabled FROM analysis_settings WHERE singleton=true")
         setting = cursor.fetchone()
-        bounded = bool(setting[0]) if setting else True
+        if setting is not None and not bool(setting[0]):
+            return ProcessingPlan()
         cursor.execute(
             f"""SELECT DISTINCT ts.external_id
                 FROM track_sources ts JOIN lyrics l ON l.track_id=ts.track_id
                 WHERE ts.source_type='subsonic'{restriction}
                   AND coalesce((l.provenance->>'synced')::boolean, false)
                   AND l.text IS NOT NULL
+                  AND jsonb_typeof(l.provenance->'lines')='array'
+                  AND jsonb_array_length(l.provenance->'lines') > 0
+                  AND EXISTS (SELECT 1 FROM jsonb_array_elements(l.provenance->'lines') line
+                              WHERE jsonb_typeof(line->'start_ms')='number')
                   AND NOT EXISTS (
                     SELECT 1 FROM karaoke_lyrics_variants kv
-                    WHERE kv.track_id=l.track_id AND kv.bounded=%s
+                    WHERE kv.track_id=l.track_id AND kv.bounded=false
                       AND kv.provenance->>'pipeline_revision'=%s
+                      AND (%s::text IS NULL OR kv.model_revision=%s::text)
                   ) ORDER BY ts.external_id""",
-            [*parameters, bounded, pipeline_revision],
+            [*parameters, pipeline_revision, model_revision, model_revision],
         )
         ids = tuple(str(row[0]) for row in cursor.fetchall())
     return ProcessingPlan(karaoke_external_ids=ids)

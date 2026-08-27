@@ -1,6 +1,9 @@
 from echora_analysis.karaoke_pipeline import (
+    _anchored_source_lines,
     _timed_source_lines,
+    _validate_alignment_document,
     bound_to_synced_lines,
+    guard_pathological_lead_ins,
     parse_ass_karaoke,
     stabilize_to_synced_lines,
 )
@@ -39,6 +42,18 @@ def test_timed_source_lines_filters_untimed_and_empty_entries():
     ]
 
 
+def test_anchored_source_lines_interpolates_without_dropping_lyrics():
+    assert _anchored_source_lines([
+        {"text": "One", "start_ms": 1000},
+        {"text": "Missing"},
+        {"text": "Three", "start_ms": 5000},
+    ]) == [
+        {"text": "One", "start_ms": 1000, "interpolated": False},
+        {"text": "Missing", "start_ms": 3000, "interpolated": True},
+        {"text": "Three", "start_ms": 5000, "interpolated": False},
+    ]
+
+
 def test_stabilize_to_synced_lines_shifts_the_whole_line_not_only_first_syllable():
     karaoke = [{"text": "Learn to sign", "start_ms": 5500, "end_ms": 7000, "syllables": [
         {"text": "Learn", "start_ms": 5700, "end_ms": 6000},
@@ -54,6 +69,57 @@ def test_stabilize_to_synced_lines_shifts_the_whole_line_not_only_first_syllable
         {"text": " to", "start_ms": 6800, "end_ms": 7100},
         {"text": " sign", "start_ms": 7100, "end_ms": 7600},
     ]
+
+
+def test_validate_alignment_document_accepts_monotonic_structured_output():
+    document = {
+        "schema_version": 1,
+        "alignment": {"lines": [{
+            "source_index": 0,
+            "tokens": [{"start_ms": 100, "end_ms": 200, "ctc_score": 0.8}],
+        }]},
+        "diagnostics": {"inference_passes": 1},
+    }
+
+    assert _validate_alignment_document(document) is document
+
+
+def test_validate_alignment_document_rejects_reversed_tokens():
+    document = {
+        "schema_version": 1,
+        "alignment": {"lines": [{
+            "source_index": 0,
+            "tokens": [
+                {"start_ms": 200, "end_ms": 300, "ctc_score": 0.8},
+                {"start_ms": 100, "end_ms": 150, "ctc_score": 0.9},
+            ],
+        }]},
+    }
+
+    try:
+        _validate_alignment_document(document)
+    except RuntimeError as error:
+        assert "non-monotonic" in str(error)
+    else:
+        raise AssertionError("expected document validation failure")
+
+
+def test_guard_pathological_lead_ins_delays_only_stretched_first_syllable():
+    diagnostics = {"source_offset_ms": 0, "source_drift_ms_per_minute": 0}
+    result = guard_pathological_lead_ins([{
+        "text": "Siento frío", "start_ms": 197680, "end_ms": 205110,
+        "syllables": [
+            {"text": "Sien", "start_ms": 197880, "end_ms": 203830},
+            {"text": "to", "start_ms": 203990, "end_ms": 204470},
+        ],
+    }], [{"text": "Siento frío", "start_ms": 204010}], diagnostics)
+
+    assert result[0]["start_ms"] == 203810
+    assert result[0]["syllables"] == [
+        {"text": "Sien", "start_ms": 204010, "end_ms": 204110},
+        {"text": "to", "start_ms": 204110, "end_ms": 204470},
+    ]
+    assert diagnostics["pathological_lead_in_guarded_lines"] == [0]
 
 
 def test_bound_to_synced_lines_clamps_syllables_to_source_window():
