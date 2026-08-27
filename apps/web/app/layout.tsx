@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body><Backdrop /><PlayerProvider>{children}</PlayerProvider></body>
+      <body><div className="app-viewport"><Backdrop /><PlayerProvider>{children}</PlayerProvider></div></body>
     </html>
   );
 }
