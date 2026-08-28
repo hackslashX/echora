@@ -1,6 +1,6 @@
 import numpy as np
 
-from echora_analysis.hum_search import match_contour
+from echora_analysis.hum_search import contour_embedding, indexed_windows, match_contour
 
 
 def _melody(notes: list[float], frames: int = 8) -> tuple[np.ndarray, np.ndarray]:
@@ -20,6 +20,22 @@ def test_match_is_transposition_invariant_and_finds_offset():
 
     assert cost < 0.35
     assert 2.5 <= offset <= 3.5
+
+
+def test_contour_embedding_is_transposition_invariant():
+    left, mask = _melody([60, 62, 64, 67, 64])
+    right, _ = _melody([67, 69, 71, 74, 71])
+
+    assert np.dot(contour_embedding(left, mask), contour_embedding(right, mask)) > 0.999
+
+
+def test_indexed_windows_cover_multiple_durations():
+    pitch, mask = _melody([60, 62, 64, 67] * 10, frames=5)
+
+    windows = indexed_windows(pitch, mask)
+
+    assert {duration for _, duration, _ in windows} == {8.0, 10.0, 12.0}
+    assert all(vector.shape == (192,) for _, _, vector in windows)
 
 
 def test_unrelated_contour_scores_worse():
