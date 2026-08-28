@@ -1,5 +1,8 @@
+import os
 from pathlib import Path
 
+import torch
+from demucs import pretrained
 from huggingface_hub import snapshot_download
 
 MODELS = (
@@ -19,6 +22,18 @@ def _pin_main_ref(snapshot_path: str) -> None:
     (refs / "main").write_text(snapshot.name, encoding="utf-8")
 
 
+def _download_demucs() -> None:
+    """Preload the htdemucs checkpoint into TORCH_HOME so offline inference works."""
+    if os.environ.get("FA_KARA_VOCAL_SEPARATION", "false").lower() != "true":
+        return
+    torch_home = Path(os.environ.get("TORCH_HOME", "/models/torch"))
+    torch_home.mkdir(parents=True, exist_ok=True)
+    os.environ["TORCH_HOME"] = str(torch_home)
+    print("Downloading demucs htdemucs checkpoint into TORCH_HOME", flush=True)
+    pretrained.get_model("htdemucs")
+    print("demucs htdemucs checkpoint is available.", flush=True)
+
+
 def main() -> None:
     for model, revision, needs_main_ref in MODELS:
         print(f"Downloading {model}@{revision}", flush=True)
@@ -28,6 +43,7 @@ def main() -> None:
             # Point their local `main` refs at the reviewed commits so offline
             # inference remains pinned.
             _pin_main_ref(snapshot)
+    _download_demucs()
     print("All model snapshots are available.", flush=True)
 
 

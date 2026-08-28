@@ -49,6 +49,7 @@ def main(argv=None):
     parser.add_argument('--refine_all_lines', action='store_true', help='Retry every line inside its source-cued interval')
     parser.add_argument('--duration_aware_priors', action='store_true', help='Guide inner token onsets across each source line')
     parser.add_argument('--reference_audio', default=None, help='Original mix for dual-audio line refinement')
+    parser.add_argument('--separate_vocals', action='store_true', help='Align a persistent Demucs vocal stem')
     args = parser.parse_args(argv)
     sokuon_split = args.sokuon_split
     hatsuon_split = args.hatsuon_split
@@ -147,7 +148,13 @@ def main(argv=None):
             check=True,
         )
         audio_channels, sr = sf.read(decoded_audio_path, dtype='float32', always_2d=True)
-    audio_file = audio_channels.mean(axis=1)
+    input_sr = sr
+    reference_audio = audio_channels.mean(axis=1) if args.separate_vocals else None
+    if args.separate_vocals:
+        from separate_vocals import separate_vocals
+        audio_file, sr = separate_vocals(audio_channels, sr, use_gpu=align_use_gpu)
+    else:
+        audio_file = audio_channels.mean(axis=1)
     non_silent_ranges = (
         non_silent_recog(audio_file, sr, silent_window_s, tail_thres_pct, tail_thres_ratio)
         if head_correct else []
@@ -172,6 +179,10 @@ def main(argv=None):
         reference_audio = reference_channels.mean(axis=1)
         if reference_sr != sr:
             raise ValueError("reference audio sample rate must match alignment audio")
+    if reference_audio is not None:
+        if args.separate_vocals and input_sr != sr:
+            import librosa
+            reference_audio = librosa.resample(reference_audio, orig_sr=input_sr, target_sr=sr)
         reference_processed = time_stretch_audio(reference_audio, audio_speed)
     print('Adding timelines...')
     if args.timeline_json:
