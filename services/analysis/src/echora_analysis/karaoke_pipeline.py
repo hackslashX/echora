@@ -66,6 +66,115 @@ def parse_ass_karaoke(ass: str) -> list[dict[str, object]]:
     return lines
 
 
+def _restore_display_text(
+    source_text: str, syllables: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Restore punctuation and spacing omitted from acoustic CTC tokens."""
+    if not source_text or not syllables:
+        return syllables
+    positions: list[tuple[int, int]] = []
+    cursor = 0
+    folded_source = source_text.casefold()
+    for syllable in syllables:
+        token_text = str(syllable.get("text") or "")
+        if not token_text:
+            return syllables
+        start = source_text.find(token_text, cursor)
+        if start < 0:
+            start = folded_source.find(token_text.casefold(), cursor)
+        if start < 0:
+            return syllables
+        end = start + len(token_text)
+        positions.append((start, end))
+        cursor = end
+    restored = [dict(syllable) for syllable in syllables]
+    for index, syllable in enumerate(restored):
+        start = 0 if index == 0 else positions[index][0]
+        end = positions[index + 1][0] if index + 1 < len(positions) else len(source_text)
+        syllable["text"] = source_text[start:end]
+    return restored
+
+
+def build_lines_from_alignment_document(document: dict[str, object]) -> list[dict[str, object]]:
+    """Build karaoke lines from the alignment document's millisecond-precision timing.
+
+    The alignment document stores token onset and offset in integer milliseconds
+    derived directly from frame indices, avoiding the centisecond quantization
+    inherent in the ASS ``\\k`` tag format (10 ms resolution).  Using it as the
+    primary timing source eliminates the systematic rounding error that
+    accumulates across dense syllable sequences.
+    """
+    alignment = document.get("alignment")
+    if not isinstance(alignment, dict):
+        return []
+    canonical_lines = alignment.get("lines")
+    if not isinstance(canonical_lines, list):
+        return []
+    lines: list[dict[str, object]] = []
+    for line_record in canonical_lines:
+        if not isinstance(line_record, dict):
+            continue
+        tokens = line_record.get("tokens")
+        if not isinstance(tokens, list) or not tokens:
+            continue
+        syllables: list[dict[str, object]] = []
+        for token in tokens:
+            if not isinstance(token, dict):
+                continue
+            text = str(token.get("text") or "")
+            start_ms = token.get("start_ms")
+            end_ms = token.get("end_ms")
+            if not isinstance(start_ms, int) or not isinstance(end_ms, int):
+                continue
+            if text:
+                syllables.append({"start_ms": start_ms, "end_ms": end_ms, "text": text})
+        if not syllables:
+            continue
+        source_text = str(line_record.get("text") or "")
+        syllables = _restore_display_text(source_text, syllables)
+        text = source_text or "".join(str(s["text"]) for s in syllables)
+        line_start = int(line_record.get("start_ms") or syllables[0]["start_ms"])
+        line_end = int(line_record.get("end_ms") or syllables[-1]["end_ms"])
+        lines.append({"start_ms": line_start, "end_ms": line_end, "text": text, "syllables": syllables})
+    return lines
+
+
+def apply_adaptive_line_padding(lines: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Pad line containers only inside silence between aligned syllables."""
+    padded = [{**line, "syllables": [dict(item) for item in line.get("syllables") or []]} for line in lines]
+    timed: list[tuple[int, int, int, int] | None] = []
+    for line in padded:
+        syllables = [item for item in line["syllables"]
+                     if int(item.get("end_ms", 0)) > int(item.get("start_ms", 0))]
+        if not syllables:
+            timed.append(None)
+            continue
+        first = syllables[0]
+        last = syllables[-1]
+        first_start, first_end = int(first["start_ms"]), int(first["end_ms"])
+        last_start, last_end = int(last["start_ms"]), int(last["end_ms"])
+        timed.append((first_start, first_end, last_start, last_end))
+        line["start_ms"] = max(0, first_start - min(200, max(0, (first_end - first_start) // 4)))
+        line["end_ms"] = last_end + min(200, max(0, (last_end - last_start) // 4))
+
+    for index in range(1, len(padded)):
+        previous = timed[index - 1]
+        current = timed[index]
+        if previous is None or current is None:
+            continue
+        previous_last_start, previous_last_end = previous[2], previous[3]
+        current_first_start, current_first_end = current[0], current[1]
+        gap = max(0, current_first_start - previous_last_end)
+        desired_start_padding = min(200, max(0, (current_first_end - current_first_start) // 4))
+        start_padding = min(desired_start_padding, gap)
+        remaining_gap = gap - start_padding
+        desired_end_padding = min(200, max(0, (previous_last_end - previous_last_start) // 4))
+        end_padding = min(desired_end_padding, remaining_gap)
+        padded[index]["start_ms"] = current_first_start - start_padding
+        padded[index - 1]["end_ms"] = previous_last_end + end_padding
+    return padded
+
+
 def _line_key(text: object) -> str:
     return re.sub(r"[^\w]+", "", str(text or "").casefold())
 
@@ -105,31 +214,46 @@ def guard_pathological_lead_ins(
     karaoke: list[dict[str, object]], source: list[dict[str, object]], diagnostics: dict[str, object],
 ) -> list[dict[str, object]]:
     """Delay only first syllables that absorb seconds of pre-vocal audio."""
-    source_lines = _anchored_source_lines(source)
+    source_lines = _timed_source_lines(source)
     offset = float(diagnostics.get("source_offset_ms", 0))
     slope = 1.0 + float(diagnostics.get("source_drift_ms_per_minute", 0)) / 60000.0
     guarded = []
     guarded_indexes = []
+    source_index = 0
     for index, line in enumerate(karaoke):
         syllables = [dict(item) for item in line.get("syllables") or []]
-        if index >= len(source_lines) or not syllables:
+        key = _line_key(line.get("text"))
+        match_index = next((candidate for candidate in range(source_index, len(source_lines))
+                            if _line_key(source_lines[candidate].get("text")) == key), -1)
+        if match_index < 0 or not syllables:
             guarded.append(line)
             continue
-        first = syllables[0]
-        duration = int(first["end_ms"]) - int(first["start_ms"])
-        source_start = round(float(source_lines[index]["start_ms"]) * slope + offset)
-        if duration <= 1200 or source_start < int(first["start_ms"]) + 1000 or source_start > int(first["end_ms"]) + 500:
+        source_index = match_index + 1
+        source_start = round(float(source_lines[match_index]["start_ms"]) * slope + offset)
+        first_start = int(syllables[0]["start_ms"])
+        # A source-confirmed multi-second early onset means CTC consumed a
+        # pre-vocal blank. Clamp only the pre-source prefix; later syllables
+        # retain their acoustic positions instead of shifting the whole line.
+        if source_start < first_start + 1000:
             guarded.append(line)
             continue
-        first["start_ms"] = source_start
-        first["end_ms"] = max(int(first["end_ms"]), source_start + 100)
-        previous_end = int(first["end_ms"])
-        for syllable in syllables[1:]:
-            syllable["start_ms"] = max(int(syllable["start_ms"]), previous_end)
-            syllable["end_ms"] = max(int(syllable["end_ms"]), int(syllable["start_ms"]))
+        previous_end = source_start
+        changed = False
+        for syllable in syllables:
+            start = int(syllable["start_ms"])
+            end = int(syllable["end_ms"])
+            if start >= source_start and not changed:
+                break
+            syllable["start_ms"] = max(start, previous_end)
+            syllable["end_ms"] = max(end, int(syllable["start_ms"]) + 100)
             previous_end = int(syllable["end_ms"])
-        guarded.append({**line, "start_ms": max(int(line.get("start_ms") or 0), source_start - 200),
-                        "end_ms": max(int(line.get("end_ms") or 0), previous_end), "syllables": syllables})
+            changed = True
+        if not changed:
+            guarded.append(line)
+            continue
+        guarded.append({**line, "start_ms": source_start,
+                        "end_ms": max(int(line.get("end_ms") or 0), int(syllables[-1]["end_ms"])),
+                        "syllables": syllables})
         guarded_indexes.append(index)
     diagnostics["pathological_lead_in_guarded_lines"] = guarded_indexes
     return guarded
@@ -258,6 +382,21 @@ def _fa_kara_worker(vendor: Path, model_revision: str) -> subprocess.Popen[str]:
     return _FA_KARA_WORKER
 
 
+def _stop_fa_kara_worker() -> None:
+    global _FA_KARA_WORKER, _FA_KARA_WORKER_KEY
+    worker = _FA_KARA_WORKER
+    _FA_KARA_WORKER = None
+    _FA_KARA_WORKER_KEY = None
+    if worker is None or worker.poll() is not None:
+        return
+    worker.terminate()
+    try:
+        worker.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        worker.kill()
+        worker.wait(timeout=5)
+
+
 def _run_worker_job(worker: subprocess.Popen[str], argv: list[str], timeout: int = 1800) -> dict[str, object]:
     if worker.stdin is None or worker.stdout is None:
         raise RuntimeError("FA-Kara worker pipes are unavailable")
@@ -292,17 +431,58 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
         work = Path(directory)
         audio_path = work / "i.audio"
         audio_path.write_bytes(audio)
+        alignment_audio_path = audio_path
+        reference_audio_path: Path | None = None
+        if os.environ.get("FA_KARA_VOCAL_SEPARATION", "false").lower() == "true":
+            decoded_path = work / "demucs-input.wav"
+            subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(audio_path),
+                 "-vn", "-ac", "2", "-ar", "44100", str(decoded_path)],
+                check=True, timeout=300,
+            )
+            separation_dir = work / "separated"
+            demucs_device = os.environ.get("FA_KARA_DEMUCS_DEVICE", "cuda")
+            if demucs_device not in {"cuda", "cpu"}:
+                raise ValueError("FA_KARA_DEMUCS_DEVICE must be 'cuda' or 'cpu'")
+            subprocess.run(
+                [sys.executable, "-m", "demucs.separate", "--two-stems", "vocals",
+                 "--device", demucs_device, "--out", str(separation_dir), str(decoded_path)],
+                check=True, timeout=1800,
+            )
+            stems = list(separation_dir.glob("*/demucs-input/vocals.wav"))
+            reference_audio_path = decoded_path
+            if len(stems) != 1:
+                raise RuntimeError(f"Demucs produced {len(stems)} vocal stems instead of one")
+            alignment_audio_path = stems[0]
         timeline = _anchored_source_lines(source_lines or [])
         input_text = "\n".join(str(line["text"]) for line in timeline) if timeline else lyrics_text.strip()
         (work / "i.txt").write_text(input_text + "\n", encoding="utf-8")
+        aligner = os.environ.get("FA_KARA_ALIGNER", "yohane").lower()
+        if aligner not in {"yohane", "mms"}:
+            raise ValueError("FA_KARA_ALIGNER must be 'yohane' or 'mms'")
         command = [
             "--path_io", str(work),
-            "--input_audio", audio_path.name, "--input_text", "i.txt", "--model", "yohane",
-            "--hf_model_path", str(snapshot), "--lang", language if language in {"auto", "ja", "jaen", "zhen", "ko", "ur", "hi", "pa", "indic"} else "auto",
+            "--input_audio", str(alignment_audio_path), "--input_text", "i.txt", "--model", aligner,
+            "--lang", language if language in {"auto", "ja", "jaen", "zhen", "ko", "ur", "hi", "pa", "indic"} else "auto",
         ]
+        if aligner == "yohane":
+            command.extend(["--hf_model_path", str(snapshot)])
+        if reference_audio_path is not None:
+            command.extend(["--reference_audio", str(reference_audio_path)])
+        else:
+            command.extend(["--head_correct", "0", "--tail_correct", "0"])
         if timeline:
             (work / "timeline.json").write_text(json.dumps(timeline, ensure_ascii=False), encoding="utf-8")
             command.extend(["--timeline_json", "timeline.json"])
+        if os.environ.get("FA_KARA_REFINE_ALL_LINES", "false").lower() == "true":
+            command.append("--refine_all_lines")
+        if os.environ.get("FA_KARA_DURATION_AWARE_PRIORS", "false").lower() == "true":
+            command.append("--duration_aware_priors")
+        audio_speed = float(os.environ.get("FA_KARA_AUDIO_SPEED", "1"))
+        if not 0.5 <= audio_speed <= 1.5:
+            raise ValueError("FA_KARA_AUDIO_SPEED must be between 0.5 and 1.5")
+        if audio_speed != 1.0:
+            command.extend(["--audio_speedx", str(audio_speed)])
         worker = _fa_kara_worker(vendor, model_revision)
         response = _run_worker_job(worker, command)
         if not response.get("ok"):
@@ -313,7 +493,14 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
         alignment_document = _validate_alignment_document(
             json.loads((work / "o.alignment.json").read_text(encoding="utf-8"))
         )
-        lines = parse_ass_karaoke(ass)
+        if alignment_audio_path != audio_path:
+            alignment_document.setdefault("diagnostics", {})["audio_source"] = "demucs_vocals"
+            alignment_document["diagnostics"]["separator"] = "demucs"
+            alignment_document["diagnostics"]["separator_model"] = "htdemucs"
+        lines = build_lines_from_alignment_document(alignment_document)
+        if not lines:
+            lines = parse_ass_karaoke(ass)
+        lines = apply_adaptive_line_padding(lines)
         if not lines:
             raise RuntimeError("FA-Kara produced no aligned lyric lines")
     return {"ass": ass, "lrc": lrc, "lines": lines, "alignment_document": alignment_document,
@@ -328,9 +515,12 @@ def backfill_karaoke(
     progress: Callable[[dict[str, object]], None] | None = None,
     external_ids: list[str] | None = None,
 ) -> dict[str, int]:
-    """Serialize planning and alignment so concurrent sync jobs cannot race."""
+    """Serialize alignment and release its resident model after the phase."""
     with _KARAOKE_LOCK:
-        return _backfill_karaoke(url, username, password, progress, external_ids)
+        try:
+            return _backfill_karaoke(url, username, password, progress, external_ids)
+        finally:
+            _stop_fa_kara_worker()
 
 
 def _backfill_karaoke(

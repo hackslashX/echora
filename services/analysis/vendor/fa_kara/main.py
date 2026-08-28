@@ -4,6 +4,7 @@ import json
 import os
 import soundfile as sf
 import re
+import subprocess
 import time
 
 # import ass2lrc
@@ -45,6 +46,9 @@ def main(argv=None):
     parser.add_argument('-hf', '--hf_model_path', default=None, help='HuggingFace模型ID或本地路径')
     parser.add_argument('--head_correct', type=int, default=-999, help='是否进行静音检测')
     parser.add_argument('--timeline_json', default=None, help='Source lyric line timestamps for anchored alignment')
+    parser.add_argument('--refine_all_lines', action='store_true', help='Retry every line inside its source-cued interval')
+    parser.add_argument('--duration_aware_priors', action='store_true', help='Guide inner token onsets across each source line')
+    parser.add_argument('--reference_audio', default=None, help='Original mix for dual-audio line refinement')
     args = parser.parse_args(argv)
     sokuon_split = args.sokuon_split
     hatsuon_split = args.hatsuon_split
@@ -133,7 +137,16 @@ def main(argv=None):
     end_time = time.time()
     print("Lyrics text analysis executed in", round(end_time - start_time, 3), "seconds")
 
-    audio_channels, sr = sf.read(input_audio_path, dtype='float32', always_2d=True)
+    try:
+        audio_channels, sr = sf.read(input_audio_path, dtype='float32', always_2d=True)
+    except sf.LibsndfileError:
+        decoded_audio_path = os.path.join(os.path.dirname(input_audio_path), "decoded.wav")
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", input_audio_path,
+             "-vn", "-acodec", "pcm_f32le", decoded_audio_path],
+            check=True,
+        )
+        audio_channels, sr = sf.read(decoded_audio_path, dtype='float32', always_2d=True)
     audio_file = audio_channels.mean(axis=1)
     non_silent_ranges = (
         non_silent_recog(audio_file, sr, silent_window_s, tail_thres_pct, tail_thres_ratio)
@@ -153,6 +166,13 @@ def main(argv=None):
     align_func = get_align_function(fa_model_select) # TODO: 面向对象方法实现
 
     y_processed = time_stretch_audio(audio_file, audio_speed)
+    reference_processed = None
+    if args.reference_audio:
+        reference_channels, reference_sr = sf.read(args.reference_audio, dtype='float32', always_2d=True)
+        reference_audio = reference_channels.mean(axis=1)
+        if reference_sr != sr:
+            raise ValueError("reference audio sample rate must match alignment audio")
+        reference_processed = time_stretch_audio(reference_audio, audio_speed)
     print('Adding timelines...')
     if args.timeline_json:
         with open(os.path.join(real_io_path, args.timeline_json), 'r', encoding='utf-8') as timeline_file:
@@ -160,12 +180,23 @@ def main(argv=None):
         if len(timeline) != len(alignment_token_lines):
             raise ValueError(f"Timeline has {len(timeline)} lines but parsed lyrics have {len(alignment_token_lines)}")
         timed_token_lines = [(tokens, line) for tokens, line in zip(alignment_token_lines, timeline) if tokens]
-        from align_yohane import align_audio_with_timeline
-        alignment_results = align_audio_with_timeline(
-            y_processed, [tokens for tokens, _ in timed_token_lines],
-            [line['start_ms'] for _, line in timed_token_lines],
-            sr=sr, speed=audio_speed, use_gpu=align_use_gpu, hf_model_id=hf_model_path,
-        )
+        if fa_model_select == 'MMS_FA_torch':
+            from align_yohane import align_audio_with_timeline_mms
+            alignment_results = align_audio_with_timeline_mms(
+                y_processed, [tokens for tokens, _ in timed_token_lines],
+                [line['start_ms'] for _, line in timed_token_lines],
+                sr=sr, speed=audio_speed, use_gpu=align_use_gpu,
+            )
+        else:
+            from align_yohane import align_audio_with_timeline
+            alignment_results = align_audio_with_timeline(
+                y_processed, [tokens for tokens, _ in timed_token_lines],
+                [line['start_ms'] for _, line in timed_token_lines],
+                sr=sr, speed=audio_speed, use_gpu=align_use_gpu, hf_model_id=hf_model_path,
+                refine_all_lines=args.refine_all_lines,
+                duration_aware_priors=args.duration_aware_priors,
+                reference_audio=reference_processed,
+            )
     else:
         alignment_results = align_func(y_processed, alignment_tokens, non_silent_ranges, sr, audio_speed, use_gpu=align_use_gpu)
 

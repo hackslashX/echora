@@ -8,12 +8,31 @@ sys.path.insert(0, str(VENDOR))
 
 from ctc_segmentation import SourcePrior, align_with_source_priors  # noqa: E402
 from align_yohane import (  # noqa: E402
+    _assign_ctc_blank_holds,
     _calibrate_source_priors,
     _collapsed_token_count,
     _front_loaded_ratio,
+    _inference_chunk_starts,
     _is_collapsed_line,
     _maximum_internal_gap,
 )
+
+
+def test_ctc_blank_frames_extend_the_preceding_acoustic_token():
+    from torchaudio.functional import TokenSpan
+
+    spans = [
+        [TokenSpan(1, 2, 4, 0.8)],
+        [TokenSpan(2, 9, 11, 0.7)],
+        [TokenSpan(3, 15, 17, 0.9)],
+    ]
+
+    result = _assign_ctc_blank_holds(spans, [(0, 2), (2, 3)])
+
+    assert result[0][-1].end == 9
+    assert result[1][-1].end == 11
+    assert result[2][-1].end == 17
+    assert spans[0][-1].end == 4
 
 
 def _emission(labels, vocabulary=4):
@@ -129,6 +148,16 @@ def test_front_load_ignores_short_lines_and_even_pacing():
 
     assert _front_loaded_ratio(short, 0.02, 0.0, 4.0) == 0.0
     assert _front_loaded_ratio(even, 0.02, 0.0, 4.0) < 0.45
+
+
+def test_inference_chunks_do_not_create_tiny_tail_passes():
+    sample_rate = 16_000
+    chunk = 45 * sample_rate
+    overlap = 2 * sample_rate
+    step = chunk - overlap
+
+    assert _inference_chunk_starts(step * 5 + 1, chunk, overlap) == [0, step, step * 2, step * 3, step * 4]
+    assert _inference_chunk_starts(step * 5 + overlap + 1, chunk, overlap)[-1] == step * 5
 
 
 def test_impossible_alignment_fails_instead_of_returning_partial_output():
