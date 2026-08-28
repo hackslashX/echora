@@ -13,6 +13,8 @@ import threading
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from urllib.parse import urlparse
+
 import httpx
 from authlib.integrations.starlette_client import OAuth, OAuthError
 import igraph as ig
@@ -25,7 +27,7 @@ from sklearn.metrics import adjusted_rand_score, silhouette_score
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import joinedload
 
-from fastapi import Cookie, FastAPI, HTTPException, Request, Response
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, HttpUrl, SecretStr
 from starlette.middleware.sessions import SessionMiddleware
@@ -67,7 +69,8 @@ _stream_cache: OrderedDict[tuple[str, str, str], tuple[bytes, str]] = OrderedDic
 _stream_cache_lock = threading.Lock()
 _STREAM_CACHE_LIMIT = 12
 _scheduler_started = False
-_SESSION_DAYS = 30
+_SESSION_HOURS = 2
+_STREAM_CACHE_ENTRY_LIMIT = 20 * 1024 * 1024
 logger = logging.getLogger(__name__)
 _COMMUNITY_SNAPSHOT_REVISION = 1
 
@@ -194,15 +197,16 @@ def _cipher() -> Fernet:
     return Fernet(key.encode())
 
 
-def _save_connection(credentials: tuple[str, str, str]) -> str:
+def _save_connection(credentials: tuple[str, str, str], user_id: uuid.UUID) -> str:
     url, username, password = credentials
     encrypted = _cipher().encrypt(password.encode())
     with session_scope() as session:
         stored = session.scalar(select(NavidromeConnection).where(
+            NavidromeConnection.owner_user_id == user_id,
             NavidromeConnection.url == url, NavidromeConnection.username == username,
         ))
         if stored is None:
-            stored = NavidromeConnection(url=url, username=username, encrypted_password=encrypted)
+            stored = NavidromeConnection(url=url, username=username, encrypted_password=encrypted, owner_user_id=user_id)
             session.add(stored)
             session.flush()
         else:
@@ -250,13 +254,16 @@ def _reconcile_user_tracks(user_id: uuid.UUID, source_url: str, external_ids: li
     return {"linked": linked, "unlinked": unlinked}
 
 
-def _load_connection(connection_id: str) -> tuple[str, str, str] | None:
+def _load_connection(connection_id: str, user_id: uuid.UUID | None = None) -> tuple[str, str, str] | None:
     try:
         identifier = uuid.UUID(connection_id)
     except ValueError:
         return None
     with session_scope() as session:
-        stored = session.get(NavidromeConnection, identifier)
+        filters = [NavidromeConnection.id == identifier]
+        if user_id is not None:
+            filters.append(NavidromeConnection.owner_user_id == user_id)
+        stored = session.scalar(select(NavidromeConnection).where(*filters))
         if stored is None:
             return None
         stored.last_used_at = datetime.now(timezone.utc)
@@ -393,8 +400,13 @@ def _run_ingest(
                 "summary": combined,
             }
     except Exception as error:
+        logger.exception("Ingest failed")
         with _jobs_lock:
             _jobs[job_id] = {**_jobs[job_id], "status": "failed", "error": str(error)}
+
+
+def require_user(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    return _session_user(echora_session)
 
 
 def _session_user(token: str | None) -> dict[str, object]:
@@ -420,9 +432,22 @@ def _session_user(token: str | None) -> dict[str, object]:
 @app.on_event("startup")
 def start_background_services() -> None:
     global _scheduler_started
+    _enforce_secure_cookie_policy()
     if not _scheduler_started:
         _scheduler_started = True
         threading.Thread(target=_curation_scheduler, name="echora-curations", daemon=True).start()
+
+
+def _enforce_secure_cookie_policy() -> None:
+    if os.environ.get("COOKIE_SECURE", "false").lower() == "true":
+        return
+    redirect = os.environ.get("OIDC_REDIRECT_URI", "http://localhost:3000/analysis/auth/oidc/callback")
+    host = urlparse(redirect).hostname or ""
+    if host not in {"localhost", "127.0.0.1", "::1"}:
+        raise RuntimeError(
+            "COOKIE_SECURE must be true when OIDC_REDIRECT_URI is not localhost; "
+            "session cookies would otherwise be sent over plain HTTP"
+        )
 
 
 @app.get("/auth/oidc/status")
@@ -448,7 +473,8 @@ async def oidc_callback(request: Request) -> Response:
         token_data = await client.authorize_access_token(request)
         claims = token_data.get("userinfo") or await client.userinfo(token=token_data)
     except OAuthError as error:
-        raise HTTPException(status_code=401, detail=f"OIDC authentication failed: {error.error}") from error
+        logger.warning("OIDC authentication failed: %s", error.error)
+        raise HTTPException(status_code=401, detail="OIDC authentication failed") from error
     subject = str(claims.get("sub") or "").strip()
     email = str(claims.get("email") or "").strip().casefold()
     if not subject or not email or "@" not in email:
@@ -488,13 +514,14 @@ async def oidc_callback(request: Request) -> Response:
             user.email = email
             user.username = email
         token = secrets.token_urlsafe(48)
+        session.execute(delete(UserSession).where(UserSession.expires_at < datetime.now(timezone.utc)))
         session.add(UserSession(
             token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id,
-            expires_at=datetime.now(timezone.utc) + timedelta(days=_SESSION_DAYS),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=_SESSION_HOURS),
         ))
     destination = os.environ.get("OIDC_POST_LOGIN_REDIRECT", "http://localhost:3000/home")
     response = RedirectResponse(destination, status_code=303)
-    response.set_cookie("echora_session", token, max_age=_SESSION_DAYS * 86400, httponly=True, samesite="strict", secure=os.environ.get("COOKIE_SECURE", "false").lower() == "true", path="/")
+    response.set_cookie("echora_session", token, max_age=_SESSION_HOURS * 3600, httponly=True, samesite="strict", secure=os.environ.get("COOKIE_SECURE", "false").lower() == "true", path="/")
     return response
 
 
@@ -521,9 +548,11 @@ def save_onboarding(preference: OnboardingPreference, echora_session: str | None
         if stored is None:
             raise HTTPException(status_code=404, detail="User preferences are unavailable")
         stored.onboarding_complete = preference.complete
+        selected = session.get(NavidromeConnection, preference.connection_id) if preference.connection_id else None
+        if selected is not None and selected.owner_user_id != user["id"]:
+            raise HTTPException(status_code=404, detail="Connection not found")
         stored.navidrome_connection_id = preference.connection_id
         stored.updated_at = datetime.now(timezone.utc)
-        selected = session.get(NavidromeConnection, preference.connection_id) if preference.connection_id else None
         selected_url = selected.url if selected else None
     if selected_url is not None:
         _attach_user_library(user["id"], selected_url)
@@ -616,8 +645,9 @@ def update_navidrome(request: Credentials, echora_session: str | None = Cookie(d
         with NavidromeClient(*credentials) as client:
             version = client.ping()
     except Exception as error:
-        raise HTTPException(status_code=422, detail=f"Could not connect to Navidrome: {error}") from error
-    connection_id = uuid.UUID(_save_connection(credentials))
+        logger.warning("Navidrome connection test failed for %s: %s", request.url, error)
+        raise HTTPException(status_code=422, detail="Could not connect to Navidrome") from error
+    connection_id = uuid.UUID(_save_connection(credentials, user["id"]))
     with session_scope() as session:
         preference = session.get(UserPreference, user["id"])
         if preference is None:
@@ -643,7 +673,8 @@ def update_lastfm(request: LastFmSettingsRequest, echora_session: str | None = C
             raise ValueError(str(payload.get("message") or "Last.fm rejected these settings"))
         total = int(payload.get("recenttracks", {}).get("@attr", {}).get("total") or 0)
     except Exception as error:
-        raise HTTPException(status_code=422, detail=f"Could not verify Last.fm: {error}") from error
+        logger.warning("Last.fm verification failed for %s: %s", request.username, error)
+        raise HTTPException(status_code=422, detail="Could not verify the Last.fm account") from error
     with session_scope() as session:
         preference = session.get(UserPreference, user["id"])
         if preference is None:
@@ -770,15 +801,17 @@ def capabilities() -> dict[str, object]:
     }
 
 
-@app.post("/navidrome/discover")
-def discover(request: DiscoverRequest) -> dict[str, object]:
+@app.post("/navidrome/discover", dependencies=[Depends(require_user)])
+def discover(request: DiscoverRequest, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
     try:
         with NavidromeClient(*_credentials(request)) as client:
             version = client.ping()
             tracks = client.random_tracks(request.limit)
     except Exception as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    connection_id = _save_connection(_credentials(request))
+        logger.warning("Navidrome discovery failed for %s: %s", request.url, error)
+        raise HTTPException(status_code=400, detail="Could not connect to the Navidrome server") from error
+    connection_id = _save_connection(_credentials(request), user["id"])
     return {
         "connection_id": connection_id,
         "server": {"version": version, "url": str(request.url).rstrip("/")},
@@ -793,11 +826,12 @@ def discover(request: DiscoverRequest) -> dict[str, object]:
     }
 
 
-@app.get("/navidrome/connections/{connection_id}/catalog")
-def navidrome_catalog(connection_id: str) -> dict[str, object]:
-    credentials = _load_connection(connection_id)
+@app.get("/navidrome/connections/{connection_id}/catalog", dependencies=[Depends(require_user)])
+def navidrome_catalog(connection_id: str, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
+    credentials = _load_connection(connection_id, user["id"])
     if credentials is None:
-        raise HTTPException(status_code=404, detail="Connection expired")
+        raise HTTPException(status_code=404, detail="Connection not found")
     try:
         with NavidromeClient(*credentials) as client:
             return client.catalog()
@@ -805,11 +839,12 @@ def navidrome_catalog(connection_id: str) -> dict[str, object]:
         raise HTTPException(status_code=502, detail="Could not read the Navidrome catalog") from error
 
 
-@app.get("/navidrome/connections/{connection_id}/sync/status")
-def navidrome_sync_status(connection_id: str) -> dict[str, object]:
-    credentials = _load_connection(connection_id)
+@app.get("/navidrome/connections/{connection_id}/sync/status", dependencies=[Depends(require_user)])
+def navidrome_sync_status(connection_id: str, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
+    credentials = _load_connection(connection_id, user["id"])
     if credentials is None:
-        raise HTTPException(status_code=404, detail="Connection expired")
+        raise HTTPException(status_code=404, detail="Connection not found")
     try:
         with NavidromeClient(*credentials) as client:
             tracks = client.all_tracks()
@@ -838,9 +873,9 @@ def start_navidrome_sync(
     connection_id: str, request: SyncRequest, echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
-    credentials = _load_connection(connection_id)
+    credentials = _load_connection(connection_id, user["id"])
     if credentials is None:
-        raise HTTPException(status_code=404, detail="Connection expired")
+        raise HTTPException(status_code=404, detail="Connection not found")
     try:
         with NavidromeClient(*credentials) as client:
             tracks = client.all_tracks()
@@ -875,11 +910,14 @@ def start_navidrome_sync(
     return {"job_id": job_id, "status": "queued", "total": len(tracks), "unlinked": reconciliation["unlinked"]}
 
 
-@app.post("/navidrome/connections/{connection_id}/recordings/backfill", status_code=202)
-def start_recording_backfill(connection_id: str) -> dict[str, object]:
-    credentials = _load_connection(connection_id)
+@app.post("/navidrome/connections/{connection_id}/recordings/backfill", status_code=202, dependencies=[Depends(require_user)])
+def start_recording_backfill(
+    connection_id: str, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    credentials = _load_connection(connection_id, user["id"])
     if credentials is None:
-        raise HTTPException(status_code=404, detail="Connection expired")
+        raise HTTPException(status_code=404, detail="Connection not found")
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT count(*) FROM tracks t LEFT JOIN track_fingerprints f ON f.track_id=t.id WHERE f.track_id IS NULL")
         total = int(cursor.fetchone()[0])
@@ -892,8 +930,9 @@ def start_recording_backfill(connection_id: str) -> dict[str, object]:
     return {"job_id": job_id, "status": "queued", "total": total}
 
 
-@app.get("/library/lyrics/status")
-def lyrics_status() -> dict[str, object]:
+@app.get("/library/lyrics/status", dependencies=[Depends(require_user)])
+def lyrics_status(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    _session_user(echora_session)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT count(*) AS total,
@@ -911,11 +950,14 @@ def lyrics_status() -> dict[str, object]:
         return cursor.fetchone()
 
 
-@app.post("/navidrome/connections/{connection_id}/lyrics/backfill", status_code=202)
-def start_lyrics_backfill(connection_id: str) -> dict[str, object]:
-    credentials = _load_connection(connection_id)
+@app.post("/navidrome/connections/{connection_id}/lyrics/backfill", status_code=202, dependencies=[Depends(require_user)])
+def start_lyrics_backfill(
+    connection_id: str, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    credentials = _load_connection(connection_id, user["id"])
     if credentials is None:
-        raise HTTPException(status_code=404, detail="Connection expired")
+        raise HTTPException(status_code=404, detail="Connection not found")
     job_id = str(uuid.uuid4())
     with _jobs_lock:
         _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": 0}
@@ -923,11 +965,14 @@ def start_lyrics_backfill(connection_id: str) -> dict[str, object]:
     return {"job_id": job_id, "status": "queued"}
 
 
-@app.post("/navidrome/connections/{connection_id}/lyrics/karaoke/backfill", status_code=202)
-def start_karaoke_backfill(connection_id: str) -> dict[str, object]:
-    credentials = _load_connection(connection_id)
+@app.post("/navidrome/connections/{connection_id}/lyrics/karaoke/backfill", status_code=202, dependencies=[Depends(require_user)])
+def start_karaoke_backfill(
+    connection_id: str, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    credentials = _load_connection(connection_id, user["id"])
     if credentials is None:
-        raise HTTPException(status_code=404, detail="Connection expired")
+        raise HTTPException(status_code=404, detail="Connection not found")
     job_id = str(uuid.uuid4())
     with _jobs_lock:
         _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": 0}
@@ -935,8 +980,11 @@ def start_karaoke_backfill(connection_id: str) -> dict[str, object]:
     return {"job_id": job_id, "status": "queued"}
 
 
-@app.get("/library/tracks/{track_id}/recording-group")
-def track_recording_group(track_id: uuid.UUID) -> dict[str, object]:
+@app.get("/library/tracks/{track_id}/recording-group", dependencies=[Depends(require_user)])
+def track_recording_group(
+    track_id: uuid.UUID, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    _session_user(echora_session)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT rg.id, rg.status, rg.canonical_track_id, rg.created_at, rg.updated_at
@@ -1022,11 +1070,14 @@ def track_lyrics(track_id: uuid.UUID, echora_session: str | None = Cookie(defaul
             "lines": karaoke_lines or source_lines, "karaoke": bool(karaoke_lines)}
 
 
-@app.get("/navidrome/connections/{connection_id}/stream/{song_id}")
-def stream_track(connection_id: str, song_id: str, request: Request) -> Response:
-    credentials = _load_connection(connection_id)
+@app.get("/navidrome/connections/{connection_id}/stream/{song_id}", dependencies=[Depends(require_user)])
+def stream_track(
+    connection_id: str, song_id: str, request: Request, echora_session: str | None = Cookie(default=None),
+) -> Response:
+    user = _session_user(echora_session)
+    credentials = _load_connection(connection_id, user["id"])
     if credentials is None:
-        raise HTTPException(status_code=404, detail="Connection expired")
+        raise HTTPException(status_code=404, detail="Connection not found")
     quality = request.query_params.get("quality", "original")
     if quality not in {"original", "320", "120"}:
         raise HTTPException(status_code=422, detail="Quality must be original, 320, or 120")
@@ -1052,11 +1103,12 @@ def stream_track(connection_id: str, song_id: str, request: Request) -> Response
             try:
                 try:
                     for chunk in upstream.iter_raw(64 * 1024):
-                        collected.extend(chunk)
+                        if len(collected) + len(chunk) <= _STREAM_CACHE_ENTRY_LIMIT:
+                            collected.extend(chunk)
                         yield chunk
                 except httpx.RemoteProtocolError:
                     logger.warning("Navidrome closed %s after %s bytes despite its estimated content length", song_id, len(collected))
-                completed = bool(collected)
+                completed = bool(collected) and len(collected) < _STREAM_CACHE_ENTRY_LIMIT
             finally:
                 upstream.close()
                 client.close()
@@ -1078,10 +1130,11 @@ def stream_track(connection_id: str, song_id: str, request: Request) -> Response
         except Exception as error:
             raise HTTPException(status_code=502, detail="Could not open this track") from error
         with _stream_cache_lock:
-            _stream_cache[cache_key] = cached
-            _stream_cache.move_to_end(cache_key)
-            while len(_stream_cache) > _STREAM_CACHE_LIMIT:
-                _stream_cache.popitem(last=False)
+            if len(cached[0]) <= _STREAM_CACHE_ENTRY_LIMIT:
+                _stream_cache[cache_key] = cached
+                _stream_cache.move_to_end(cache_key)
+                while len(_stream_cache) > _STREAM_CACHE_LIMIT:
+                    _stream_cache.popitem(last=False)
     content, content_type = cached
     total = len(content)
     headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600"}
@@ -1106,11 +1159,15 @@ def stream_track(connection_id: str, song_id: str, request: Request) -> Response
     return Response(content, media_type=content_type, headers=headers)
 
 
-@app.get("/navidrome/connections/{connection_id}/cover/{cover_id:path}")
-def cover_art(connection_id: str, cover_id: str, size: int = 160) -> Response:
-    credentials = _load_connection(connection_id)
+@app.get("/navidrome/connections/{connection_id}/cover/{cover_id:path}", dependencies=[Depends(require_user)])
+def cover_art(
+    connection_id: str, cover_id: str, request: Request, size: int = 160,
+    echora_session: str | None = Cookie(default=None),
+) -> Response:
+    user = _session_user(echora_session)
+    credentials = _load_connection(connection_id, user["id"])
     if credentials is None:
-        raise HTTPException(status_code=404, detail="Connection expired")
+        raise HTTPException(status_code=404, detail="Connection not found")
     try:
         with NavidromeClient(*credentials) as client:
             content, content_type = client.cover_art(cover_id, min(max(size, 64), 1600))
@@ -1119,8 +1176,11 @@ def cover_art(connection_id: str, cover_id: str, size: int = 160) -> Response:
     return Response(content=content, media_type=content_type, headers={"Cache-Control": "private, max-age=3600"})
 
 
-@app.post("/ingest/navidrome", status_code=202)
-def start_navidrome_ingest(request: IngestRequest) -> dict[str, str]:
+@app.post("/ingest/navidrome", status_code=202, dependencies=[Depends(require_user)])
+def start_navidrome_ingest(
+    request: IngestRequest, echora_session: str | None = Cookie(default=None),
+) -> dict[str, str]:
+    _session_user(echora_session)
     job_id = str(uuid.uuid4())
     with _jobs_lock:
         _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": len(request.track_ids)}
@@ -1965,8 +2025,11 @@ def library_map(
     return {**payload, "snapshot_id": str(snapshot["id"]), "snapshot_created_at": snapshot["created_at"], "cache_hit": False}
 
 
-@app.get("/library/community-snapshots")
-def community_snapshots(limit: int = 20) -> dict[str, object]:
+@app.get("/library/community-snapshots", dependencies=[Depends(require_user)])
+def community_snapshots(
+    limit: int = 20, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    _session_user(echora_session)
     limit = min(max(limit, 1), 100)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
@@ -1979,8 +2042,11 @@ def community_snapshots(limit: int = 20) -> dict[str, object]:
     return {"snapshots": snapshots}
 
 
-@app.get("/library/community-snapshots/{snapshot_id}")
-def community_snapshot(snapshot_id: uuid.UUID) -> dict[str, object]:
+@app.get("/library/community-snapshots/{snapshot_id}", dependencies=[Depends(require_user)])
+def community_snapshot(
+    snapshot_id: uuid.UUID, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    _session_user(echora_session)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT payload, created_at FROM community_snapshots WHERE id=%s", (snapshot_id,))
         snapshot = cursor.fetchone()
@@ -2026,8 +2092,11 @@ def _artist_payload(name: str, rows: list[dict[str, object]], matrix: np.ndarray
     return {"artist": name, "track_count": len(indices), "component_count": len(profile.weights), "facets": facets}, profile
 
 
-@app.get("/library/artists/profile")
-def artist_profile(artist: str, model: str = "muq_mulan") -> dict[str, object]:
+@app.get("/library/artists/profile", dependencies=[Depends(require_user)])
+def artist_profile(
+    artist: str, model: str = "muq_mulan", echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    _session_user(echora_session)
     rows, matrix, corpus_hash = _artist_embedding_corpus(model)
     indices = [index for index, row in enumerate(rows) if str(row["artist"]).casefold() == artist.casefold()]
     if not indices:
@@ -2048,8 +2117,12 @@ def artist_profile(artist: str, model: str = "muq_mulan") -> dict[str, object]:
     return {**stored, "profile_id": str(saved["id"]), "created_at": saved["created_at"]}
 
 
-@app.get("/library/artists/similar")
-def similar_artists(artist: str, model: str = "muq_mulan", limit: int = 12) -> dict[str, object]:
+@app.get("/library/artists/similar", dependencies=[Depends(require_user)])
+def similar_artists(
+    artist: str, model: str = "muq_mulan", limit: int = 12,
+    echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    _session_user(echora_session)
     limit = min(max(limit, 1), 30)
     rows, matrix, _ = _artist_embedding_corpus(model)
     groups: dict[str, list[int]] = {}
@@ -2086,8 +2159,11 @@ def similar_artists(artist: str, model: str = "muq_mulan", limit: int = 12) -> d
     return {"artist": names[target_key], "model": model, "results": results[:limit]}
 
 
-@app.post("/library/journeys/preview")
-def preview_journey(request: JourneyRequest) -> dict[str, object]:
+@app.post("/library/journeys/preview", dependencies=[Depends(require_user)])
+def preview_journey(
+    request: JourneyRequest, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    _session_user(echora_session)
     if request.start_track_id == request.end_track_id:
         raise HTTPException(status_code=422, detail="Journey endpoints must be different tracks")
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
@@ -2178,10 +2254,12 @@ def library_facets(
     return {"artists": artists, "albums": albums}
 
 
-@app.get("/jobs/{job_id}")
-def job(job_id: str) -> dict[str, object]:
+@app.get("/jobs/{job_id}", dependencies=[Depends(require_user)])
+def job(job_id: str, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    _session_user(echora_session)
     with _jobs_lock:
         value = _jobs.get(job_id)
     if value is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return {"job_id": job_id, **value}
+    public = {key: value[key] for key in value if key != "error"}
+    return {"job_id": job_id, **public}

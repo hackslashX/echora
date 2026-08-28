@@ -62,12 +62,13 @@ class OidcAllowedEmail(Base):
 class NavidromeConnection(Base):
     __tablename__ = "navidrome_connections"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     url: Mapped[str] = mapped_column(Text)
     username: Mapped[str] = mapped_column(Text)
     encrypted_password: Mapped[bytes]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    __table_args__ = (UniqueConstraint("url", "username"),)
+    __table_args__ = (UniqueConstraint("owner_user_id", "url", "username"),)
 
 
 class Track(Base):
