@@ -218,21 +218,35 @@ def match_contour(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray,
     """Return a lower-is-better cost and target offset in seconds."""
     query_length = len(query)
     best: tuple[float, int, np.ndarray, np.ndarray] | None = None
+    stride = max(1, CONTOUR_HZ // 2)
     for tempo in (0.75, 0.9, 1.0, 1.1, 1.25):
         width = max(20, round(query_length * tempo))
         if width > len(target):
             continue
-        stride = max(1, CONTOUR_HZ // 2)
-        for start in range(0, len(target) - width + 1, stride):
-            candidate, candidate_mask = _resample(target[start:start + width], target_mask[start:start + width], query_length)
-            overlap = query_mask & candidate_mask
-            if overlap.sum() < query_mask.sum() * 0.55:
-                continue
-            q_relative, c_relative = _relative(query, overlap), _relative(candidate, overlap)
-            delta = np.abs(q_relative[overlap] - c_relative[overlap])
-            coarse = float(np.mean(np.minimum(delta, 6.0))) + float(1 - overlap.mean())
-            if best is None or coarse < best[0]:
-                best = (coarse, start, candidate, candidate_mask)
+        starts = np.arange(0, len(target) - width + 1, stride)
+        offsets = np.rint(np.linspace(0, width - 1, query_length)).astype(int)
+        indices = starts[:, None] + offsets[None, :]
+        candidates = target[indices]
+        candidate_masks = target_mask[indices]
+        overlaps = candidate_masks & query_mask[None, :]
+        valid = overlaps.sum(axis=1) >= query_mask.sum() * 0.55
+        if not valid.any():
+            continue
+        safe_overlaps = overlaps.copy()
+        safe_overlaps[~valid, 0] = True
+        q_values = np.where(safe_overlaps, query[None, :], np.nan)
+        c_values = np.where(safe_overlaps, candidates, np.nan)
+        q_relative = query[None, :] - np.nanmedian(q_values, axis=1)[:, None]
+        c_relative = candidates - np.nanmedian(c_values, axis=1)[:, None]
+        deltas = np.minimum(np.abs(q_relative - c_relative), 6.0)
+        coarse = np.divide(
+            np.where(overlaps, deltas, 0).sum(axis=1), overlaps.sum(axis=1),
+            out=np.full(len(starts), np.inf), where=overlaps.sum(axis=1) > 0,
+        ) + (1 - overlaps.mean(axis=1))
+        coarse[~valid] = np.inf
+        index = int(np.argmin(coarse))
+        if np.isfinite(coarse[index]) and (best is None or coarse[index] < best[0]):
+            best = (float(coarse[index]), int(starts[index]), candidates[index], candidate_masks[index])
     if best is None:
         return float("inf"), 0.0
     return _dtw_cost(query, query_mask, best[2], best[3]), best[1] / CONTOUR_HZ
@@ -308,58 +322,47 @@ def build_corpus(corpus_id: uuid.UUID, user_id: uuid.UUID, credentials: tuple[st
 
 def search_corpus(user_id: uuid.UUID, audio: bytes, limit: int = 10) -> dict[str, object]:
     query, query_mask = extract_hum_contour(audio)
-    query_vector = contour_embedding(query, query_mask)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
-            """WITH active AS (
-                 SELECT hc.run_id FROM hum_corpora hc
-                 WHERE hc.user_id=%s AND hc.status='complete'
-                   AND EXISTS (SELECT 1 FROM melody_windows mw WHERE mw.run_id=hc.run_id)
-                 ORDER BY hc.completed_at DESC LIMIT 1
-               )
-               SELECT * FROM (
-                 SELECT DISTINCT ON (mw.track_id)
-                        mw.run_id,mw.track_id,mw.source,mw.start_seconds,mw.duration_seconds,
-                        mw.embedding <=> %s::vector AS distance
-                 FROM melody_windows mw JOIN active ON active.run_id=mw.run_id
-                 ORDER BY mw.track_id,mw.embedding <=> %s::vector
-               ) nearest_per_track ORDER BY distance LIMIT 100""",
-            (user_id, _vector_literal(query_vector), _vector_literal(query_vector)),
-        )
-        neighbors = cursor.fetchall()
-        if not neighbors:
-            raise ValueError("Rebuild the melody index before searching")
-        candidates = neighbors
-        cursor.execute(
             """SELECT mc.track_id,mc.source,mc.pitch,mc.voiced FROM melody_contours mc
-               WHERE mc.run_id=%s""",
-            (neighbors[0]["run_id"],),
+               JOIN hum_corpora hc ON hc.run_id=mc.run_id
+               WHERE hc.user_id=%s AND hc.status='complete'
+                 AND hc.id=(SELECT hc2.id FROM hum_corpora hc2 JOIN melody_contours mc2 ON mc2.run_id=hc2.run_id
+                            WHERE hc2.user_id=%s AND hc2.status='complete'
+                            GROUP BY hc2.id ORDER BY hc2.completed_at DESC LIMIT 1)""",
+            (user_id, user_id),
         )
-        contours = {(row["track_id"], row["source"]): row for row in cursor.fetchall()}
+        contours = cursor.fetchall()
+        if not contours:
+            raise ValueError("Build the melody hum index before searching")
         best_by_track: dict[uuid.UUID, tuple[float, float, str]] = {}
-        for candidate in candidates:
-            contour = contours.get((candidate["track_id"], candidate["source"]))
-            if contour is None:
-                continue
-            pitch = np.asarray(contour["pitch"], dtype=np.float32)
-            voiced = np.asarray(contour["voiced"], dtype=bool)
-            start = round(float(candidate["start_seconds"]) * CONTOUR_HZ)
-            width = round(float(candidate["duration_seconds"]) * CONTOUR_HZ)
-            target, target_mask = pitch[start:start + width], voiced[start:start + width]
-            if len(target) < 2:
-                continue
-            cost = _dtw_cost(query, query_mask, target, target_mask)
-            current = best_by_track.get(candidate["track_id"])
-            if current is None or cost < current[0]:
-                best_by_track[candidate["track_id"]] = (cost, start / CONTOUR_HZ, candidate["source"])
+        for contour in contours:
+            cost, offset = match_contour(
+                query, query_mask, np.asarray(contour["pitch"], dtype=np.float32),
+                np.asarray(contour["voiced"], dtype=bool),
+            )
+            current = best_by_track.get(contour["track_id"])
+            if np.isfinite(cost) and (current is None or cost < current[0]):
+                best_by_track[contour["track_id"]] = (cost, offset, contour["source"])
         scored = [(track_id, *match) for track_id, match in best_by_track.items()]
-        scored.sort(key=lambda item: item[1]); selected = scored[:limit]
+        scored.sort(key=lambda item: item[1])
+        selected = scored[:limit]
         if not selected:
             return {"tracks": [], "query_seconds": len(query) / CONTOUR_HZ}
         ids = [item[0] for item in selected]
-        cursor.execute("""SELECT t.id,t.title,t.artist,t.album,t.duration_seconds,max(utl.external_id) source_id,max(ts.source_data->>'coverArt') cover_art FROM tracks t JOIN user_track_links utl ON utl.track_id=t.id AND utl.user_id=%s LEFT JOIN track_sources ts ON ts.library_id=utl.library_id AND ts.track_id=utl.track_id AND ts.external_id=utl.external_id WHERE t.id=ANY(%s) GROUP BY t.id""", (user_id, ids))
+        cursor.execute(
+            """SELECT t.id,t.title,t.artist,t.album,t.duration_seconds,max(utl.external_id) source_id,
+                      max(ts.source_data->>'coverArt') cover_art
+               FROM tracks t JOIN user_track_links utl ON utl.track_id=t.id AND utl.user_id=%s
+               LEFT JOIN track_sources ts ON ts.library_id=utl.library_id AND ts.track_id=utl.track_id
+                                          AND ts.external_id=utl.external_id
+               WHERE t.id=ANY(%s) GROUP BY t.id""",
+            (user_id, ids),
+        )
         metadata = {row["id"]: row for row in cursor.fetchall()}
     results = []
     for track_id, cost, offset, source in selected:
-        row = dict(metadata[track_id]); row["similarity"] = float(np.exp(-cost)); row["matched_at_seconds"] = offset; row["match_cost"] = cost; row["matched_source"] = source; results.append(row)
-    return {"tracks": results, "query_seconds": len(query) / CONTOUR_HZ, "matcher": "ann-melody-window-plus-dtw-v3", "candidate_windows": len(candidates)}
+        row = dict(metadata[track_id])
+        row.update(similarity=float(np.exp(-cost)), matched_at_seconds=offset, match_cost=cost, matched_source=source)
+        results.append(row)
+    return {"tracks": results, "query_seconds": len(query) / CONTOUR_HZ, "matcher": "vectorized-exhaustive-melody-dtw-v4", "candidate_contours": len(contours)}
