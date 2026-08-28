@@ -40,6 +40,7 @@ export default function BrowseLibrary() {
   }, []);
 
   useEffect(() => {
+    if (humResults) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setLoading(true); setError("");
@@ -51,15 +52,15 @@ export default function BrowseLibrary() {
       }).catch(reason => { if (reason.name !== "AbortError") setError(reason instanceof Error ? reason.message : "Could not load tracks"); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     }, batch === 0 ? 220 : 0);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [album, artist, batch, query, sortBy]);
+  }, [album, artist, batch, humResults, query, sortBy]);
 
   useEffect(() => {
     const root = listRef.current, sentinel = sentinelRef.current;
-    if (!root || !sentinel || loading || tracks.length >= total) return;
+    if (!root || !sentinel || humResults || loading || tracks.length >= total) return;
     const observer = new IntersectionObserver(entries => { if (entries[0]?.isIntersecting) setBatch(value => value + 1); }, { root, rootMargin: "180px 0px" });
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [loading, total, tracks.length]);
+  }, [humResults, loading, total, tracks.length]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
