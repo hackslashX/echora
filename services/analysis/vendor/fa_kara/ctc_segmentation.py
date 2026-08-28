@@ -17,6 +17,7 @@ from torchaudio.functional import TokenSpan
 class SourcePrior:
     target_index: int
     time_seconds: float
+    weight: float = 1.0
 
 
 def _huber(value: float, delta: float) -> float:
@@ -63,17 +64,36 @@ def align_with_source_priors(
     frame_count = int(emission.shape[0])
     negative_inf = torch.tensor(float("-inf"), device=emission.device)
 
-    prior_by_target = {prior.target_index: prior.time_seconds for prior in source_priors}
+    prior_by_target = {
+        prior.target_index: (prior.time_seconds, prior.weight)
+        for prior in source_priors
+    }
+    if any(target < 0 or target >= len(targets) for target in prior_by_target):
+        invalid = next(target for target in prior_by_target if target < 0 or target >= len(targets))
+        raise ValueError(f"source prior target {invalid} is outside the transcript")
+    prior_targets = list(prior_by_target)
+    prior_states = torch.tensor(
+        [target * 2 + 1 for target in prior_targets], dtype=torch.long, device=emission.device,
+    )
+    prior_times = torch.tensor(
+        [prior_by_target[target][0] for target in prior_targets],
+        dtype=emission.dtype, device=emission.device,
+    )
+    prior_weights = torch.tensor(
+        [prior_by_target[target][1] for target in prior_targets],
+        dtype=emission.dtype, device=emission.device,
+    )
     scores = torch.full((state_count,), float("-inf"), device=emission.device)
     scores[0] = emission[0, blank]
     if targets:
         initial = emission[0, targets[0]]
         if 0 in prior_by_target:
-            initial -= prior_weight * _huber(prior_by_target[0], prior_delta_seconds)
+            expected_time, weight = prior_by_target[0]
+            initial -= prior_weight * weight * _huber(expected_time, prior_delta_seconds)
         scores[1] = initial
 
     # 0 means stay, 1 advance one state, 2 skip a blank. One byte per state.
-    backpointers = torch.zeros((frame_count, state_count), dtype=torch.uint8, device="cpu")
+    backpointers = torch.zeros((frame_count, state_count), dtype=torch.uint8, device=emission.device)
     state_indexes = torch.arange(state_count, device=emission.device)
     is_label = state_indexes.remainder(2).eq(1)
     skip_allowed = torch.zeros(state_count, dtype=torch.bool, device=emission.device)
@@ -87,25 +107,28 @@ def align_with_source_priors(
         skip = torch.where(skip_allowed, skip, negative_inf)
         choices = torch.stack((stay, advance, skip), dim=0)
 
-        # Priors belong to transitions into the first acoustic token of a line.
-        for target_index, expected_time in prior_by_target.items():
-            state = target_index * 2 + 1
-            if state >= state_count:
-                raise ValueError(f"source prior target {target_index} is outside the transcript")
-            penalty = prior_weight * _huber(
-                frame * frame_shift_seconds - expected_time, prior_delta_seconds
+        # Priors belong to transitions into acoustic tokens. Compute all
+        # penalties together; per-prior Python loops dominate long songs.
+        if prior_states.numel():
+            residual = (frame * frame_shift_seconds - prior_times).abs()
+            huber = torch.where(
+                residual <= prior_delta_seconds,
+                0.5 * residual.square() / prior_delta_seconds,
+                residual - 0.5 * prior_delta_seconds,
             )
-            choices[1:, state] -= penalty
+            penalties = prior_weight * prior_weights * huber
+            choices[1:, prior_states] -= penalties.unsqueeze(0)
 
         best_scores, best_moves = choices.max(dim=0)
         scores = best_scores + emission[frame].index_select(0, labels)
-        backpointers[frame] = best_moves.to(device="cpu", dtype=torch.uint8)
+        backpointers[frame] = best_moves.to(dtype=torch.uint8)
 
     final_states = [state_count - 1, state_count - 2]
     state = max(final_states, key=lambda index: float(scores[index]))
     if not math.isfinite(float(scores[state])):
         raise RuntimeError("no finite CTC path exists for the supplied transcript")
 
+    backpointers = backpointers.cpu()
     path = [state]
     for frame in range(frame_count - 1, 0, -1):
         move = int(backpointers[frame, state])

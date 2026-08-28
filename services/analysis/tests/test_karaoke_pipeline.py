@@ -1,5 +1,7 @@
 from echora_analysis.karaoke_pipeline import (
     _anchored_source_lines,
+    apply_adaptive_line_padding,
+    build_lines_from_alignment_document,
     _timed_source_lines,
     _validate_alignment_document,
     bound_to_synced_lines,
@@ -24,6 +26,75 @@ def test_parse_ass_karaoke_preserves_line_and_syllable_timing():
             {"start_ms": 1700, "end_ms": 2400, "text": "lo"},
         ],
     }]
+
+
+def test_alignment_document_restores_punctuation_and_spaces_to_display_syllables():
+    document = {"alignment": {"lines": [{
+        "text": "Hello, world!",
+        "start_ms": 1000,
+        "end_ms": 1800,
+        "tokens": [
+            {"text": "Hello", "start_ms": 1000, "end_ms": 1300},
+            {"text": "world", "start_ms": 1400, "end_ms": 1800},
+        ],
+    }]}}
+
+    assert build_lines_from_alignment_document(document) == [{
+        "text": "Hello, world!",
+        "start_ms": 1000,
+        "end_ms": 1800,
+        "syllables": [
+            {"text": "Hello, ", "start_ms": 1000, "end_ms": 1300},
+            {"text": "world!", "start_ms": 1400, "end_ms": 1800},
+        ],
+    }]
+
+
+def test_adaptive_padding_never_steals_time_from_previous_syllable():
+    lines = [
+        {"text": "uh-huh", "start_ms": 800, "end_ms": 2200,
+         "syllables": [{"text": "uh-huh", "start_ms": 1000, "end_ms": 2000}]},
+        {"text": "next", "start_ms": 1800, "end_ms": 3000,
+         "syllables": [{"text": "next", "start_ms": 2000, "end_ms": 2400}]},
+    ]
+
+    result = apply_adaptive_line_padding(lines)
+
+    assert result[0]["end_ms"] == 2000
+    assert result[1]["start_ms"] == 2000
+    assert result[0]["syllables"] == lines[0]["syllables"]
+
+
+def test_adaptive_padding_uses_real_silence_and_syllable_duration():
+    lines = [
+        {"text": "first", "syllables": [{"text": "first", "start_ms": 1000, "end_ms": 1400}]},
+        {"text": "second", "syllables": [{"text": "second", "start_ms": 2000, "end_ms": 2400}]},
+    ]
+
+    result = apply_adaptive_line_padding(lines)
+
+    assert result[0]["end_ms"] == 1500
+    assert result[1]["start_ms"] == 1900
+
+
+def test_lead_in_guard_matches_source_text_after_blank_lines():
+    karaoke = [{"text": "'Cause everything", "start_ms": 72877, "end_ms": 77179, "syllables": [
+        {"text": "'Cause ", "start_ms": 72877, "end_ms": 72977},
+        {"text": "ev", "start_ms": 72977, "end_ms": 76719},
+        {"text": "erything", "start_ms": 76719, "end_ms": 77179},
+    ]}]
+    source = [
+        {"text": "", "start_ms": 62660},
+        {"text": "Other line", "start_ms": 68950},
+        {"text": "'Cause everything", "start_ms": 76020},
+    ]
+
+    result = guard_pathological_lead_ins(karaoke, source, {})
+
+    assert result[0]["start_ms"] == 76020
+    assert result[0]["syllables"][0]["start_ms"] == 76020
+    assert result[0]["syllables"][1]["start_ms"] == 76120
+    assert result[0]["syllables"][2]["start_ms"] == 76719
 
 
 def test_parse_ass_karaoke_ignores_headers():

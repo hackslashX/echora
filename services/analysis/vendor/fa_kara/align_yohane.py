@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 TokenizerFn = Callable[[list[str]], list[list[int]]]
 _WAV2VEC_ALIGNER_CACHE: dict[tuple[str, bool], "Wav2Vec2ForcedAligner"] = {}
+_MMS_ALIGNER_CACHE: "TorchAudioForcedAligner | None" = None
 
 class ForcedAligner(ABC):
     @abstractmethod
@@ -70,6 +71,14 @@ class TorchAudioForcedAligner(ForcedAligner):
         return emission, token_spans, int(self.bundle.sample_rate)
 
 
+def _inference_chunk_starts(total_samples: int, chunk_samples: int, overlap_samples: int) -> list[int]:
+    step_samples = chunk_samples - overlap_samples
+    return [
+        start for start in range(0, total_samples, step_samples)
+        if start == 0 or total_samples - start > overlap_samples
+    ]
+
+
 class Wav2Vec2ForcedAligner(ForcedAligner):
     def __init__(self, model: str, *, use_gpu: bool = True) -> None:
         super().__init__()
@@ -97,9 +106,8 @@ class Wav2Vec2ForcedAligner(ForcedAligner):
         duration_seconds = waveform.numel() / target_sample_rate
         chunk_samples = 45 * target_sample_rate
         overlap_samples = 2 * target_sample_rate
-        step_samples = chunk_samples - overlap_samples
         emissions = []
-        starts = list(range(0, waveform.numel(), step_samples))
+        starts = _inference_chunk_starts(waveform.numel(), chunk_samples, overlap_samples)
         for chunk_index, start in enumerate(starts):
             chunk = waveform[start:min(waveform.numel(), start + chunk_samples)]
             inputs = self.processor(
@@ -153,6 +161,19 @@ def _unflatten_token_spans(
         grouped_spans.append(spans[offset : offset + length])
         offset += length
     return grouped_spans
+
+
+def _scale_diagnostic_times(value, speed, key=None):
+    """Return diagnostics in original-audio time after stretched inference."""
+    if isinstance(value, dict):
+        return {item_key: _scale_diagnostic_times(item, speed, item_key)
+                for item_key, item in value.items()}
+    if isinstance(value, list):
+        return [_scale_diagnostic_times(item, speed, key) for item in value]
+    if (key and key.endswith("_ms") and key != "source_drift_ms_per_minute"
+            and isinstance(value, (int, float)) and not isinstance(value, bool)):
+        return round(value * speed)
+    return value
 
 
 def _format_time(time_sec):
@@ -278,6 +299,37 @@ def _collapsed_token_count(groups: list[list[TokenSpan]], frame_shift: float,
     )
 
 
+def _assign_ctc_blank_holds(
+    groups: list[list[TokenSpan]], line_ranges: list[tuple[int, int]],
+) -> list[list[TokenSpan]]:
+    """Hold each acoustic token through trailing CTC blanks until the next token.
+
+    CTC label emissions are brief onset spikes. The blank frames after a spike
+    still belong to the sung syllable for karaoke display purposes.
+    """
+    result = [[TokenSpan(span.token, span.start, span.end, span.score) for span in group]
+              for group in groups]
+    if not line_ranges:
+        return result
+    line_ends = {end - 1 for _, end in line_ranges if end > 0}
+    for index in range(len(result) - 1):
+        # Do not carry a final word through the pause before the next line.
+        # Line containers handle display padding separately.
+        if index in line_ends:
+            continue
+        current, following = result[index], result[index + 1]
+        if not current or not following:
+            continue
+        next_start = following[0].start
+        if next_start <= current[-1].end:
+            continue
+        # Inside a line, intervening blank frames represent the current
+        # syllable's hold. Cross-line silence must remain unhighlighted.
+        last = current[-1]
+        current[-1] = TokenSpan(last.token, last.start, next_start, last.score)
+    return result
+
+
 def _maximum_internal_gap(groups: list[list[TokenSpan]], frame_shift: float) -> float:
     populated = [group for group in groups if group]
     return max(
@@ -362,6 +414,54 @@ def _calibrate_source_priors(source_starts, observed_starts, target_indexes):
     return priors, diagnostics
 
 
+def align_audio_with_timeline_mms(audio_file_path, token_lines, line_starts_ms, sr=None, speed=1, use_gpu=True):
+    """Run Meta MMS_FA globally while preserving Echora's line structure."""
+    del line_starts_ms, use_gpu
+    if isinstance(audio_file_path, str):
+        waveform, sample_rate = torchaudio.load(audio_file_path)
+    else:
+        waveform = torch.tensor(audio_file_path).float().unsqueeze(0)
+        sample_rate = sr
+    if sample_rate is None or speed <= 0:
+        raise ValueError("sample rate and positive audio speed are required")
+    acoustic_tokens = [token for line in token_lines for token in line if token]
+    if not acoustic_tokens:
+        raise ValueError("lyrics contain no alignable acoustic tokens")
+    line_ranges = []
+    offset = 0
+    for line in token_lines:
+        count = sum(1 for token in line if token)
+        if count:
+            line_ranges.append((offset, offset + count))
+            offset += count
+    global _MMS_ALIGNER_CACHE
+    if _MMS_ALIGNER_CACHE is None:
+        _MMS_ALIGNER_CACHE = TorchAudioForcedAligner()
+    model = _MMS_ALIGNER_CACHE
+    encoded = model.tokenize(acoustic_tokens)
+    emission, spans, target_sample_rate = model.align(encoded, waveform, sample_rate)
+    del target_sample_rate
+    frame_shift = (waveform.shape[1] / sample_rate) / emission.shape[1]
+    spans = _assign_ctc_blank_holds(spans, line_ranges)
+    results = [
+        _span_result(token, token_spans, frame_shift * speed)
+        for token, token_spans in zip(acoustic_tokens, spans, strict=True)
+    ]
+    diagnostics = {
+        "acoustic_aligner": "torchaudio_mms_fa",
+        "ctc_blank_hold_assignment": "preceding_acoustic_token",
+        "inference_audio_speed": speed,
+        "line_count": len(line_ranges),
+        "token_count": len(acoustic_tokens),
+        "mean_ctc_score": statistics.fmean(item["score"] for item in results),
+        "inference_passes": 1,
+    }
+    for result in results:
+        result["inference_passes"] = 1
+        result["source_diagnostics"] = diagnostics
+    return results
+
+
 def _wav2vec_aligner(model: str, use_gpu: bool) -> Wav2Vec2ForcedAligner:
     key = (model, bool(use_gpu))
     cached = _WAV2VEC_ALIGNER_CACHE.get(key)
@@ -371,7 +471,7 @@ def _wav2vec_aligner(model: str, use_gpu: bool) -> Wav2Vec2ForcedAligner:
     return cached
 
 
-def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=None, speed=1, use_gpu=True, hf_model_id=None):
+def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=None, speed=1, use_gpu=True, hf_model_id=None, refine_all_lines=False, duration_aware_priors=False, reference_audio=None):
     """Align the complete song from one emission lattice with soft line priors."""
     if isinstance(audio_file_path, str):
         waveform, sample_rate = torchaudio.load(audio_file_path)
@@ -380,6 +480,14 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
         sample_rate = sr
     if sample_rate is None:
         raise ValueError("sample rate is required")
+    if reference_audio is not None:
+        reference_waveform = torch.tensor(reference_audio).float().unsqueeze(0)
+        if reference_waveform.shape[1] != waveform.shape[1]:
+            raise ValueError("reference audio duration must match alignment audio")
+    else:
+        reference_waveform = None
+    if speed <= 0:
+        raise ValueError("audio speed must be positive")
     if len(token_lines) != len(line_starts_ms) or not token_lines:
         raise ValueError("token lines and source timestamps must be non-empty and equal in length")
 
@@ -414,10 +522,39 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
         frame_shift_seconds=frame_shift, source_priors=[],
     )
     observed_starts = [initial_spans[index][0].start * frame_shift for index in line_acoustic_indexes]
-    source_starts = [max(0.0, float(value) / 1000.0) for value in line_starts_ms]
+    # The stretched waveform uses processed-audio coordinates. Source cues
+    # arrive in original playback time and must be converted before decoding.
+    source_starts = [max(0.0, float(value) / 1000.0 / speed) for value in line_starts_ms]
     priors, source_diagnostics = _calibrate_source_priors(
         source_starts, observed_starts, line_target_indexes
     )
+    if duration_aware_priors:
+        slope = 1.0 + float(source_diagnostics.get("source_drift_ms_per_minute", 0)) / 60000.0
+        offset = float(source_diagnostics.get("source_offset_ms", 0)) / 1000.0
+        internal_prior_count = 0
+        for line_index, (acoustic_start, acoustic_end) in enumerate(line_acoustic_ranges[:-1]):
+            group_count = acoustic_end - acoustic_start
+            if group_count < 4:
+                continue
+            interval_start = max(0.0, slope * source_starts[line_index] + offset)
+            interval_end = max(interval_start, slope * source_starts[line_index + 1] + offset)
+            interval_duration = interval_end - interval_start
+            if not 0.75 <= interval_duration <= 15.0:
+                continue
+            target_index = line_target_indexes[line_index]
+            for group_offset in range(1, group_count):
+                target_index += len(encoded[acoustic_start + group_offset - 1])
+                fraction = group_offset / group_count
+                # Inner priors are deliberately weak. The final acoustic token
+                # gets more influence because front-loaded paths most often
+                # truncate the sung ending there.
+                weight = 0.32 if group_offset == group_count - 1 else 0.14
+                priors.append(SourcePrior(
+                    target_index, interval_start + interval_duration * fraction, weight,
+                ))
+                internal_prior_count += 1
+        source_diagnostics["duration_aware_internal_priors"] = internal_prior_count
+        source_diagnostics["duration_aware_prior_mode"] = "proportional_token_onsets"
     spans = align_with_source_priors(
         emission, encoded, blank=aligner_model.blank,
         frame_shift_seconds=frame_shift, source_priors=priors,
@@ -435,7 +572,12 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
     recovery_runs = []
     for run in runs:
         if len(run) >= 2:
-            recovery_runs.append(run)
+            # Include the following line so a contested boundary is decoded
+            # jointly instead of clipping the recovered block's final token.
+            expanded = list(run)
+            if expanded[-1] + 1 < len(line_acoustic_ranges):
+                expanded.append(expanded[-1] + 1)
+            recovery_runs.append(expanded)
         elif run[0] > 0:
             # A single bad line often means the boundary from its preceding
             # line was consumed too early. Retry both sides of that boundary.
@@ -496,6 +638,7 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
                 "next_start_ms": None if not math.isfinite(next_start) else round(next_start * 1000),
                 "focused_score": local_score, "original_score": original_score,
             }
+            previous_intrusion = max(0.0, previous_end - local_start)
             boundary_intrusion = max(0.0, local_end - next_start)
             maximum_intrusion = 1.25 if run == [0] else 0.35
             source_boundary = (
@@ -513,13 +656,17 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
                 and (abs(next_start - source_boundary) <= 0.75 or next_start < source_boundary - 1.0)
                 and local_end <= source_boundary + 1.75
             )
-            effective_boundary = (
-                source_boundary
-                if source_boundary_recovery and next_start < source_boundary - 1.0
-                else next_start
-            )
+            # Replacement cannot cross the unchanged next token. The source
+            # cue may justify accepting a recovery, but clipping past this CTC
+            # boundary would make the stored document non-monotonic.
+            effective_boundary = next_start
             effective_intrusion = max(0.0, local_end - effective_boundary)
-            if local_start < previous_end or (not source_boundary_recovery and boundary_intrusion > maximum_intrusion):
+            recoverable_previous_intrusion = (
+                previous_intrusion <= maximum_intrusion
+                and (source_boundary_recovery or acoustic_end == len(spans))
+            )
+            if ((previous_intrusion > 0 and not recoverable_previous_intrusion)
+                    or (not source_boundary_recovery and boundary_intrusion > maximum_intrusion)):
                 candidate["rejected"] = "adjacent_line_overlap"
                 recovery_candidates.append(candidate)
                 continue
@@ -528,24 +675,36 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
                 candidate["rejected"] = "lower_ctc_score"
                 recovery_candidates.append(candidate)
                 continue
-            candidate["accepted"] = True
             if source_boundary_recovery:
                 candidate["boundary_recovery"] = "calibrated_source_cue"
                 candidate["source_boundary_ms"] = round(source_boundary * 1000)
-            recovery_candidates.append(candidate)
+            previous_frame = round(previous_end / frame_shift)
             boundary_frame = round(effective_boundary / frame_shift) if math.isfinite(effective_boundary) else None
             converted = []
             for group in local_spans:
                 converted_group = []
                 for span in group:
-                    start_frame = round((window_start + span.start * local_shift) / frame_shift)
-                    end_frame = round((window_start + span.end * local_shift) / frame_shift)
+                    start_frame = max(previous_frame, round((window_start + span.start * local_shift) / frame_shift))
+                    end_frame = max(start_frame, round((window_start + span.end * local_shift) / frame_shift))
                     if boundary_frame is not None:
                         start_frame = min(start_frame, boundary_frame)
                         end_frame = min(max(start_frame, end_frame), boundary_frame)
                     converted_group.append(TokenSpan(span.token, start_frame, end_frame, span.score))
                 converted.append(converted_group)
+            original_collapsed = _collapsed_token_count(
+                spans[acoustic_start:acoustic_end], frame_shift,
+            )
+            converted_collapsed = _collapsed_token_count(converted, frame_shift)
+            if converted_collapsed > original_collapsed:
+                candidate["rejected"] = "boundary_clipping_collapsed_tokens"
+                candidate["collapsed_tokens_before"] = original_collapsed
+                candidate["collapsed_tokens_after_clipping"] = converted_collapsed
+                recovery_candidates.append(candidate)
+                continue
+            candidate["accepted"] = True
+            candidate["previous_boundary_intrusion_ms"] = round(previous_intrusion * 1000)
             candidate["boundary_intrusion_ms"] = round(effective_intrusion * 1000)
+            recovery_candidates.append(candidate)
             spans[acoustic_start:acoustic_end] = converted
             recovered_lines.extend(run)
         source_diagnostics["vocal_focus_attempted_runs"] = recovery_runs
@@ -568,12 +727,20 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
         if _is_collapsed_line(spans[start:end], frame_shift,
                               corrected_starts[line_index], corrected_ends[line_index]):
             collapsed_lines.append(line_index)
-    retry_lines = sorted({candidate for line in collapsed_lines
-                          for candidate in (line, line + 1)
-                          if candidate < len(line_acoustic_ranges)})
+    retry_lines = (
+        list(range(len(line_acoustic_ranges)))
+        if refine_all_lines else
+        sorted({candidate for line in collapsed_lines
+                for candidate in (line, line + 1)
+                if candidate < len(line_acoustic_ranges)})
+    )
     collapsed_candidates = []
     if retry_lines:
         focused_waveform = _vocal_focus_waveform(waveform, sample_rate)
+        focused_reference_waveform = (
+            _vocal_focus_waveform(reference_waveform, sample_rate)
+            if reference_waveform is not None else None
+        )
         for line_index in retry_lines:
             acoustic_start, acoustic_end = line_acoustic_ranges[line_index]
             window_start, window_end = corrected_starts[line_index], corrected_ends[line_index]
@@ -583,13 +750,43 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
                 candidate["rejected"] = "empty_corrected_source_interval"
                 collapsed_candidates.append(candidate)
                 continue
-            segment = focused_waveform[:, int(window_start * sample_rate):int(window_end * sample_rate)]
+            context_start = max(0, acoustic_start - 1) if refine_all_lines else acoustic_start
+            context_end = min(len(encoded), acoustic_end + 1) if refine_all_lines else acoustic_end
+            inference_window_start = max(0.0, window_start - 0.75) if refine_all_lines else window_start
+            inference_window_end = min(duration, window_end + 0.75) if refine_all_lines else window_end
+            segment = focused_waveform[:, int(inference_window_start * sample_rate):int(inference_window_end * sample_rate)]
             local_emission, _, local_shift = aligner_model.infer(segment, sample_rate)
             recovery_passes += aligner_model.last_inference_passes
-            local_spans = align_with_source_priors(
-                local_emission, encoded[acoustic_start:acoustic_end], blank=aligner_model.blank,
+            contextual_spans = align_with_source_priors(
+                local_emission, encoded[context_start:context_end], blank=aligner_model.blank,
                 frame_shift_seconds=local_shift, source_priors=[],
             )
+            target_offset = acoustic_start - context_start
+            local_spans = contextual_spans[target_offset:target_offset + acoustic_end - acoustic_start]
+            candidate_audio_source = "vocal_stem"
+            if refine_all_lines and focused_reference_waveform is not None:
+                reference_segment = focused_reference_waveform[:, int(inference_window_start * sample_rate):int(inference_window_end * sample_rate)]
+                reference_emission, _, reference_shift = aligner_model.infer(reference_segment, sample_rate)
+                recovery_passes += aligner_model.last_inference_passes
+                reference_contextual_spans = align_with_source_priors(
+                    reference_emission, encoded[context_start:context_end], blank=aligner_model.blank,
+                    frame_shift_seconds=reference_shift, source_priors=[],
+                )
+                reference_spans = reference_contextual_spans[target_offset:target_offset + acoustic_end - acoustic_start]
+                # The mix can recover masked consonants or endings, but only
+                # replace the stem candidate when its acoustic confidence wins.
+                if _line_span_score(reference_spans) > _line_span_score(local_spans):
+                    local_spans = reference_spans
+                    local_shift = reference_shift
+                    candidate_audio_source = "original_mix"
+            if refine_all_lines:
+                candidate["context_tokens"] = {
+                    "before": target_offset,
+                    "after": context_end - acoustic_end,
+                    "audio_margin_ms": 750,
+                    "candidates": "vocal_stem+original_mix" if focused_reference_waveform is not None else "vocal_stem",
+                }
+                candidate["selected_audio_source"] = candidate_audio_source
             old_groups = spans[acoustic_start:acoustic_end]
             old_count = _collapsed_token_count(old_groups, frame_shift)
             new_count = _collapsed_token_count(local_spans, local_shift)
@@ -598,11 +795,14 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
             old_front_load = _front_loaded_ratio(
                 old_groups, frame_shift, window_start, window_end,
             )
+            old_score = _line_span_score(old_groups)
+            new_score = _line_span_score(local_spans)
             new_front_load = _front_loaded_ratio(
-                local_spans, local_shift, 0.0, window_end - window_start,
+                local_spans, local_shift,
+                window_start - inference_window_start, window_end - inference_window_start,
             )
-            local_start = window_start + local_spans[0][0].start * local_shift
-            local_end = window_start + local_spans[-1][-1].end * local_shift
+            local_start = inference_window_start + local_spans[0][0].start * local_shift
+            local_end = inference_window_start + local_spans[-1][-1].end * local_shift
             previous_end = spans[acoustic_start - 1][-1].end * frame_shift if acoustic_start else 0.0
             next_start = spans[acoustic_end][0].start * frame_shift if acoustic_end < len(spans) else duration
             candidate.update({"collapsed_tokens_before": old_count, "collapsed_tokens_after": new_count,
@@ -610,11 +810,18 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
                               "internal_gap_after_ms": round(new_gap * 1000),
                               "front_loaded_ratio_before": old_front_load,
                               "front_loaded_ratio_after": new_front_load,
+                              "ctc_score_before": old_score, "ctc_score_after": new_score,
                               "start_ms": round(local_start * 1000), "end_ms": round(local_end * 1000)})
             if local_start < previous_end or local_end > next_start:
                 candidate["rejected"] = "non_monotonic"
+            elif refine_all_lines and new_score < old_score * 0.9:
+                candidate["rejected"] = "lower_ctc_score"
             elif not (
-                new_count < old_count
+                (refine_all_lines and new_score >= old_score * 0.9
+                 and new_count <= old_count
+                 and new_gap <= max(1.0, old_gap)
+                 and new_front_load <= max(0.35, old_front_load + 0.1))
+                or new_count < old_count
                 or (old_gap > 1.5 and new_gap < min(1.0, old_gap * 0.5))
                 or (old_front_load >= 0.45
                     and new_front_load <= min(0.35, old_front_load - 0.2)
@@ -625,10 +832,12 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
                 candidate["accepted"] = True
                 spans[acoustic_start:acoustic_end] = [[TokenSpan(
                     span.token,
-                    round((window_start + span.start * local_shift) / frame_shift),
-                    round((window_start + span.end * local_shift) / frame_shift), span.score,
+                    round((inference_window_start + span.start * local_shift) / frame_shift),
+                    round((inference_window_start + span.end * local_shift) / frame_shift),
+                    span.score,
                 ) for span in group] for group in local_spans]
             collapsed_candidates.append(candidate)
+        source_diagnostics["line_refinement_mode"] = "all" if refine_all_lines else "anomalies"
         source_diagnostics["collapsed_fallback_trigger_lines"] = collapsed_lines
         source_diagnostics["collapsed_fallback_retry_lines"] = retry_lines
         source_diagnostics["collapsed_fallback_candidates"] = collapsed_candidates
@@ -636,11 +845,15 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
 
     if len(spans) != len(acoustic_tokens):
         raise RuntimeError("global CTC alignment returned the wrong token count")
+    spans = _assign_ctc_blank_holds(spans, line_acoustic_ranges)
+    source_diagnostics["ctc_blank_hold_assignment"] = "preceding_acoustic_token"
     results = [
         _span_result(token, token_spans, frame_shift * speed)
         for token, token_spans in zip(acoustic_tokens, spans, strict=True)
     ]
     total_inference_passes = original_inference_passes + recovery_passes
+    source_diagnostics["inference_audio_speed"] = speed
+    source_diagnostics = _scale_diagnostic_times(source_diagnostics, speed)
     for result in results:
         result['inference_passes'] = total_inference_passes
         result['source_diagnostics'] = source_diagnostics

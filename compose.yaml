@@ -45,12 +45,14 @@ services:
       LYRICS_REVISION: ${LYRICS_REVISION:-5617a9f61b028005a4858fdac845db406aefb181}
       FA_KARA_MODEL_ID: ${FA_KARA_MODEL_ID:-NextFire/mms-300m-ForcedAligner-karaoke-ja-Latn}
       FA_KARA_REVISION: ${FA_KARA_REVISION:-2ab2b5f46539ee284703c281f286b01d2410ee12}
+      FA_KARA_VOCAL_SEPARATION: ${FA_KARA_VOCAL_SEPARATION:-true}
       HF_HOME: /models/huggingface
       HF_HUB_OFFLINE: "1"
     volumes: &analysis-volumes
       - ${MUSIC_LIBRARY_PATH:-./testdata/music}:/music:ro
       - ./data:/data
       - ./data/models/huggingface:/models/huggingface
+      - ./data/models/torch:/models/torch
     depends_on:
       postgres: { condition: service_healthy }
     gpus: all
