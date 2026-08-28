@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
 import platform
+import threading
 import uuid
 
 # The service package is read-only for its unprivileged runtime user. Numba must
@@ -15,7 +17,7 @@ os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 import librosa
 import numpy as np
 import psycopg
-from psycopg.rows import dict_row
+from psycopg.rows import dict_row, tuple_row
 from psycopg.types.json import Jsonb
 
 from .audio import decode_audio, decode_audio_channels
@@ -25,7 +27,15 @@ CATALOG_SAMPLE_RATE = 44_100
 QUERY_SAMPLE_RATE = 24_000
 CONTOUR_HZ = 10
 DEFAULT_CORPUS_SIZE = 50
+_COARSE_STRIDE_SECONDS = 0.2
+_DTW_CANDIDATES = 100
+_REFINE_LIMIT = 600
+_TEMPOS = (0.75, 0.9, 1.0, 1.1, 1.25)
 _DEMUCS_MODEL = None
+# Contours only change while a sync or corpus build is running. Caching the
+# parsed arrays removes the per-query array decoding cost.
+_CONTOUR_CACHE: dict[str, object] = {"key": None, "contours": ()}
+_CACHE_LOCK = threading.Lock()
 
 
 def _smooth_pitch(pitch: np.ndarray, voiced: np.ndarray, radius: int = 2) -> np.ndarray:
@@ -136,7 +146,7 @@ def release_separator() -> None:
 
 def extract_hum_contour(audio: bytes) -> tuple[np.ndarray, np.ndarray]:
     waveform = decode_audio(audio, QUERY_SAMPLE_RATE)
-    frame_length, hop = 2048, 240
+    frame_length, hop = 2048, 480
     f0, voiced, probability = librosa.pyin(
         waveform, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7"),
         sr=QUERY_SAMPLE_RATE, frame_length=frame_length, hop_length=hop,
@@ -182,39 +192,96 @@ def _dtw_cost(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray, tar
     return float(accumulated[-1, -1] / max(len(query), len(target)))
 
 
+def _coarse_scores(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray,
+                   target_mask: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    """Score every window. Lower is better; inf marks unusable windows."""
+    candidates = target[indices]
+    candidate_masks = target_mask[indices]
+    overlaps = candidate_masks & query_mask[None, :]
+    voiced_counts = overlaps.sum(axis=1)
+    valid = voiced_counts >= query_mask.sum() * 0.55
+    safe_overlaps = overlaps.copy()
+    safe_overlaps[~valid, 0] = True
+    q_values = np.where(safe_overlaps, query[None, :], np.nan)
+    c_values = np.where(safe_overlaps, candidates, np.nan)
+    q_relative = query[None, :] - np.nanmedian(q_values, axis=1)[:, None]
+    c_relative = candidates - np.nanmedian(c_values, axis=1)[:, None]
+    deltas = np.minimum(np.abs(q_relative - c_relative), 6.0)
+    coarse = np.divide(
+        np.where(overlaps, deltas, 0).sum(axis=1), voiced_counts,
+        out=np.full(len(indices), np.inf), where=voiced_counts > 0,
+    ) + (1 - overlaps.mean(axis=1))
+    coarse[~valid] = np.inf
+    return coarse
+
+
+def _coarse_half(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray,
+                 target_mask: np.ndarray) -> tuple[float, int, float] | None:
+    """Quarter-resolution scan over every tempo in one vectorized pass.
+
+    Returns the best (score, full-resolution center frame, tempo). The scan only
+    has to locate candidate regions; refinement and DTW confirm at full
+    resolution afterwards.
+    """
+    quarter_query, quarter_mask = query[::4], query_mask[::4]
+    quarter_target, quarter_target_mask = target[::4], target_mask[::4]
+    plans: list[tuple[np.ndarray, np.ndarray, int, int, float]] = []
+    for tempo in _TEMPOS:
+        width = max(5, round(len(quarter_query) * tempo))
+        if width > len(quarter_target):
+            continue
+        starts = np.arange(0, len(quarter_target) - width + 1, 1)
+        offsets = np.rint(np.linspace(0, width - 1, len(quarter_query))).astype(int)
+        plans.append((starts, offsets, len(starts), width, tempo))
+    if not plans:
+        return None
+    common = max(plan[3] for plan in plans)
+    # Pad every tempo to the widest window so one gather and one scoring call
+    # cover all blocks. Padded columns point at frame zero but their query mask
+    # is False, so they never enter overlap or cost math.
+    padded_query = np.concatenate([quarter_query, np.zeros(common - len(quarter_query), np.float32)])
+    padded_mask = np.concatenate([quarter_mask, np.zeros(common - len(quarter_mask), dtype=bool)])
+    padded_offsets = np.zeros(common, dtype=int)
+    indices = np.vstack([
+        starts[:, None] + np.concatenate([offsets, padded_offsets[len(offsets):]])[None, :]
+        for starts, offsets, _, _, _ in plans
+    ])
+    scores = _coarse_scores(padded_query, padded_mask, quarter_target, quarter_target_mask, indices)
+    index = int(np.argmin(scores))
+    if not np.isfinite(scores[index]):
+        return None
+    for starts, _, count, _, tempo in plans:
+        if index < count:
+            return float(scores[index]), int(starts[index]) * 4, tempo
+        index -= count
+    return None
+
+
+def _refine(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray, target_mask: np.ndarray,
+            center: int, tempo: float) -> tuple[float, int, np.ndarray, np.ndarray] | None:
+    """Full-resolution scan around a 5 Hz candidate center."""
+    query_length = len(query)
+    full_width = max(20, round(query_length * tempo))
+    low = max(0, center - 12)
+    high = min(len(target) - full_width, center + 12)
+    if high < low:
+        return None
+    starts = np.arange(low, high + 1)
+    offsets = np.rint(np.linspace(0, full_width - 1, query_length)).astype(int)
+    scores = _coarse_scores(query, query_mask, target, target_mask, starts[:, None] + offsets[None, :])
+    index = int(np.argmin(scores))
+    if not np.isfinite(scores[index]):
+        return None
+    start = int(starts[index])
+    return float(scores[index]), start, target[start:start + full_width], target_mask[start:start + full_width]
+
+
 def match_contour(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray, target_mask: np.ndarray) -> tuple[float, float]:
     """Return a lower-is-better cost and target offset in seconds."""
-    query_length = len(query)
-    best: tuple[float, int, np.ndarray, np.ndarray] | None = None
-    stride = max(1, CONTOUR_HZ // 2)
-    for tempo in (0.75, 0.9, 1.0, 1.1, 1.25):
-        width = max(20, round(query_length * tempo))
-        if width > len(target):
-            continue
-        starts = np.arange(0, len(target) - width + 1, stride)
-        offsets = np.rint(np.linspace(0, width - 1, query_length)).astype(int)
-        indices = starts[:, None] + offsets[None, :]
-        candidates = target[indices]
-        candidate_masks = target_mask[indices]
-        overlaps = candidate_masks & query_mask[None, :]
-        valid = overlaps.sum(axis=1) >= query_mask.sum() * 0.55
-        if not valid.any():
-            continue
-        safe_overlaps = overlaps.copy()
-        safe_overlaps[~valid, 0] = True
-        q_values = np.where(safe_overlaps, query[None, :], np.nan)
-        c_values = np.where(safe_overlaps, candidates, np.nan)
-        q_relative = query[None, :] - np.nanmedian(q_values, axis=1)[:, None]
-        c_relative = candidates - np.nanmedian(c_values, axis=1)[:, None]
-        deltas = np.minimum(np.abs(q_relative - c_relative), 6.0)
-        coarse = np.divide(
-            np.where(overlaps, deltas, 0).sum(axis=1), overlaps.sum(axis=1),
-            out=np.full(len(starts), np.inf), where=overlaps.sum(axis=1) > 0,
-        ) + (1 - overlaps.mean(axis=1))
-        coarse[~valid] = np.inf
-        index = int(np.argmin(coarse))
-        if np.isfinite(coarse[index]) and (best is None or coarse[index] < best[0]):
-            best = (float(coarse[index]), int(starts[index]), candidates[index], candidate_masks[index])
+    half = _coarse_half(query, query_mask, target, target_mask)
+    if half is None:
+        return float("inf"), 0.0
+    best = _refine(query, query_mask, target, target_mask, half[1], half[2])
     if best is None:
         return float("inf"), 0.0
     return _dtw_cost(query, query_mask, best[2], best[3]), best[1] / CONTOUR_HZ
@@ -318,50 +385,114 @@ def build_corpus(corpus_id: uuid.UUID, user_id: uuid.UUID, credentials: tuple[st
         release_separator()
 
 
+def _contour_cache_key(connection: psycopg.Connection) -> tuple[int, str] | None:
+    with connection.cursor(row_factory=tuple_row) as cursor:
+        cursor.execute("SELECT count(*),coalesce(max(track_id::text),'') FROM melody_contours")
+        row = cursor.fetchone()
+    count, latest = row
+    return int(count), str(latest or "")
+
+
+def _load_contours(connection: psycopg.Connection, user_id: uuid.UUID) -> list[dict[str, object]]:
+    key = _contour_cache_key(connection)
+    with _CACHE_LOCK:
+        if _CONTOUR_CACHE["key"] == key and _CONTOUR_CACHE["contours"]:
+            return _CONTOUR_CACHE["contours"]  # type: ignore[return-value]
+        with connection.cursor(row_factory=dict_row) as cursor:
+            cursor.execute(
+                """SELECT DISTINCT ON (mc.track_id,mc.source)
+                          mc.track_id,mc.source,mc.pitch,mc.voiced
+                   FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
+                   WHERE ar.status IN ('complete','running')
+                     AND EXISTS (SELECT 1 FROM user_track_links utl
+                                 WHERE utl.user_id=%s AND utl.track_id=mc.track_id)
+                   ORDER BY mc.track_id,mc.source,ar.created_at DESC""",
+                (user_id,),
+            )
+            rows = cursor.fetchall()
+        contours = [
+            {**row, "pitch": np.asarray(row["pitch"], dtype=np.float32),
+             "voiced": np.asarray(row["voiced"], dtype=bool)}
+            for row in rows
+        ]
+        _CONTOUR_CACHE["key"] = key
+        _CONTOUR_CACHE["contours"] = contours
+        return contours
+
+
 def search_corpus(user_id: uuid.UUID, audio: bytes, limit: int = 10) -> dict[str, object]:
     query, query_mask = extract_hum_contour(audio)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
-        cursor.execute(
-            """SELECT DISTINCT ON (mc.track_id,mc.source)
-                      mc.track_id,mc.source,mc.pitch,mc.voiced
-               FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
-               WHERE ar.status IN ('complete','running')
-                 AND EXISTS (SELECT 1 FROM user_track_links utl
-                             WHERE utl.user_id=%s AND utl.track_id=mc.track_id)
-               ORDER BY mc.track_id,mc.source,ar.created_at DESC""",
-            (user_id,),
-        )
-        contours = cursor.fetchall()
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection:
+        contours = _load_contours(connection, user_id)
         if not contours:
             raise ValueError("Build the melody hum index before searching")
+
+        def scan_half(contour: dict[str, object]) -> tuple[float, int, float, dict[str, object]] | None:
+            half = _coarse_half(query, query_mask, contour["pitch"], contour["voiced"])
+            if half is None:
+                return None
+            return (*half, contour)
+
+        workers = min(16, (os.cpu_count() or 2))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            scanned = [item for item in pool.map(scan_half, contours) if item is not None]
+        if not scanned:
+            return {"tracks": [], "query_seconds": len(query) / CONTOUR_HZ}
+        # Refinement and DTW only make sense for plausible contenders. Everything
+        # far worse than the global leader cannot reach the result list.
+        scanned.sort(key=lambda item: item[0])
+        contenders = scanned[:_REFINE_LIMIT]
+
+        def refine(item: tuple[float, int, float, dict[str, object]]) -> tuple[float, int, np.ndarray, np.ndarray, dict[str, object]] | None:
+            _, center, tempo, contour = item
+            best = _refine(query, query_mask, contour["pitch"], contour["voiced"], center, tempo)
+            if best is None:
+                return None
+            return (*best, contour)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            refined = [item for item in pool.map(refine, contenders) if item is not None]
+        refined.sort(key=lambda item: item[0])
+        finalists = refined[:_DTW_CANDIDATES]
+
+        def confirm(item: tuple[float, int, np.ndarray, np.ndarray, dict[str, object]]) -> tuple[float, float, str, uuid.UUID]:
+            _, start, candidate, candidate_mask, contour = item
+            cost = _dtw_cost(query, query_mask, candidate, candidate_mask)
+            return cost, start / CONTOUR_HZ, str(contour["source"]), contour["track_id"]
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            confirmed = list(pool.map(confirm, finalists))
         best_by_track: dict[uuid.UUID, tuple[float, float, str]] = {}
-        for contour in contours:
-            cost, offset = match_contour(
-                query, query_mask, np.asarray(contour["pitch"], dtype=np.float32),
-                np.asarray(contour["voiced"], dtype=bool),
-            )
-            current = best_by_track.get(contour["track_id"])
-            if np.isfinite(cost) and (current is None or cost < current[0]):
-                best_by_track[contour["track_id"]] = (cost, offset, contour["source"])
+        for cost, offset, source, track_id in confirmed:
+            if not np.isfinite(cost):
+                continue
+            current = best_by_track.get(track_id)
+            if current is None or cost < current[0]:
+                best_by_track[track_id] = (cost, offset, source)
         scored = [(track_id, *match) for track_id, match in best_by_track.items()]
         scored.sort(key=lambda item: item[1])
         selected = scored[:limit]
         if not selected:
             return {"tracks": [], "query_seconds": len(query) / CONTOUR_HZ}
         ids = [item[0] for item in selected]
-        cursor.execute(
-            """SELECT t.id,t.title,t.artist,t.album,t.duration_seconds,max(utl.external_id) source_id,
-                      max(ts.source_data->>'coverArt') cover_art
-               FROM tracks t JOIN user_track_links utl ON utl.track_id=t.id AND utl.user_id=%s
-               LEFT JOIN track_sources ts ON ts.library_id=utl.library_id AND ts.track_id=utl.track_id
-                                          AND ts.external_id=utl.external_id
-               WHERE t.id=ANY(%s) GROUP BY t.id""",
-            (user_id, ids),
-        )
-        metadata = {row["id"]: row for row in cursor.fetchall()}
+        with connection.cursor(row_factory=dict_row) as cursor:
+            cursor.execute(
+                """SELECT t.id,t.title,t.artist,t.album,t.duration_seconds,max(utl.external_id) source_id,
+                          max(ts.source_data->>'coverArt') cover_art
+                   FROM tracks t JOIN user_track_links utl ON utl.track_id=t.id AND utl.user_id=%s
+                   LEFT JOIN track_sources ts ON ts.library_id=utl.library_id AND ts.track_id=utl.track_id
+                                              AND ts.external_id=utl.external_id
+                   WHERE t.id=ANY(%s) GROUP BY t.id""",
+                (user_id, ids),
+            )
+            metadata = {row["id"]: row for row in cursor.fetchall()}
     results = []
     for track_id, cost, offset, source in selected:
         row = dict(metadata[track_id])
         row.update(similarity=float(np.exp(-cost)), matched_at_seconds=offset, match_cost=cost, matched_source=source)
         results.append(row)
-    return {"tracks": results, "query_seconds": len(query) / CONTOUR_HZ, "matcher": "vectorized-exhaustive-melody-dtw-v4", "candidate_contours": len(contours)}
+    return {
+        "tracks": results, "query_seconds": len(query) / CONTOUR_HZ,
+        "matcher": "parallel-two-resolution-melody-dtw-v5",
+        "candidate_contours": len(contours), "dtw_finalists": len(finalists),
+    }
