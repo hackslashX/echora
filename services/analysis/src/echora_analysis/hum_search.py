@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import platform
-from pathlib import Path
 import uuid
 
 # The service package is read-only for its unprivileged runtime user. Numba must
@@ -19,13 +18,14 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from .audio import decode_audio
+from .audio import decode_audio, decode_audio_channels
 from .navidrome import NavidromeClient
 
 CATALOG_SAMPLE_RATE = 44_100
 QUERY_SAMPLE_RATE = 24_000
 CONTOUR_HZ = 10
 DEFAULT_CORPUS_SIZE = 50
+_DEMUCS_MODEL = None
 
 
 def _smooth_pitch(pitch: np.ndarray, voiced: np.ndarray, radius: int = 2) -> np.ndarray:
@@ -70,10 +70,12 @@ def _to_contour(pitch_hz: np.ndarray, voiced: np.ndarray, source_hz: float) -> t
     return _smooth_pitch(pitch, mask), mask
 
 
-def extract_catalog_contour(audio: bytes) -> tuple[np.ndarray, np.ndarray]:
+def extract_waveform_contour(waveform: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
     from essentia.standard import EqualLoudness, PredominantPitchMelodia
 
-    waveform = decode_audio(audio, CATALOG_SAMPLE_RATE)
+    if sample_rate != CATALOG_SAMPLE_RATE:
+        waveform = librosa.resample(waveform, orig_sr=sample_rate, target_sr=CATALOG_SAMPLE_RATE)
+    waveform = np.ascontiguousarray(waveform, dtype=np.float32)
     equalized = EqualLoudness(sampleRate=CATALOG_SAMPLE_RATE)(waveform)
     hop = 256
     pitch, confidence = PredominantPitchMelodia(
@@ -84,6 +86,52 @@ def extract_catalog_contour(audio: bytes) -> tuple[np.ndarray, np.ndarray]:
     confidence = np.asarray(confidence, dtype=np.float32)
     voiced = (pitch > 0) & np.isfinite(pitch) & (confidence > 0)
     return _to_contour(pitch, voiced, CATALOG_SAMPLE_RATE / hop)
+
+
+def extract_catalog_contour(audio: bytes) -> tuple[np.ndarray, np.ndarray]:
+    return extract_waveform_contour(decode_audio(audio, CATALOG_SAMPLE_RATE), CATALOG_SAMPLE_RATE)
+
+
+def separate_melody_sources(audio: bytes) -> dict[str, tuple[np.ndarray, int]]:
+    global _DEMUCS_MODEL
+    import torch
+    from demucs import pretrained
+    from demucs.apply import apply_model
+    from demucs.audio import convert_audio
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if _DEMUCS_MODEL is None:
+        _DEMUCS_MODEL = pretrained.get_model("htdemucs").eval().to(device)
+    model = _DEMUCS_MODEL
+    channels = decode_audio_channels(audio, CATALOG_SAMPLE_RATE, 2)
+    waveform = torch.as_tensor(channels.T, dtype=torch.float32)
+    waveform = convert_audio(waveform, CATALOG_SAMPLE_RATE, model.samplerate, model.audio_channels)
+    reference = waveform.mean(0)
+    mean, std = reference.mean(), reference.std().clamp_min(1e-8)
+    with torch.inference_mode():
+        sources = apply_model(
+            model, ((waveform - mean) / std).unsqueeze(0), device=device,
+            shifts=1, split=True, overlap=0.25, progress=False,
+        )[0] * std + mean
+    vocals = sources[model.sources.index("vocals")].mean(0).cpu().numpy()
+    accompaniment = sources[[index for index, name in enumerate(model.sources) if name != "vocals"]].sum(0).mean(0).cpu().numpy()
+    return {
+        "vocals": (np.asarray(vocals, dtype=np.float32), int(model.samplerate)),
+        "accompaniment": (np.asarray(accompaniment, dtype=np.float32), int(model.samplerate)),
+    }
+
+
+def release_separator() -> None:
+    global _DEMUCS_MODEL
+    if _DEMUCS_MODEL is None:
+        return
+    import gc
+    import torch
+    _DEMUCS_MODEL.to("cpu")
+    _DEMUCS_MODEL = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def extract_hum_contour(audio: bytes) -> tuple[np.ndarray, np.ndarray]:
@@ -167,7 +215,7 @@ def match_contour(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray,
 
 
 def _create_run(connection: psycopg.Connection, corpus_id: uuid.UUID) -> uuid.UUID:
-    config = {"purpose": "hum_search", "corpus_id": str(corpus_id), "extractor": "essentia-melodia", "contour_hz": CONTOUR_HZ, "matcher": "relative-pitch-subsequence-dtw-v1"}
+    config = {"purpose": "hum_search", "corpus_id": str(corpus_id), "extractor": "demucs-htdemucs-plus-essentia-melodia", "sources": ["full-mix", "vocals", "accompaniment"], "contour_hz": CONTOUR_HZ, "matcher": "relative-pitch-subsequence-dtw-v1"}
     config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
     with connection.cursor() as cursor:
         cursor.execute(
@@ -180,47 +228,64 @@ def _create_run(connection: psycopg.Connection, corpus_id: uuid.UUID) -> uuid.UU
 
 def build_corpus(corpus_id: uuid.UUID, user_id: uuid.UUID, credentials: tuple[str, str, str], track_limit: int = DEFAULT_CORPUS_SIZE, progress: Callable[[dict[str, object]], None] | None = None) -> dict[str, int]:
     report = progress or (lambda _: None)
-    completed = failed = 0
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection:
-        run_id = _create_run(connection, corpus_id)
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE hum_corpora SET run_id=%s,status='building' WHERE id=%s AND user_id=%s", (run_id, corpus_id, user_id))
-            cursor.execute("""SELECT DISTINCT ON (utl.track_id) utl.track_id,utl.external_id,t.title FROM user_track_links utl JOIN tracks t ON t.id=utl.track_id WHERE utl.user_id=%s ORDER BY utl.track_id""", (user_id,))
-            candidates = cursor.fetchall()
-        np.random.default_rng().shuffle(candidates)
-        tracks = candidates[:track_limit]
-        connection.commit()
-        with NavidromeClient(*credentials) as client:
-            for index, track in enumerate(tracks):
-                report({"phase": "melody-index", "completed": index, "total": len(tracks), "message": f"Extracting melody from {track['title']}"})
-                try:
-                    pitch, voiced = extract_catalog_contour(client.audio_bytes(track["external_id"]))
-                    if voiced.sum() < 30:
-                        raise ValueError("No usable predominant melody")
-                    with connection.cursor() as cursor:
-                        cursor.execute("INSERT INTO hum_corpus_tracks (corpus_id,track_id) VALUES (%s,%s)", (corpus_id, track["track_id"]))
-                        cursor.execute("""INSERT INTO melody_contours (track_id,run_id,source,hop_seconds,pitch,voiced) VALUES (%s,%s,'predominant-melody',%s,%s,%s)""", (track["track_id"], run_id, 1 / CONTOUR_HZ, pitch.tolist(), voiced.tolist()))
-                    connection.commit(); completed += 1
-                except Exception:
-                    connection.rollback(); failed += 1
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE analysis_runs SET status='complete',finished_at=now() WHERE id=%s", (run_id,))
-            cursor.execute("UPDATE hum_corpora SET status='complete',completed_at=now() WHERE id=%s", (corpus_id,))
-        connection.commit()
-    return {"tracks": completed, "failed": failed, "contours": completed}
+    completed = failed = contours_stored = 0
+    try:
+        with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection:
+            run_id = _create_run(connection, corpus_id)
+            with connection.cursor() as cursor:
+                cursor.execute("UPDATE hum_corpora SET run_id=%s,status='building' WHERE id=%s AND user_id=%s", (run_id, corpus_id, user_id))
+                cursor.execute("""SELECT DISTINCT ON (utl.track_id) utl.track_id,utl.external_id,t.title FROM user_track_links utl JOIN tracks t ON t.id=utl.track_id WHERE utl.user_id=%s ORDER BY utl.track_id""", (user_id,))
+                candidates = cursor.fetchall()
+            np.random.default_rng().shuffle(candidates)
+            tracks = candidates[:track_limit]
+            connection.commit()
+            with NavidromeClient(*credentials) as client:
+                for index, track in enumerate(tracks):
+                    report({"phase": "melody-index", "completed": index, "total": len(tracks), "message": f"Separating melody sources for {track['title']}"})
+                    try:
+                        audio = client.audio_bytes(track["external_id"])
+                        sources: dict[str, tuple[np.ndarray, np.ndarray]] = {
+                            "full-mix": extract_catalog_contour(audio),
+                        }
+                        try:
+                            for source, (waveform, sample_rate) in separate_melody_sources(audio).items():
+                                sources[source] = extract_waveform_contour(waveform, sample_rate)
+                        except Exception:
+                            # Keep the full-mix contour when separation fails for one recording.
+                            pass
+                        usable = {source: contour for source, contour in sources.items() if contour[1].sum() >= 30}
+                        if not usable:
+                            raise ValueError("No usable melody source")
+                        with connection.cursor() as cursor:
+                            cursor.execute("INSERT INTO hum_corpus_tracks (corpus_id,track_id) VALUES (%s,%s)", (corpus_id, track["track_id"]))
+                            for source, (pitch, voiced) in usable.items():
+                                cursor.execute("""INSERT INTO melody_contours (track_id,run_id,source,hop_seconds,pitch,voiced) VALUES (%s,%s,%s,%s,%s,%s)""", (track["track_id"], run_id, source, 1 / CONTOUR_HZ, pitch.tolist(), voiced.tolist()))
+                        connection.commit(); completed += 1; contours_stored += len(usable)
+                    except Exception:
+                        connection.rollback(); failed += 1
+            with connection.cursor() as cursor:
+                cursor.execute("UPDATE analysis_runs SET status='complete',finished_at=now() WHERE id=%s", (run_id,))
+                cursor.execute("UPDATE hum_corpora SET status='complete',completed_at=now() WHERE id=%s", (corpus_id,))
+            connection.commit()
+        return {"tracks": completed, "failed": failed, "contours": contours_stored}
+    finally:
+        release_separator()
 
 
 def search_corpus(user_id: uuid.UUID, audio: bytes, limit: int = 10) -> dict[str, object]:
     query, query_mask = extract_hum_contour(audio)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
-        cursor.execute("""SELECT mc.track_id,mc.pitch,mc.voiced FROM melody_contours mc JOIN hum_corpora hc ON hc.run_id=mc.run_id WHERE hc.user_id=%s AND hc.status='complete' AND hc.id=(SELECT hc2.id FROM hum_corpora hc2 JOIN melody_contours mc2 ON mc2.run_id=hc2.run_id WHERE hc2.user_id=%s AND hc2.status='complete' ORDER BY hc2.completed_at DESC LIMIT 1)""", (user_id, user_id))
+        cursor.execute("""SELECT mc.track_id,mc.source,mc.pitch,mc.voiced FROM melody_contours mc JOIN hum_corpora hc ON hc.run_id=mc.run_id WHERE hc.user_id=%s AND hc.status='complete' AND hc.id=(SELECT hc2.id FROM hum_corpora hc2 JOIN melody_contours mc2 ON mc2.run_id=hc2.run_id WHERE hc2.user_id=%s AND hc2.status='complete' ORDER BY hc2.completed_at DESC LIMIT 1)""", (user_id, user_id))
         contours = cursor.fetchall()
         if not contours:
             raise ValueError("Build the melody hum index before searching")
-        scored = []
+        best_by_track: dict[uuid.UUID, tuple[float, float, str]] = {}
         for row in contours:
             cost, offset = match_contour(query, query_mask, np.asarray(row["pitch"], dtype=np.float32), np.asarray(row["voiced"], dtype=bool))
-            if np.isfinite(cost): scored.append((row["track_id"], cost, offset))
+            current = best_by_track.get(row["track_id"])
+            if np.isfinite(cost) and (current is None or cost < current[0]):
+                best_by_track[row["track_id"]] = (cost, offset, row["source"])
+        scored = [(track_id, *match) for track_id, match in best_by_track.items()]
         scored.sort(key=lambda item: item[1]); selected = scored[:limit]
         if not selected:
             return {"tracks": [], "query_seconds": len(query) / CONTOUR_HZ}
@@ -228,24 +293,6 @@ def search_corpus(user_id: uuid.UUID, audio: bytes, limit: int = 10) -> dict[str
         cursor.execute("""SELECT t.id,t.title,t.artist,t.album,t.duration_seconds,max(utl.external_id) source_id,max(ts.source_data->>'coverArt') cover_art FROM tracks t JOIN user_track_links utl ON utl.track_id=t.id AND utl.user_id=%s LEFT JOIN track_sources ts ON ts.library_id=utl.library_id AND ts.track_id=utl.track_id AND ts.external_id=utl.external_id WHERE t.id=ANY(%s) GROUP BY t.id""", (user_id, ids))
         metadata = {row["id"]: row for row in cursor.fetchall()}
     results = []
-    for track_id, cost, offset in selected:
-        row = dict(metadata[track_id]); row["similarity"] = float(np.exp(-cost)); row["matched_at_seconds"] = offset; row["match_cost"] = cost; results.append(row)
-
-    diagnostic_id = str(uuid.uuid4())
-    diagnostic_dir = Path(os.getenv("HUM_DIAGNOSTIC_DIR", "/tmp/echora-hum-debug")) / diagnostic_id
-    diagnostic_dir.mkdir(parents=True, exist_ok=False)
-    (diagnostic_dir / "recording.bin").write_bytes(audio)
-    (diagnostic_dir / "diagnostic.json").write_text(json.dumps({
-        "id": diagnostic_id,
-        "user_id": str(user_id),
-        "query_pitch": query.tolist(),
-        "query_voiced": query_mask.tolist(),
-        "query_seconds": len(query) / CONTOUR_HZ,
-        "voiced_ratio": float(query_mask.mean()),
-        "results": [{
-            "track_id": str(row["id"]), "title": row["title"], "artist": row.get("artist"),
-            "cost": row["match_cost"], "similarity": row["similarity"],
-            "matched_at_seconds": row["matched_at_seconds"],
-        } for row in results],
-    }, ensure_ascii=False, indent=2))
-    return {"tracks": results, "query_seconds": len(query) / CONTOUR_HZ, "matcher": "melody-contour-dtw-v1", "diagnostic_id": diagnostic_id}
+    for track_id, cost, offset, source in selected:
+        row = dict(metadata[track_id]); row["similarity"] = float(np.exp(-cost)); row["matched_at_seconds"] = offset; row["match_cost"] = cost; row["matched_source"] = source; results.append(row)
+    return {"tracks": results, "query_seconds": len(query) / CONTOUR_HZ, "matcher": "multi-source-melody-contour-dtw-v2"}
