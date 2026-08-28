@@ -58,9 +58,10 @@ export default function HumSearchButton({ onResults, onError }: { onResults: (tr
         try {
           const recording = new Blob(chunks.current, { type: active.mimeType });
           const response = await fetch("/analysis/library/hum/search?limit=10", { method: "POST", headers: { "content-type": active.mimeType || "application/octet-stream" }, body: recording });
-          const body = await response.json();
-          if (!response.ok) throw new Error(body.detail || "Hum search failed");
-          onResults(body.tracks || []);
+          const contentType = response.headers.get("content-type") || "";
+          const body = contentType.includes("application/json") ? await response.json() : null;
+          if (!response.ok) throw new Error(body?.detail || `Hum search failed (${response.status})`);
+          onResults(body?.tracks || []);
         } catch (error) { onError(error instanceof Error ? error.message : "Hum search failed"); }
         finally { setState("idle"); }
       };
