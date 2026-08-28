@@ -325,7 +325,7 @@ def search_corpus(user_id: uuid.UUID, audio: bytes, limit: int = 10) -> dict[str
             """SELECT DISTINCT ON (mc.track_id,mc.source)
                       mc.track_id,mc.source,mc.pitch,mc.voiced
                FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
-               WHERE ar.status='complete'
+               WHERE ar.status IN ('complete','running')
                  AND EXISTS (SELECT 1 FROM user_track_links utl
                              WHERE utl.user_id=%s AND utl.track_id=mc.track_id)
                ORDER BY mc.track_id,mc.source,ar.created_at DESC""",
