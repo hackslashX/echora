@@ -12,6 +12,7 @@ from psycopg.types.json import Jsonb
 import torch
 
 from .lyrics_analysis import LyricsEmbeddingModel
+from .models import release_model
 from .navidrome import NavidromeClient
 from .processing_plan import plan_lyrics
 
@@ -145,4 +146,6 @@ def backfill_lyrics(
         with connection.cursor() as cursor:
             cursor.execute("UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id=%s", (run_id,))
         connection.commit()
+        release_model(model)
+        del model
     return summary
