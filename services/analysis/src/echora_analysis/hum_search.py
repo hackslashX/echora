@@ -9,7 +9,7 @@ import uuid
 
 # The service package is read-only for its unprivileged runtime user. Numba must
 # compile librosa's pitch helpers into a writable cache directory.
-os.environ.setdefault("NUMBA_CACHE_DIR", f"/tmp/echora-numba-{os.getuid()}")
+os.environ.setdefault("NUMBA_CACHE_DIR", "/models/torch/numba")
 os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 
 import librosa
@@ -206,20 +206,12 @@ def indexed_windows(pitch: np.ndarray, voiced: np.ndarray) -> list[tuple[float, 
 
 def _dtw_cost(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray, target_mask: np.ndarray) -> float:
     query, target = _relative(query, query_mask), _relative(target, target_mask)
-    rows, columns = len(query), len(target)
-    costs = np.full((rows + 1, columns + 1), np.inf, dtype=np.float32)
-    costs[0, 0] = 0
-    for row in range(1, rows + 1):
-        for column in range(1, columns + 1):
-            if query_mask[row - 1] and target_mask[column - 1]:
-                delta = abs(float(query[row - 1] - target[column - 1]))
-                local = min(delta, 6.0) / 3.0
-            elif query_mask[row - 1] == target_mask[column - 1]:
-                local = 0.2
-            else:
-                local = 1.0
-            costs[row, column] = local + min(costs[row - 1, column - 1], costs[row - 1, column] + 0.15, costs[row, column - 1] + 0.15)
-    return float(costs[rows, columns] / max(rows, columns))
+    both_voiced = query_mask[:, None] & target_mask[None, :]
+    both_unvoiced = ~query_mask[:, None] & ~target_mask[None, :]
+    delta = np.minimum(np.abs(query[:, None] - target[None, :]), 6.0) / 3.0
+    local = np.where(both_voiced, delta, np.where(both_unvoiced, 0.2, 1.0)).astype(np.float32)
+    accumulated = librosa.sequence.dtw(C=local, backtrack=False)
+    return float(accumulated[-1, -1] / max(len(query), len(target)))
 
 
 def match_contour(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray, target_mask: np.ndarray) -> tuple[float, float]:
@@ -325,22 +317,19 @@ def search_corpus(user_id: uuid.UUID, audio: bytes, limit: int = 10) -> dict[str
                    AND EXISTS (SELECT 1 FROM melody_windows mw WHERE mw.run_id=hc.run_id)
                  ORDER BY hc.completed_at DESC LIMIT 1
                )
-               SELECT mw.run_id,mw.track_id,mw.source,mw.start_seconds,mw.duration_seconds,
-                      mw.embedding <=> %s::vector AS distance
-               FROM melody_windows mw JOIN active ON active.run_id=mw.run_id
-               ORDER BY mw.embedding <=> %s::vector LIMIT 200""",
+               SELECT * FROM (
+                 SELECT DISTINCT ON (mw.track_id)
+                        mw.run_id,mw.track_id,mw.source,mw.start_seconds,mw.duration_seconds,
+                        mw.embedding <=> %s::vector AS distance
+                 FROM melody_windows mw JOIN active ON active.run_id=mw.run_id
+                 ORDER BY mw.track_id,mw.embedding <=> %s::vector
+               ) nearest_per_track ORDER BY distance LIMIT 100""",
             (user_id, _vector_literal(query_vector), _vector_literal(query_vector)),
         )
         neighbors = cursor.fetchall()
         if not neighbors:
             raise ValueError("Rebuild the melody index before searching")
-        candidates = []
-        per_track: dict[uuid.UUID, int] = {}
-        for row in neighbors:
-            count = per_track.get(row["track_id"], 0)
-            if count < 2:
-                candidates.append(row)
-                per_track[row["track_id"]] = count + 1
+        candidates = neighbors
         cursor.execute(
             """SELECT mc.track_id,mc.source,mc.pitch,mc.voiced FROM melody_contours mc
                WHERE mc.run_id=%s""",
