@@ -9,7 +9,8 @@ import uuid
 
 # The service package is read-only for its unprivileged runtime user. Numba must
 # compile librosa's pitch helpers into a writable cache directory.
-os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/echora-numba-cache")
+os.environ.setdefault("NUMBA_CACHE_DIR", f"/tmp/echora-numba-{os.getuid()}")
+os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 
 import librosa
 import numpy as np
