@@ -62,7 +62,7 @@ def _create_run(connection: psycopg.Connection, corpus_id: uuid.UUID, model: Mer
                RETURNING id""",
             (model.revision, config_hash, Jsonb(config), Jsonb({"python": platform.python_version(), "torch": torch.__version__}), str(model.device)),
         )
-        return cursor.fetchone()[0]
+        return cursor.fetchone()["id"]
 
 
 def build_corpus(
