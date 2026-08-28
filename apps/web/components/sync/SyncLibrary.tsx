@@ -12,8 +12,10 @@ type Status = { server: string; total: number; processed: number; missing: numbe
 type Job = { job_id: string; status: "queued" | "running" | "complete" | "failed"; phase: string; message?: string; completed: number; total: number; unit?: "models" | "tracks"; error?: string; track?: Track; summary?: Record<string, number> };
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`/analysis${path}`, options); const body = await response.json();
-  if (!response.ok) throw new Error(body.detail || "The request failed"); return body as T;
+  const response = await fetch(`/analysis${path}`, options);
+  const body = await response.json().catch(() => null);
+  if (!response.ok || !body) throw new Error(body?.detail || `The request failed (${response.status})`);
+  return body as T;
 }
 
 export default function SyncLibrary() {
@@ -40,7 +42,7 @@ export default function SyncLibrary() {
 
   useEffect(() => {
     if (!job || !["queued", "running"].includes(job.status)) return;
-    const timer = window.setTimeout(() => api<Job>(`/jobs/${job.job_id}`).then(setJob).catch(reason => setError(reason.message)), 1200);
+    const timer = window.setTimeout(() => api<Job>(`/jobs/${job.job_id}`).then(setJob).catch(() => {}), 1200);
     return () => window.clearTimeout(timer);
   }, [job]);
 
