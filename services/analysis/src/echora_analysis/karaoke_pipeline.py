@@ -431,29 +431,7 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
         work = Path(directory)
         audio_path = work / "i.audio"
         audio_path.write_bytes(audio)
-        alignment_audio_path = audio_path
-        reference_audio_path: Path | None = None
-        if os.environ.get("FA_KARA_VOCAL_SEPARATION", "false").lower() == "true":
-            decoded_path = work / "demucs-input.wav"
-            subprocess.run(
-                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(audio_path),
-                 "-vn", "-ac", "2", "-ar", "44100", str(decoded_path)],
-                check=True, timeout=300,
-            )
-            separation_dir = work / "separated"
-            demucs_device = os.environ.get("FA_KARA_DEMUCS_DEVICE", "cuda")
-            if demucs_device not in {"cuda", "cpu"}:
-                raise ValueError("FA_KARA_DEMUCS_DEVICE must be 'cuda' or 'cpu'")
-            subprocess.run(
-                [sys.executable, "-m", "demucs.separate", "--two-stems", "vocals",
-                 "--device", demucs_device, "--out", str(separation_dir), str(decoded_path)],
-                check=True, timeout=1800,
-            )
-            stems = list(separation_dir.glob("*/demucs-input/vocals.wav"))
-            reference_audio_path = decoded_path
-            if len(stems) != 1:
-                raise RuntimeError(f"Demucs produced {len(stems)} vocal stems instead of one")
-            alignment_audio_path = stems[0]
+        separate_vocals = os.environ.get("FA_KARA_VOCAL_SEPARATION", "false").lower() == "true"
         timeline = _anchored_source_lines(source_lines or [])
         input_text = "\n".join(str(line["text"]) for line in timeline) if timeline else lyrics_text.strip()
         (work / "i.txt").write_text(input_text + "\n", encoding="utf-8")
@@ -462,15 +440,14 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
             raise ValueError("FA_KARA_ALIGNER must be 'yohane' or 'mms'")
         command = [
             "--path_io", str(work),
-            "--input_audio", str(alignment_audio_path), "--input_text", "i.txt", "--model", aligner,
+            "--input_audio", str(audio_path), "--input_text", "i.txt", "--model", aligner,
             "--lang", language if language in {"auto", "ja", "jaen", "zhen", "ko", "ur", "hi", "pa", "indic"} else "auto",
         ]
         if aligner == "yohane":
             command.extend(["--hf_model_path", str(snapshot)])
-        if reference_audio_path is not None:
-            command.extend(["--reference_audio", str(reference_audio_path)])
-        else:
-            command.extend(["--head_correct", "0", "--tail_correct", "0"])
+        if separate_vocals:
+            command.append("--separate_vocals")
+        command.extend(["--head_correct", "0", "--tail_correct", "0"])
         if timeline:
             (work / "timeline.json").write_text(json.dumps(timeline, ensure_ascii=False), encoding="utf-8")
             command.extend(["--timeline_json", "timeline.json"])
@@ -493,7 +470,7 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
         alignment_document = _validate_alignment_document(
             json.loads((work / "o.alignment.json").read_text(encoding="utf-8"))
         )
-        if alignment_audio_path != audio_path:
+        if separate_vocals:
             alignment_document.setdefault("diagnostics", {})["audio_source"] = "demucs_vocals"
             alignment_document["diagnostics"]["separator"] = "demucs"
             alignment_document["diagnostics"]["separator_model"] = "htdemucs"
