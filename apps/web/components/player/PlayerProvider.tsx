@@ -134,32 +134,51 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (!Context) return;
     const context = new Context();
     const node = context.createAnalyser();
-    node.fftSize = 1024; node.smoothingTimeConstant = 0.8;
+    node.fftSize = 1024; node.smoothingTimeConstant = 0.55;
     const source = context.createMediaElementSource(player);
     source.connect(node); node.connect(context.destination);
     audioContext.current = context; analyser.current = node;
     const frequencies = new Uint8Array(node.frequencyBinCount);
+    const waveform = new Uint8Array(node.fftSize);
+    let lastAnalysis = 0;
+    let bassFloor = 0;
+    let lastOnset = -Infinity;
+    let lastBass = 0, lastMid = 0, lastTreble = 0;
     const average = (from: number, to: number) => {
       let sum = 0; const end = Math.min(to, frequencies.length);
       for (let index = from; index < end; index++) sum += frequencies[index];
       return end > from ? sum / (end - from) / 255 : 0;
     };
-    const analyze = () => {
+    const analyze = (now = performance.now()) => {
+      analysisFrame.current = requestAnimationFrame(analyze);
+      if (now - lastAnalysis < (player.paused ? 500 : 1000 / 30)) return;
+      lastAnalysis = now;
       node.getByteFrequencyData(frequencies);
+      node.getByteTimeDomainData(waveform);
+      window.dispatchEvent(new CustomEvent("echora:audio-waveform", { detail: waveform }));
       const binHz = context.sampleRate / node.fftSize;
       const bass = average(Math.floor(35 / binHz), Math.ceil(180 / binHz));
       const mid = average(Math.floor(180 / binHz), Math.ceil(2200 / binHz));
       const treble = average(Math.floor(2200 / binHz), Math.ceil(10000 / binHz));
-      window.dispatchEvent(new CustomEvent("echora:audio-reactivity", { detail: { bass, mid, treble, level: bass * .45 + mid * .4 + treble * .15 } }));
+      bassFloor += (bass - bassFloor) * .045;
+      const onset = !player.paused && now - lastOnset > 220 && bass > Math.max(.16, bassFloor + .075);
+      if (onset) lastOnset = now;
+      window.dispatchEvent(new CustomEvent("echora:audio-reactivity", { detail: {
+        bass, mid, treble, onset, timestamp: now / 1000,
+        level: bass * .45 + mid * .4 + treble * .15,
+        bassAttack: Math.max(0, bass - lastBass),
+        midAttack: Math.max(0, mid - lastMid),
+        trebleAttack: Math.max(0, treble - lastTreble),
+      } }));
+      lastBass = bass; lastMid = mid; lastTreble = treble;
       window.dispatchEvent(new CustomEvent("echora:playback-time", { detail: player.currentTime || 0 }));
-      analysisFrame.current = requestAnimationFrame(analyze);
     };
     context.resume(); analyze();
   }
 
   function load(next: PlayerTrack) {
     const player = audio.current; if (!player) return;
-    paletteRef.current = null; paletteTrackRef.current = next.id; trackRef.current = next; setBuffered(0); setBuffering(true); publishPalette(null);
+    paletteRef.current = null; paletteTrackRef.current = next.id; trackRef.current = next; setBuffered(0); setBuffering(true); publishPalette(null); window.dispatchEvent(new CustomEvent("echora:track-change", { detail: next.id }));
     if (next.coverUrl) artworkPalette(next.coverUrl).then(palette => {
       if (paletteTrackRef.current !== next.id) return;
       paletteRef.current = palette;
