@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Backdrop from "@/components/shell/Backdrop";
 import { PlayerProvider } from "@/components/player/PlayerProvider";
+import MotionPreferences from "@/components/shell/MotionPreferences";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -11,7 +12,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body><div className="app-viewport"><Backdrop /><PlayerProvider>{children}</PlayerProvider></div></body>
+      <body><div className="app-viewport"><MotionPreferences /><Backdrop /><PlayerProvider>{children}</PlayerProvider></div></body>
     </html>
   );
 }

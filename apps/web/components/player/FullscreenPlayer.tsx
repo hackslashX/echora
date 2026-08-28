@@ -1,6 +1,6 @@
 "use client";
 
-import { Disc3, ListMusic, MicVocal, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX, X } from "lucide-react";
+import { AArrowDown, AArrowUp, Disc3, ListMusic, MicVocal, Pause, Play, SkipBack, SkipForward, Type, Volume2, VolumeX, X } from "lucide-react";
 import LoadingImage from "../media/LoadingImage";
 import { useEffect, useRef, useState } from "react";
 import { trackTemplate } from "../shell/gridGeometry";
@@ -19,6 +19,7 @@ const isRtlText = (text: string) => {
 type LyricsLine = { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] };
 type Lyrics = { trackId: string; available: boolean; karaoke?: boolean; lines?: LyricsLine[]; text?: string; language?: string; provenance?: { synced?: boolean; lines?: LyricsLine[] } };
 type LyricsTextSize = "small" | "normal" | "large";
+const lyricsSizeStorageKey = "echora:lyrics-text-size";
 const lyricsSizeClasses: Record<LyricsTextSize, string> = {
   small: styles.lyricsSmall,
   normal: styles.lyricsNormal,
@@ -36,6 +37,13 @@ export default function FullscreenPlayer() {
   const [playbackContentHeight, setPlaybackContentHeight] = useState(260);
   const detailsContent = useRef<HTMLDivElement>(null);
   useEffect(() => { document.body.classList.add("echora-fullscreen-player"); return () => { document.body.classList.remove("echora-fullscreen-player"); document.body.classList.remove("echora-fullscreen-player-closing"); }; }, []);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      const stored = localStorage.getItem(lyricsSizeStorageKey);
+      if (stored === "small" || stored === "normal" || stored === "large") setLyricsTextSize(stored);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
   useEffect(() => {
     const update = (event: Event) => setPlaybackTime((event as CustomEvent<number>).detail);
     window.addEventListener("echora:playback-time", update);
@@ -85,12 +93,13 @@ export default function FullscreenPlayer() {
       return <span key={`${syllable.start_ms}-${index}`} className={state}>{syllable.text}</span>;
     })}</span>;
   }
+  function chooseLyricsTextSize(size: LyricsTextSize) { localStorage.setItem(lyricsSizeStorageKey, size); setLyricsTextSize(size); }
   function close() { if (closing) return; document.body.classList.add("echora-fullscreen-player-closing"); setClosing(true); window.setTimeout(() => player.setExpanded(false), 520); }
   return <main className={`${styles.player} ${closing ? styles.closing : ""}`}  role="dialog" aria-modal="true" aria-label="Now playing">
     <div className={styles.vignette} />
     <section className={styles.unsupported}><strong>THIS VIEW NEEDS MORE ROOM</strong><p>Resize the window to at least 900 pixels wide or open Echora on a larger screen.</p></section>
     <button className={styles.close} onClick={close} aria-label="Close full screen player"><X /></button>
-    {timedLines.length > 0 && <div className={styles.sizeToggle} role="group" aria-label="Lyrics text size">{(["small", "normal", "large"] as LyricsTextSize[]).map(size => <button type="button" className={lyricsTextSize === size ? styles.selectedSize : ""} onClick={() => setLyricsTextSize(size)} aria-pressed={lyricsTextSize === size} key={size}>{size.toUpperCase()}</button>)}</div>}
+    {timedLines.length > 0 && <div className={styles.sizeToggle} role="group" aria-label="Lyrics text size">{(["small", "normal", "large"] as LyricsTextSize[]).map(size => { const Icon = size === "small" ? AArrowDown : size === "large" ? AArrowUp : Type; return <button type="button" className={lyricsTextSize === size ? styles.selectedSize : ""} onClick={() => chooseLyricsTextSize(size)} aria-pressed={lyricsTextSize === size} key={size}><Icon />{size.toUpperCase()}</button>; })}</div>}
     {karaokeAvailable && <div className={styles.modeToggle} role="group" aria-label="Lyrics timing mode"><button className={karaokeMode ? styles.selectedMode : ""} onClick={() => setKaraokeMode(true)} aria-pressed={karaokeMode}><MicVocal />KARAOKE</button><button className={!karaokeMode ? styles.selectedMode : ""} onClick={() => setKaraokeMode(false)} aria-pressed={!karaokeMode}><ListMusic />SYNCED</button></div>}
     <section className={styles.grid} style={{ gridTemplateColumns: trackTemplate(columns, 180), gridTemplateRows: trackTemplate(rows, 152) }}> 
       <section className={styles.playbackPanel}>

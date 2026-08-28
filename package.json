@@ -1,7 +1,9 @@
 {
   "name": "echora",
   "private": true,
-  "workspaces": ["apps/*"],
+  "workspaces": [
+    "apps/*"
+  ],
   "scripts": {
     "dev": "npm run dev --workspace @echora/web",
     "build": "npm run build --workspace @echora/web",
@@ -10,5 +12,10 @@
     "rebuild:web": "docker compose build web && docker compose up -d --no-deps web",
     "rebuild:analysis": "docker compose build analysis && docker compose up -d --no-deps analysis"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  },
+  "credits": [
+    "Void audio visualizer concepts (InfiniteTunnel, DigitalCurtain, ASCIIDance scenes) adapted from https://github.com/epxweb/void-visualizer by epxstudio, GPL licensed."
+  ]
 }
