@@ -18,11 +18,18 @@ const isRtlText = (text: string) => {
 };
 type LyricsLine = { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] };
 type Lyrics = { trackId: string; available: boolean; karaoke?: boolean; lines?: LyricsLine[]; text?: string; language?: string; provenance?: { synced?: boolean; lines?: LyricsLine[] } };
+type LyricsTextSize = "small" | "normal" | "large";
+const lyricsSizeClasses: Record<LyricsTextSize, string> = {
+  small: styles.lyricsSmall,
+  normal: styles.lyricsNormal,
+  large: styles.lyricsLarge,
+};
 
 export default function FullscreenPlayer() {
   const player = usePlayer();
   const [lyrics, setLyrics] = useState<Lyrics | null>(null);
   const [karaokeMode, setKaraokeMode] = useState(true);
+  const [lyricsTextSize, setLyricsTextSize] = useState<LyricsTextSize>("normal");
   const [playbackTime, setPlaybackTime] = useState(player.currentTime);
   const [closing, setClosing] = useState(false);
   const [viewport, setViewport] = useState({ width: 1440, height: 900 });
@@ -83,6 +90,7 @@ export default function FullscreenPlayer() {
     <div className={styles.vignette} />
     <section className={styles.unsupported}><strong>THIS VIEW NEEDS MORE ROOM</strong><p>Resize the window to at least 900 pixels wide or open Echora on a larger screen.</p></section>
     <button className={styles.close} onClick={close} aria-label="Close full screen player"><X /></button>
+    {timedLines.length > 0 && <div className={styles.sizeToggle} role="group" aria-label="Lyrics text size">{(["small", "normal", "large"] as LyricsTextSize[]).map(size => <button type="button" className={lyricsTextSize === size ? styles.selectedSize : ""} onClick={() => setLyricsTextSize(size)} aria-pressed={lyricsTextSize === size} key={size}>{size.toUpperCase()}</button>)}</div>}
     {karaokeAvailable && <div className={styles.modeToggle} role="group" aria-label="Lyrics timing mode"><button className={karaokeMode ? styles.selectedMode : ""} onClick={() => setKaraokeMode(true)} aria-pressed={karaokeMode}><MicVocal />KARAOKE</button><button className={!karaokeMode ? styles.selectedMode : ""} onClick={() => setKaraokeMode(false)} aria-pressed={!karaokeMode}><ListMusic />SYNCED</button></div>}
     <section className={styles.grid} style={{ gridTemplateColumns: trackTemplate(columns, 180), gridTemplateRows: trackTemplate(rows, 152) }}> 
       <section className={styles.playbackPanel}>
@@ -92,7 +100,7 @@ export default function FullscreenPlayer() {
           <div className={styles.controls}><button onClick={player.previous}><SkipBack /></button><button className={styles.play} onClick={player.toggle}>{player.playing ? <Pause /> : <Play />}</button><button onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1}><SkipForward /></button><button onClick={player.toggleMute}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div>
         </div></div>
       </section>
-      {timedLines.length > 0 && <aside className={styles.lyrics} key={`${activeLine}-${karaokeMode}`}>
+      {timedLines.length > 0 && <aside className={`${styles.lyrics} ${lyricsSizeClasses[lyricsTextSize]}`} key={`${activeLine}-${karaokeMode}`}>
         {[-1, 0, 1].map(offset => { const index = activeLine + offset, line = timedLines[index]; return line ? <button dir={isRtlText(line.text) ? "rtl" : "ltr"} className={offset === 0 ? styles.activeLine : offset < 0 ? styles.pastLine : styles.nextLine} key={`${line.start_ms}-${index}`} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, offset === 0)}</button> : null; })}
       </aside>}
     </section>
