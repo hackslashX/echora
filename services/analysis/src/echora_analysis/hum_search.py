@@ -243,7 +243,8 @@ def create_sync_run(connection: psycopg.Connection) -> uuid.UUID:
                DO UPDATE SET status='running',started_at=now(),finished_at=NULL RETURNING id""",
             (config_hash, Jsonb(config), Jsonb({"python": platform.python_version()})),
         )
-        return cursor.fetchone()["id"]
+        row = cursor.fetchone()
+        return row["id"] if isinstance(row, dict) else row[0]
 
 
 def store_track_contours(connection: psycopg.Connection, track_id: uuid.UUID, run_id: uuid.UUID, audio: bytes) -> int:
