@@ -7,9 +7,10 @@ import { usePlayer } from "../player/PlayerProvider";
 import AppShell from "../shell/AppShell";
 import CopyrightFooter from "../shell/CopyrightFooter";
 import { trackTemplate } from "../shell/gridGeometry";
+import HumSearchButton from "./HumSearchButton";
 import styles from "./BrowseLibrary.module.css";
 
-type Track = { id: string; title: string; artist?: string; album?: string; duration_seconds: number; source_id?: string; cover_art?: string };
+type Track = { id: string; title: string; artist?: string; album?: string; duration_seconds: number; source_id?: string; cover_art?: string; similarity?: number; matched_at_seconds?: number };
 type Facet = { name: string; tracks: number };
 const duration = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.round(seconds % 60)).padStart(2, "0")}`;
 
@@ -29,6 +30,7 @@ export default function BrowseLibrary() {
   const [batch, setBatch] = useState(0);
   const [sortBy, setSortBy] = useState<"name" | "artist" | "released">("name");
   const [connectionId, setConnectionId] = useState("");
+  const [humResults, setHumResults] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const pageSize = 10;
@@ -67,7 +69,12 @@ export default function BrowseLibrary() {
     return () => window.clearTimeout(timer);
   }, [albumQuery, artist, artistQuery]);
 
-  function resetResults() { setTracks([]); setTotal(0); setBatch(0); listRef.current?.scrollTo({ top: 0 }); }
+  function resetResults() { setHumResults(false); setTracks([]); setTotal(0); setBatch(0); listRef.current?.scrollTo({ top: 0 }); }
+
+  function showHumResults(results: Track[]) {
+    setHumResults(true); setTracks(results); setTotal(results.length); setBatch(0);
+    listRef.current?.scrollTo({ top: 0 });
+  }
 
   function play(track: Track) {
     if (!connectionId || !track.source_id) return;
@@ -88,11 +95,11 @@ export default function BrowseLibrary() {
         <section className={styles.filterGroup}><span>Albums</span><input value={albumQuery} onChange={event => setAlbumQuery(event.target.value)} placeholder="Search albums" /><div><button type="button" className={!album ? styles.selected : ""} onClick={() => { setAlbum(""); resetResults(); }}>All albums</button>{albums.map(item => <button type="button" className={album === item.name ? styles.selected : ""} onClick={() => { setAlbum(item.name); resetResults(); }} key={item.name}>{item.name}<b>{item.tracks}</b></button>)}</div></section>
       </aside>
       <section className={styles.listing}>
-        <header><h2>Tracks</h2><strong>{total}</strong></header>
-        <div className={styles.search}><label><Search /><input value={query} onChange={event => { setQuery(event.target.value); resetResults(); }} placeholder="Search tracks" /></label><select aria-label="Sort tracks" value={sortBy} onChange={event => { setSortBy(event.target.value as "name" | "artist" | "released"); resetResults(); }}><option value="name">Name</option><option value="artist">Artist</option><option value="released">Date released</option></select></div>
+        <header><h2>{humResults ? "Hum matches" : "Tracks"}</h2><strong>{total}</strong></header>
+        <div className={styles.search}><label><Search /><input value={query} onChange={event => { setQuery(event.target.value); resetResults(); }} placeholder="Search tracks" /></label><HumSearchButton onResults={showHumResults} onError={setError} /><select aria-label="Sort tracks" value={sortBy} onChange={event => { setSortBy(event.target.value as "name" | "artist" | "released"); resetResults(); }}><option value="name">Name</option><option value="artist">Artist</option><option value="released">Date released</option></select></div>
         <div className={styles.list} ref={listRef}>{loading && tracks.length === 0 ? <div className={styles.empty}>Loading library</div> : error ? <div className={styles.empty}>{error}</div> : tracks.length === 0 ? <div className={styles.empty}>No matching tracks</div> : <>{tracks.map(track => <button type="button" className={`${styles.row} ${player.track?.id === track.id ? styles.current : ""}`} key={track.id} onClick={() => play(track)} disabled={!connectionId || !track.source_id}>
           <span className={styles.art}>{track.cover_art && connectionId ? <LoadingImage sizes="48px" alt="" src={`/analysis/navidrome/connections/${connectionId}/cover/${encodeURIComponent(track.cover_art)}`} /> : <Disc3 />}</span>
-          <span className={styles.track}><strong>{track.title}</strong><small>{track.artist || "Unknown artist"}</small></span><span className={styles.album}>{track.album || "Unknown album"}</span><time>{duration(track.duration_seconds)}</time>
+          <span className={styles.track}><strong>{track.title}</strong><small>{track.artist || "Unknown artist"}</small></span><span className={styles.album}>{track.similarity == null ? track.album || "Unknown album" : `${Math.round(track.similarity * 100)}% match · ${duration(track.matched_at_seconds || 0)}`}</span><time>{duration(track.duration_seconds)}</time>
         </button>)}<div ref={sentinelRef} className={styles.sentinel}>{loading ? "Loading more tracks" : tracks.length < total ? "Scroll for more" : `${tracks.length} tracks loaded`}</div></>}</div>
       </section>
     </section>

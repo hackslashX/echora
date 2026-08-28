@@ -86,18 +86,23 @@ class MertModel(AudioEmbeddingModel):
         ).to(self.device).eval()
         self.revision = getattr(self.model.config, "_commit_hash", None) or revision
 
-    def embed_windows(self, windows: list[np.ndarray]) -> EmbeddingResult:
-        if self.device.type == "cuda":
-            torch.cuda.reset_peak_memory_stats(self.device)
-        started = time.perf_counter()
+    def embed_each(self, windows: list[np.ndarray]) -> list[np.ndarray]:
+        """Return one normalized vector per window without track-level aggregation."""
         vectors: list[np.ndarray] = []
         with torch.inference_mode():
             for window in windows:
                 waveform = torch.from_numpy(window).unsqueeze(0).to(self.device)
                 output = self.model(waveform, output_hidden_states=True)
-                # The final transformer layer retains MERT's acoustic information.
+                # Preserve each local window. Pooling only removes MERT's frame axis.
                 pooled = output.hidden_states[-1].mean(dim=1)
-                vectors.append(pooled.detach().float().cpu().numpy()[0])
-        vector = _normalize(np.mean([_normalize(item) for item in vectors], axis=0))
+                vectors.append(_normalize(pooled.detach().float().cpu().numpy()[0]))
+        return vectors
+
+    def embed_windows(self, windows: list[np.ndarray]) -> EmbeddingResult:
+        if self.device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(self.device)
+        started = time.perf_counter()
+        vectors = self.embed_each(windows)
+        vector = _normalize(np.mean(vectors, axis=0))
         peak = torch.cuda.max_memory_allocated(self.device) if self.device.type == "cuda" else None
         return EmbeddingResult(vector, round((time.perf_counter() - started) * 1000), peak)
