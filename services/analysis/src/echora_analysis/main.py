@@ -1270,6 +1270,9 @@ async def hum_search(
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception as error:
+        logger.exception("Hum search failed")
+        raise HTTPException(status_code=500, detail="Hum search could not process this recording") from error
 
 
 @app.get("/library/tracks")
