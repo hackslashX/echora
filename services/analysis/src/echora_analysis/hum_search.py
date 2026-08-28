@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import platform
+from pathlib import Path
 import uuid
 
 # The service package is read-only for its unprivileged runtime user. Numba must
@@ -229,4 +230,22 @@ def search_corpus(user_id: uuid.UUID, audio: bytes, limit: int = 10) -> dict[str
     results = []
     for track_id, cost, offset in selected:
         row = dict(metadata[track_id]); row["similarity"] = float(np.exp(-cost)); row["matched_at_seconds"] = offset; row["match_cost"] = cost; results.append(row)
-    return {"tracks": results, "query_seconds": len(query) / CONTOUR_HZ, "matcher": "melody-contour-dtw-v1"}
+
+    diagnostic_id = str(uuid.uuid4())
+    diagnostic_dir = Path(os.getenv("HUM_DIAGNOSTIC_DIR", "/tmp/echora-hum-debug")) / diagnostic_id
+    diagnostic_dir.mkdir(parents=True, exist_ok=False)
+    (diagnostic_dir / "recording.bin").write_bytes(audio)
+    (diagnostic_dir / "diagnostic.json").write_text(json.dumps({
+        "id": diagnostic_id,
+        "user_id": str(user_id),
+        "query_pitch": query.tolist(),
+        "query_voiced": query_mask.tolist(),
+        "query_seconds": len(query) / CONTOUR_HZ,
+        "voiced_ratio": float(query_mask.mean()),
+        "results": [{
+            "track_id": str(row["id"]), "title": row["title"], "artist": row.get("artist"),
+            "cost": row["match_cost"], "similarity": row["similarity"],
+            "matched_at_seconds": row["matched_at_seconds"],
+        } for row in results],
+    }, ensure_ascii=False, indent=2))
+    return {"tracks": results, "query_seconds": len(query) / CONTOUR_HZ, "matcher": "melody-contour-dtw-v1", "diagnostic_id": diagnostic_id}
