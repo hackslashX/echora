@@ -1,27 +1,33 @@
 import numpy as np
 
-from echora_analysis.hum_search import overlapping_windows
+from echora_analysis.hum_search import match_contour
 
 
-def test_short_recording_is_zero_padded_to_one_window():
-    waveform = np.ones(24_000 * 3, dtype=np.float32)
-
-    windows = overlapping_windows(waveform)
-
-    assert len(windows) == 1
-    start, end, audio = windows[0]
-    assert start == 0
-    assert end == 3
-    assert audio.shape == (24_000 * 10,)
-    assert np.all(audio[: 24_000 * 3] == 1)
-    assert np.all(audio[24_000 * 3 :] == 0)
+def _melody(notes: list[float], frames: int = 8) -> tuple[np.ndarray, np.ndarray]:
+    pitch = np.repeat(np.asarray(notes, dtype=np.float32), frames)
+    return pitch, np.ones(len(pitch), dtype=bool)
 
 
-def test_long_recording_uses_overlapping_windows_and_keeps_the_tail():
-    waveform = np.arange(24_000 * 22, dtype=np.float32)
+def test_match_is_transposition_invariant_and_finds_offset():
+    query, query_mask = _melody([60, 62, 64, 67, 64])
+    prefix, _ = _melody([70, 68, 66], frames=10)
+    matching, _ = _melody([65, 67, 69, 72, 69])
+    suffix, _ = _melody([58, 57, 55], frames=10)
+    target = np.concatenate([prefix, matching, suffix])
+    target_mask = np.ones(len(target), dtype=bool)
 
-    windows = overlapping_windows(waveform)
+    cost, offset = match_contour(query, query_mask, target, target_mask)
 
-    assert [round(item[0]) for item in windows] == [0, 5, 10, 12]
-    assert all(item[2].shape == (24_000 * 10,) for item in windows)
-    assert windows[-1][1] == 22
+    assert cost < 0.35
+    assert 2.5 <= offset <= 3.5
+
+
+def test_unrelated_contour_scores_worse():
+    query, query_mask = _melody([60, 62, 64, 67, 64])
+    related, related_mask = _melody([67, 69, 71, 74, 71])
+    unrelated, unrelated_mask = _melody([60, 55, 61, 54, 62])
+
+    related_cost, _ = match_contour(query, query_mask, related, related_mask)
+    unrelated_cost, _ = match_contour(query, query_mask, unrelated, unrelated_mask)
+
+    assert related_cost < unrelated_cost

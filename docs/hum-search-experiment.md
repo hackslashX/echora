@@ -1,18 +1,19 @@
-# MERT hum search experiment
+# Melody contour hum search experiment
 
 Branch: `feat/mert-hum-search`
 
 ## Scope
 
-This experiment samples 50 tracks from the signed-in user's Navidrome catalog. It stores overlapping local MERT windows and compares a browser microphone recording against those windows. The browser records and uploads audio but does not extract features.
+This experiment samples 50 tracks from the signed-in user's Navidrome catalog. Essentia MELODIA extracts the predominant melody from each studio recording. The server extracts monophonic pitch from the browser recording with pYIN, removes the query key, and uses tempo-tolerant subsequence dynamic time warping. The browser only records and uploads audio.
 
 ## Current implementation
 
 - [x] Separate feature branch
 - [x] Hum corpus and corpus membership schema
 - [x] Random 50-track Navidrome corpus job
-- [x] Ten-second MERT windows with a five-second stride
-- [x] Per-window pgvector storage with track offsets
+- [x] Predominant melody extraction from full studio recordings
+- [x] Ten-hertz pitch contour storage with voiced frames
+- [x] Key-independent matching with tempo-tolerant subsequence DTW
 - [x] Authenticated corpus status, build, and search endpoints
 - [x] Browse search microphone control
 - [x] Best-window result ranking and matched timestamp
@@ -28,6 +29,4 @@ This experiment samples 50 tracks from the signed-in user's Navidrome catalog. I
 
 ## Known experimental limits
 
-MERT still mean-pools frames inside each ten-second window. The change only removes the second aggregation across distant track windows. A hummed voice and a produced recording may remain far apart in MERT space. The evaluation must test that assumption before this becomes a production feature.
-
-The current index scans a small corpus directly. It does not create an approximate pgvector index. Rebuilding creates a new corpus and leaves older corpora available for provenance until explicitly cleaned up.
+MELODIA may follow a vocal, guitar, synth, or another salient line instead of the tune a listener remembers. The first contour version uses the full mix and does not yet compare a Demucs vocal contour. Matching scans the 50-track corpus directly. Rebuilding creates a new corpus and leaves older corpora available for provenance until explicitly cleaned up.
