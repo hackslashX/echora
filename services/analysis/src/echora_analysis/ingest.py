@@ -15,7 +15,7 @@ from psycopg.types.json import Jsonb
 import torch
 
 from .audio import decode_audio, deterministic_windows
-from .models import AudioEmbeddingModel, MertModel, MuQMuLanModel
+from .models import AudioEmbeddingModel, MertModel, MuQMuLanModel, release_model
 from .navidrome import NavidromeClient, NavidromeTrack
 from .processing_plan import plan_audio
 from .recordings import store_and_match_fingerprint
@@ -191,76 +191,115 @@ def ingest_navidrome(
                          "fingerprint": len(plan.fingerprint_external_ids)}})
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        muq = mert = None
-        muq_run = mert_run = None
+        downloaded_ids: set[str] = set()
+        inserted_ids: set[uuid.UUID] = set()
+
+        def audio_track(song: NavidromeTrack) -> tuple[bytes, uuid.UUID]:
+            audio = navidrome.audio_bytes(song.id)
+            if song.id not in downloaded_ids:
+                downloaded_ids.add(song.id)
+                summary.downloaded += 1
+            track_id = _source_track_id(connection, library_id, song.id)
+            if track_id is None:
+                track_id, inserted = _upsert_track(
+                    connection, library_id, song, hashlib.sha256(audio).hexdigest(),
+                )
+                if inserted and track_id not in inserted_ids:
+                    inserted_ids.add(track_id)
+                    summary.inserted += 1
+            return audio, track_id
+
+        def embedding_phase(
+            phase: str, label: str, external_ids: frozenset[str], model: AudioEmbeddingModel,
+        ) -> None:
+            run_id = _create_run(connection, model)
+            connection.commit()
+            selected = [song for song in songs if song.id in external_ids]
+            for index, song in enumerate(selected):
+                report({
+                    "phase": phase, "message": f"{label} {song.title}",
+                    "track": {"id": song.id, "title": song.title, "artist": song.artist},
+                    "completed": index, "total": len(selected), "unit": "tracks",
+                    "summary": summary.__dict__,
+                })
+                try:
+                    audio, track_id = audio_track(song)
+                    waveform = decode_audio(audio)
+                    windows = deterministic_windows(waveform)
+                    del waveform, audio
+                    _store_embedding(connection, track_id, run_id, model, windows)
+                    if phase == "muq":
+                        summary.embedded_muq += 1
+                    else:
+                        summary.embedded_mert += 1
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    summary.failed += 1
+                    logger.exception("Failed %s phase for Navidrome song %s", phase, song.id)
+                report({
+                    "phase": phase, "message": f"{label} {song.title}",
+                    "completed": index + 1, "total": len(selected), "unit": "tracks",
+                    "summary": summary.__dict__,
+                })
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id=%s",
+                    (run_id,),
+                )
+            connection.commit()
+
         loaded = 0
         if plan.needs_muq:
             report({"phase": "models", "message": "Loading semantic model", "completed": loaded,
                     "total": required_models, "unit": "models"})
             muq = MuQMuLanModel(os.getenv("MUQ_MODEL_ID", "OpenMuQ/MuQ-MuLan-large"),
                                 os.getenv("MUQ_REVISION", "main"), device)
-            muq_run = _create_run(connection, muq)
+            try:
+                embedding_phase("muq", "Embedding semantics for", plan.muq_external_ids, muq)
+            finally:
+                release_model(muq)
+                del muq
             loaded += 1
+
         if plan.needs_mert:
             report({"phase": "models", "message": "Loading acoustic model", "completed": loaded,
                     "total": required_models, "unit": "models"})
             mert = MertModel(os.getenv("MERT_MODEL_ID", "m-a-p/MERT-v1-95M"),
                              os.getenv("MERT_REVISION", "main"), device)
-            mert_run = _create_run(connection, mert)
-        report({"phase": "processing", "message": "Required models ready", "completed": 0,
-                "total": len(songs), "unit": "tracks"})
-        connection.commit()
+            try:
+                embedding_phase("mert", "Embedding acoustics for", plan.mert_external_ids, mert)
+            finally:
+                release_model(mert)
+                del mert
 
-        for index, song in enumerate(songs):
+        fingerprint_songs = [song for song in songs if song.id in plan.fingerprint_external_ids]
+        for index, song in enumerate(fingerprint_songs):
             report({
-                "phase": "processing", "message": f"Processing {song.title}",
+                "phase": "fingerprint", "message": f"Fingerprinting {song.title}",
                 "track": {"id": song.id, "title": song.title, "artist": song.artist},
-                "completed": index, "total": len(songs), "unit": "tracks", "summary": summary.__dict__,
+                "completed": index, "total": len(fingerprint_songs), "unit": "tracks",
+                "summary": summary.__dict__,
             })
             try:
-                known_id = _source_track_id(connection, library_id, song.id)
-                if song.id not in plan.download_external_ids:
-                    summary.already_linked += 1
-                    continue
-                audio = navidrome.audio_bytes(song.id)
-                summary.downloaded += 1
-                audio_hash = hashlib.sha256(audio).hexdigest()
-                track_id, inserted = _upsert_track(connection, library_id, song, audio_hash)
-                summary.inserted += int(inserted)
-                if song.id in plan.muq_external_ids or song.id in plan.mert_external_ids:
-                    waveform = decode_audio(audio)
-                    windows = deterministic_windows(waveform)
-                    del waveform
-                    if song.id in plan.muq_external_ids and muq is not None and muq_run is not None:
-                        _store_embedding(connection, track_id, muq_run, muq, windows)
-                        summary.embedded_muq += 1
-                    if song.id in plan.mert_external_ids and mert is not None and mert_run is not None:
-                        _store_embedding(connection, track_id, mert_run, mert, windows)
-                        summary.embedded_mert += 1
-                if not _has_fingerprint(connection, track_id):
-                    try:
-                        with connection.transaction():
-                            match = store_and_match_fingerprint(connection, track_id, audio, song.duration)
-                        summary.fingerprinted += 1
-                        summary.recording_matches += int(bool(match.get("matched")))
-                    except Exception:
-                        logger.exception("Could not fingerprint Navidrome song %s", song.id)
+                audio, track_id = audio_track(song)
+                with connection.transaction():
+                    match = store_and_match_fingerprint(connection, track_id, audio, song.duration)
+                summary.fingerprinted += 1
+                summary.recording_matches += int(bool(match.get("matched")))
                 del audio
                 connection.commit()
             except Exception:
                 connection.rollback()
                 summary.failed += 1
-                logger.exception("Failed to ingest Navidrome song %s", song.id)
+                logger.exception("Could not fingerprint Navidrome song %s", song.id)
             report({
-                "phase": "processing", "message": f"Processed {song.title}",
-                "completed": index + 1, "total": len(songs), "unit": "tracks", "summary": summary.__dict__,
+                "phase": "fingerprint", "message": f"Fingerprinting {song.title}",
+                "completed": index + 1, "total": len(fingerprint_songs), "unit": "tracks",
+                "summary": summary.__dict__,
             })
 
-        report({"phase": "finalizing", "message": "Finalizing analysis runs",
+        summary.already_linked = len(songs) - len(plan.download_external_ids)
+        report({"phase": "finalizing", "message": "Analysis phases complete",
                 "completed": len(songs), "total": len(songs), "unit": "tracks"})
-        run_ids = [run_id for run_id in (muq_run, mert_run) if run_id is not None]
-        if run_ids:
-            with connection.cursor() as cursor:
-                cursor.execute("UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id = ANY(%s)", (run_ids,))
-        connection.commit()
     return summary

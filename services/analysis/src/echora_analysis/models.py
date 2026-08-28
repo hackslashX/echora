@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import gc
 import time
 
 import numpy as np
@@ -20,6 +21,18 @@ def _normalize(vector: np.ndarray) -> np.ndarray:
     if not np.isfinite(norm) or norm == 0:
         raise ValueError("Model returned an invalid embedding")
     return (vector / norm).astype(np.float32)
+
+
+def release_model(model: object) -> None:
+    """Release a model before the next analysis phase claims RAM or VRAM."""
+    loaded = getattr(model, "model", None)
+    if loaded is not None and hasattr(loaded, "to"):
+        loaded.to("cpu")
+    if hasattr(model, "model"):
+        delattr(model, "model")
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 class AudioEmbeddingModel(ABC):
