@@ -24,9 +24,6 @@ from .navidrome import NavidromeClient
 CATALOG_SAMPLE_RATE = 44_100
 QUERY_SAMPLE_RATE = 24_000
 CONTOUR_HZ = 10
-INDEX_POINTS = 96
-INDEX_DURATIONS = (8, 10, 12)
-INDEX_DIMENSION = INDEX_POINTS * 2
 DEFAULT_CORPUS_SIZE = 50
 _DEMUCS_MODEL = None
 
@@ -155,10 +152,6 @@ def extract_hum_contour(audio: bytes) -> tuple[np.ndarray, np.ndarray]:
     return pitch, mask
 
 
-def _vector_literal(vector: np.ndarray) -> str:
-    return "[" + ",".join(f"{float(value):.8g}" for value in vector) + "]"
-
-
 def _relative(pitch: np.ndarray, voiced: np.ndarray) -> np.ndarray:
     result = pitch.astype(np.float32, copy=True)
     if voiced.any():
@@ -177,31 +170,6 @@ def _resample(values: np.ndarray, mask: np.ndarray, length: int) -> tuple[np.nda
     output = np.interp(target, source, filled).astype(np.float32)
     output_mask = np.interp(target, source, mask.astype(np.float32)) >= 0.5
     return output, output_mask
-
-
-def contour_embedding(pitch: np.ndarray, voiced: np.ndarray) -> np.ndarray:
-    sampled, sampled_mask = _resample(pitch, voiced, INDEX_POINTS)
-    sampled = _relative(sampled, sampled_mask)
-    sampled = np.clip(sampled, -12, 12) / 12
-    vector = np.concatenate([sampled, sampled_mask.astype(np.float32) * 0.25])
-    norm = np.linalg.norm(vector)
-    if not np.isfinite(norm) or norm == 0:
-        raise ValueError("Melody window cannot be embedded")
-    return (vector / norm).astype(np.float32)
-
-
-def indexed_windows(pitch: np.ndarray, voiced: np.ndarray) -> list[tuple[float, float, np.ndarray]]:
-    windows: list[tuple[float, float, np.ndarray]] = []
-    for duration in INDEX_DURATIONS:
-        width = duration * CONTOUR_HZ
-        if width > len(pitch):
-            continue
-        for start in range(0, len(pitch) - width + 1, CONTOUR_HZ):
-            segment_mask = voiced[start:start + width]
-            if segment_mask.mean() < 0.5:
-                continue
-            windows.append((start / CONTOUR_HZ, float(duration), contour_embedding(pitch[start:start + width], segment_mask)))
-    return windows
 
 
 def _dtw_cost(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray, target_mask: np.ndarray) -> float:
@@ -264,9 +232,45 @@ def _create_run(connection: psycopg.Connection, corpus_id: uuid.UUID) -> uuid.UU
         return cursor.fetchone()["id"]
 
 
+def create_sync_run(connection: psycopg.Connection) -> uuid.UUID:
+    config = {"extractor": "demucs-htdemucs-plus-essentia-melodia", "sources": ["full-mix", "vocals", "accompaniment"], "contour_hz": CONTOUR_HZ}
+    config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """INSERT INTO analysis_runs (kind,model_name,model_revision,config_hash,config,environment,device,precision,status,started_at)
+               VALUES ('melody_contour','melody_contour','multi-source-v1',%s,%s,%s,'mixed','float32','running',now())
+               ON CONFLICT (kind,model_name,model_revision,config_hash)
+               DO UPDATE SET status='running',started_at=now(),finished_at=NULL RETURNING id""",
+            (config_hash, Jsonb(config), Jsonb({"python": platform.python_version()})),
+        )
+        return cursor.fetchone()["id"]
+
+
+def store_track_contours(connection: psycopg.Connection, track_id: uuid.UUID, run_id: uuid.UUID, audio: bytes) -> int:
+    sources: dict[str, tuple[np.ndarray, np.ndarray]] = {"full-mix": extract_catalog_contour(audio)}
+    try:
+        for source, (waveform, sample_rate) in separate_melody_sources(audio).items():
+            sources[source] = extract_waveform_contour(waveform, sample_rate)
+    except Exception:
+        pass
+    usable = {source: contour for source, contour in sources.items() if contour[1].sum() >= 30}
+    if not usable:
+        raise ValueError("No usable melody source")
+    with connection.cursor() as cursor:
+        for source, (pitch, voiced) in usable.items():
+            cursor.execute(
+                """INSERT INTO melody_contours (track_id,run_id,source,hop_seconds,pitch,voiced)
+                   VALUES (%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT (track_id,run_id,source) DO UPDATE
+                   SET hop_seconds=EXCLUDED.hop_seconds,pitch=EXCLUDED.pitch,voiced=EXCLUDED.voiced""",
+                (track_id, run_id, source, 1 / CONTOUR_HZ, pitch.tolist(), voiced.tolist()),
+            )
+    return len(usable)
+
+
 def build_corpus(corpus_id: uuid.UUID, user_id: uuid.UUID, credentials: tuple[str, str, str], track_limit: int = DEFAULT_CORPUS_SIZE, progress: Callable[[dict[str, object]], None] | None = None, track_ids: set[uuid.UUID] | None = None) -> dict[str, int]:
     report = progress or (lambda _: None)
-    completed = failed = contours_stored = windows_stored = 0
+    completed = failed = contours_stored = 0
     try:
         with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection:
             run_id = _create_run(connection, corpus_id)
@@ -299,23 +303,16 @@ def build_corpus(corpus_id: uuid.UUID, user_id: uuid.UUID, credentials: tuple[st
                             raise ValueError("No usable melody source")
                         with connection.cursor() as cursor:
                             cursor.execute("INSERT INTO hum_corpus_tracks (corpus_id,track_id) VALUES (%s,%s)", (corpus_id, track["track_id"]))
-                            track_windows = 0
                             for source, (pitch, voiced) in usable.items():
                                 cursor.execute("""INSERT INTO melody_contours (track_id,run_id,source,hop_seconds,pitch,voiced) VALUES (%s,%s,%s,%s,%s,%s)""", (track["track_id"], run_id, source, 1 / CONTOUR_HZ, pitch.tolist(), voiced.tolist()))
-                                windows = indexed_windows(pitch, voiced)
-                                cursor.executemany(
-                                    """INSERT INTO melody_windows (track_id,run_id,source,start_seconds,duration_seconds,embedding) VALUES (%s,%s,%s,%s,%s,%s::vector)""",
-                                    [(track["track_id"], run_id, source, start, duration, _vector_literal(vector)) for start, duration, vector in windows],
-                                )
-                                track_windows += len(windows)
-                        connection.commit(); completed += 1; contours_stored += len(usable); windows_stored += track_windows
+                        connection.commit(); completed += 1; contours_stored += len(usable)
                     except Exception:
                         connection.rollback(); failed += 1
             with connection.cursor() as cursor:
                 cursor.execute("UPDATE analysis_runs SET status='complete',finished_at=now() WHERE id=%s", (run_id,))
                 cursor.execute("UPDATE hum_corpora SET status='complete',completed_at=now() WHERE id=%s", (corpus_id,))
             connection.commit()
-        return {"tracks": completed, "failed": failed, "contours": contours_stored, "windows": windows_stored}
+        return {"tracks": completed, "failed": failed, "contours": contours_stored}
     finally:
         release_separator()
 
@@ -324,13 +321,14 @@ def search_corpus(user_id: uuid.UUID, audio: bytes, limit: int = 10) -> dict[str
     query, query_mask = extract_hum_contour(audio)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
-            """SELECT mc.track_id,mc.source,mc.pitch,mc.voiced FROM melody_contours mc
-               JOIN hum_corpora hc ON hc.run_id=mc.run_id
-               WHERE hc.user_id=%s AND hc.status='complete'
-                 AND hc.id=(SELECT hc2.id FROM hum_corpora hc2 JOIN melody_contours mc2 ON mc2.run_id=hc2.run_id
-                            WHERE hc2.user_id=%s AND hc2.status='complete'
-                            GROUP BY hc2.id ORDER BY hc2.completed_at DESC LIMIT 1)""",
-            (user_id, user_id),
+            """SELECT DISTINCT ON (mc.track_id,mc.source)
+                      mc.track_id,mc.source,mc.pitch,mc.voiced
+               FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
+               WHERE ar.status='complete'
+                 AND EXISTS (SELECT 1 FROM user_track_links utl
+                             WHERE utl.user_id=%s AND utl.track_id=mc.track_id)
+               ORDER BY mc.track_id,mc.source,ar.created_at DESC""",
+            (user_id,),
         )
         contours = cursor.fetchall()
         if not contours:

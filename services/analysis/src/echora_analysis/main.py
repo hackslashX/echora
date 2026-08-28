@@ -911,12 +911,8 @@ def start_navidrome_sync(
     catalog_ids = [track.id for track in tracks]
     _attach_user_library(user["id"], credentials[0])
     reconciliation = _reconcile_user_tracks(user["id"], credentials[0], catalog_ids)
-    if request.mode == "missing":
-        namespace = uuid.uuid5(uuid.NAMESPACE_URL, credentials[0].rstrip("/"))
-        with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
-            cursor.execute("SELECT ts.external_id FROM track_sources ts JOIN libraries l ON l.id=ts.library_id WHERE l.namespace=%s AND ts.source_type='subsonic'", (namespace,))
-            processed = {str(row[0]) for row in cursor.fetchall()}
-        tracks = [track for track in tracks if track.id not in processed]
+    # The ingestion planner selects missing representations per track. Keep the
+    # full catalog here so a sync can backfill newly added analysis phases.
     if not tracks:
         lyrics_total = _lyrics_work_count(catalog_ids)
         if lyrics_total:
@@ -1220,14 +1216,14 @@ def hum_index_status(echora_session: str | None = Cookie(default=None)) -> dict[
     user = _session_user(echora_session)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
-            """SELECT hc.id, hc.status, hc.track_limit, hc.error, hc.created_at, hc.completed_at,
-                      count(hct.track_id) AS indexed_tracks
-               FROM hum_corpora hc LEFT JOIN hum_corpus_tracks hct ON hct.corpus_id=hc.id
-               WHERE hc.user_id=%s GROUP BY hc.id ORDER BY hc.created_at DESC LIMIT 1""",
+            """SELECT count(DISTINCT mc.track_id) AS indexed_tracks
+               FROM melody_contours mc
+               WHERE EXISTS (SELECT 1 FROM user_track_links utl
+                             WHERE utl.user_id=%s AND utl.track_id=mc.track_id)""",
             (user["id"],),
         )
-        row = cursor.fetchone()
-    return dict(row) if row else {"status": "missing", "indexed_tracks": 0}
+        indexed = int(cursor.fetchone()["indexed_tracks"])
+    return {"status": "complete" if indexed else "missing", "indexed_tracks": indexed, "track_limit": indexed}
 
 
 @app.post("/library/hum/index", status_code=202, dependencies=[Depends(require_user)])
