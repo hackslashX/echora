@@ -226,7 +226,7 @@ def _create_run(connection: psycopg.Connection, corpus_id: uuid.UUID) -> uuid.UU
         return cursor.fetchone()["id"]
 
 
-def build_corpus(corpus_id: uuid.UUID, user_id: uuid.UUID, credentials: tuple[str, str, str], track_limit: int = DEFAULT_CORPUS_SIZE, progress: Callable[[dict[str, object]], None] | None = None) -> dict[str, int]:
+def build_corpus(corpus_id: uuid.UUID, user_id: uuid.UUID, credentials: tuple[str, str, str], track_limit: int = DEFAULT_CORPUS_SIZE, progress: Callable[[dict[str, object]], None] | None = None, track_ids: set[uuid.UUID] | None = None) -> dict[str, int]:
     report = progress or (lambda _: None)
     completed = failed = contours_stored = 0
     try:
@@ -236,8 +236,11 @@ def build_corpus(corpus_id: uuid.UUID, user_id: uuid.UUID, credentials: tuple[st
                 cursor.execute("UPDATE hum_corpora SET run_id=%s,status='building' WHERE id=%s AND user_id=%s", (run_id, corpus_id, user_id))
                 cursor.execute("""SELECT DISTINCT ON (utl.track_id) utl.track_id,utl.external_id,t.title FROM user_track_links utl JOIN tracks t ON t.id=utl.track_id WHERE utl.user_id=%s ORDER BY utl.track_id""", (user_id,))
                 candidates = cursor.fetchall()
-            np.random.default_rng().shuffle(candidates)
-            tracks = candidates[:track_limit]
+            if track_ids is not None:
+                tracks = [track for track in candidates if track["track_id"] in track_ids][:track_limit]
+            else:
+                np.random.default_rng().shuffle(candidates)
+                tracks = candidates[:track_limit]
             connection.commit()
             with NavidromeClient(*credentials) as client:
                 for index, track in enumerate(tracks):
