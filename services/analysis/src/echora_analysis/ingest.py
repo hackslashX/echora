@@ -15,6 +15,7 @@ from psycopg.types.json import Jsonb
 import torch
 
 from .audio import decode_audio, deterministic_windows
+from .hum_search import create_sync_run, release_separator, store_track_contours
 from .models import AudioEmbeddingModel, MertModel, MuQMuLanModel, release_model
 from .navidrome import NavidromeClient, NavidromeTrack
 from .processing_plan import plan_audio
@@ -35,6 +36,8 @@ class IngestSummary:
     embedded_muq: int = 0
     embedded_mert: int = 0
     fingerprinted: int = 0
+    melody_indexed: int = 0
+    melody_contours: int = 0
     recording_matches: int = 0
     failed: int = 0
 
@@ -188,7 +191,8 @@ def ingest_navidrome(
         report({"phase": "planning", "message": "Processing plan ready", "completed": 0,
                 "total": len(plan.download_external_ids), "unit": "tracks",
                 "plan": {"muq": len(plan.muq_external_ids), "mert": len(plan.mert_external_ids),
-                         "fingerprint": len(plan.fingerprint_external_ids)}})
+                         "fingerprint": len(plan.fingerprint_external_ids),
+                         "melody": len(plan.melody_external_ids)}})
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         downloaded_ids: set[str] = set()
@@ -272,6 +276,33 @@ def ingest_navidrome(
             finally:
                 release_model(mert)
                 del mert
+
+        melody_songs = [song for song in songs if song.id in plan.melody_external_ids]
+        if melody_songs:
+            melody_run_id = create_sync_run(connection)
+            connection.commit()
+            try:
+                for index, song in enumerate(melody_songs):
+                    report({"phase": "melody", "message": f"Extracting melody from {song.title}",
+                            "completed": index, "total": len(melody_songs), "unit": "tracks",
+                            "summary": summary.__dict__})
+                    try:
+                        audio, track_id = audio_track(song)
+                        summary.melody_contours += store_track_contours(connection, track_id, melody_run_id, audio)
+                        summary.melody_indexed += 1
+                        connection.commit()
+                    except Exception:
+                        connection.rollback()
+                        summary.failed += 1
+                        logger.exception("Could not extract melody for Navidrome song %s", song.id)
+                    report({"phase": "melody", "message": f"Extracting melody from {song.title}",
+                            "completed": index + 1, "total": len(melody_songs), "unit": "tracks",
+                            "summary": summary.__dict__})
+                with connection.cursor() as cursor:
+                    cursor.execute("UPDATE analysis_runs SET status='complete',finished_at=now() WHERE id=%s", (melody_run_id,))
+                connection.commit()
+            finally:
+                release_separator()
 
         fingerprint_songs = [song for song in songs if song.id in plan.fingerprint_external_ids]
         for index, song in enumerate(fingerprint_songs):
