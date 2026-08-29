@@ -1,5 +1,6 @@
 from echora_analysis.karaoke_pipeline import (
     _anchored_source_lines,
+    _stored_model_revision,
     apply_adaptive_line_padding,
     build_lines_from_alignment_document,
     _timed_source_lines,
@@ -9,6 +10,22 @@ from echora_analysis.karaoke_pipeline import (
     parse_ass_karaoke,
     stabilize_to_synced_lines,
 )
+
+
+def test_stored_model_revision_tracks_vocal_separator(monkeypatch):
+    monkeypatch.setenv("FA_KARA_VOCAL_SEPARATION", "true")
+    monkeypatch.setenv("FA_KARA_DEMUCS_MODEL", "htdemucs_ft")
+
+    assert _stored_model_revision("model-revision").endswith(
+        ":model-revision:demucs:htdemucs_ft"
+    )
+
+
+def test_stored_model_revision_omits_separator_for_full_mix(monkeypatch):
+    monkeypatch.setenv("FA_KARA_VOCAL_SEPARATION", "false")
+
+    assert _stored_model_revision("model-revision").endswith(":model-revision")
+    assert ":demucs:" not in _stored_model_revision("model-revision")
 
 
 def test_parse_ass_karaoke_preserves_line_and_syllable_timing():

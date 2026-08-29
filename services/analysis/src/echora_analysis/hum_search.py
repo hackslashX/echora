@@ -23,6 +23,7 @@ from psycopg.rows import dict_row, tuple_row
 from psycopg.types.json import Jsonb
 
 from .audio import decode_audio, decode_audio_channels
+from .melody_config import MELODY_CONTOUR_REVISION, MELODY_DEMUCS_MODEL, MELODY_EXTRACTOR
 from .navidrome import NavidromeClient
 
 CATALOG_SAMPLE_RATE = 44_100
@@ -110,7 +111,7 @@ def separate_melody_sources(audio: bytes) -> dict[str, tuple[np.ndarray, int]]:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if _DEMUCS_MODEL is None:
-        _DEMUCS_MODEL = pretrained.get_model("htdemucs").eval().to(device)
+        _DEMUCS_MODEL = pretrained.get_model(MELODY_DEMUCS_MODEL).eval().to(device)
     model = _DEMUCS_MODEL
     channels = decode_audio_channels(audio, CATALOG_SAMPLE_RATE, 2)
     waveform = torch.as_tensor(channels.T, dtype=torch.float32)
@@ -386,7 +387,7 @@ def match_contour(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray,
 
 
 def _create_run(connection: psycopg.Connection, corpus_id: uuid.UUID) -> uuid.UUID:
-    config = {"purpose": "hum_search", "corpus_id": str(corpus_id), "extractor": "demucs-htdemucs-plus-essentia-melodia", "sources": ["full-mix", "vocals", "accompaniment"], "contour_hz": CONTOUR_HZ, "matcher": "relative-pitch-subsequence-dtw-v1"}
+    config = {"purpose": "hum_search", "corpus_id": str(corpus_id), "extractor": MELODY_EXTRACTOR, "separator_model": MELODY_DEMUCS_MODEL, "sources": ["full-mix", "vocals", "accompaniment"], "contour_hz": CONTOUR_HZ, "matcher": "relative-pitch-subsequence-dtw-v1"}
     config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
     with connection.cursor() as cursor:
         cursor.execute(
@@ -398,15 +399,15 @@ def _create_run(connection: psycopg.Connection, corpus_id: uuid.UUID) -> uuid.UU
 
 
 def create_sync_run(connection: psycopg.Connection) -> uuid.UUID:
-    config = {"extractor": "demucs-htdemucs-plus-essentia-melodia", "sources": ["full-mix", "vocals", "accompaniment"], "contour_hz": CONTOUR_HZ}
+    config = {"extractor": MELODY_EXTRACTOR, "separator_model": MELODY_DEMUCS_MODEL, "sources": ["full-mix", "vocals", "accompaniment"], "contour_hz": CONTOUR_HZ}
     config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
     with connection.cursor() as cursor:
         cursor.execute(
             """INSERT INTO analysis_runs (kind,model_name,model_revision,config_hash,config,environment,device,precision,status,started_at)
-               VALUES ('melody_contour','melody_contour','multi-source-v1',%s,%s,%s,'mixed','float32','running',now())
+               VALUES ('melody_contour','melody_contour',%s,%s,%s,%s,'mixed','float32','running',now())
                ON CONFLICT (kind,model_name,model_revision,config_hash)
                DO UPDATE SET status='running',started_at=now(),finished_at=NULL RETURNING id""",
-            (config_hash, Jsonb(config), Jsonb({"python": platform.python_version()})),
+            (MELODY_CONTOUR_REVISION, config_hash, Jsonb(config), Jsonb({"python": platform.python_version()})),
         )
         row = cursor.fetchone()
         return row["id"] if isinstance(row, dict) else row[0]

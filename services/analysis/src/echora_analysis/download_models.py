@@ -5,6 +5,8 @@ import torch
 from demucs import pretrained
 from huggingface_hub import snapshot_download
 
+from .melody_config import MELODY_DEMUCS_MODEL
+
 MODELS = (
     ("OpenMuQ/MuQ-MuLan-large", "2e01c796b71dca71b45251384c04cd7b237c9020", False),
     ("OpenMuQ/MuQ-large-msd-iter", "0562a57814f6f8bbd9fdea0a25921a2fce1a841a", True),
@@ -23,15 +25,33 @@ def _pin_main_ref(snapshot_path: str) -> None:
 
 
 def _download_demucs() -> None:
-    """Preload the htdemucs checkpoint into TORCH_HOME so offline inference works."""
-    if os.environ.get("FA_KARA_VOCAL_SEPARATION", "false").lower() != "true":
-        return
+    """Preload required separators, then remove known checkpoints no longer used."""
+    required_models = {MELODY_DEMUCS_MODEL}
+    if os.environ.get("FA_KARA_VOCAL_SEPARATION", "false").lower() == "true":
+        karaoke_model = os.environ.get("FA_KARA_DEMUCS_MODEL", "htdemucs_ft").strip()
+        if karaoke_model not in {"htdemucs", "htdemucs_ft"}:
+            raise ValueError("FA_KARA_DEMUCS_MODEL must be 'htdemucs' or 'htdemucs_ft'")
+        required_models.add(karaoke_model)
     torch_home = Path(os.environ.get("TORCH_HOME", "/models/torch"))
     torch_home.mkdir(parents=True, exist_ok=True)
     os.environ["TORCH_HOME"] = str(torch_home)
-    print("Downloading demucs htdemucs checkpoint into TORCH_HOME", flush=True)
-    pretrained.get_model("htdemucs")
-    print("demucs htdemucs checkpoint is available.", flush=True)
+    for model_name in sorted(required_models):
+        print(f"Downloading demucs {model_name} checkpoints into TORCH_HOME", flush=True)
+        pretrained.get_model(model_name)
+        print(f"demucs {model_name} checkpoints are available.", flush=True)
+
+    obsolete_checkpoints = {
+        "htdemucs": ("955717e8-8726e21a.th",),
+    }
+    checkpoint_directory = torch_home / "hub" / "checkpoints"
+    for model_name, filenames in obsolete_checkpoints.items():
+        if model_name in required_models:
+            continue
+        for filename in filenames:
+            checkpoint = checkpoint_directory / filename
+            if checkpoint.exists():
+                checkpoint.unlink()
+                print(f"Removed unused demucs checkpoint {checkpoint}", flush=True)
 
 
 def main() -> None:

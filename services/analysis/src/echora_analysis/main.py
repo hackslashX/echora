@@ -44,6 +44,7 @@ from .ingest import ingest_navidrome
 from .journeys import normalize_rows as normalize_journey_rows, select_journey, spherical_targets
 from .listening_history import recent_listens, track_listen_counts
 from .karaoke_pipeline import KARAOKE_PIPELINE_REVISION, backfill_karaoke
+from .melody_config import MELODY_CONTOUR_REVISION
 from .lyrics_analysis import shared_lyrics_model
 from .lyrics_pipeline import backfill_lyrics
 from .navidrome import NavidromeClient
@@ -122,6 +123,10 @@ class LastFmSettingsRequest(BaseModel):
 
 
 class KaraokeProcessingSettingsRequest(BaseModel):
+    enabled: bool
+
+
+class HumProcessingSettingsRequest(BaseModel):
     enabled: bool
 
 
@@ -595,10 +600,18 @@ def settings(echora_session: str | None = Cookie(default=None)) -> dict[str, obj
         connection = session.get(NavidromeConnection, preference.navidrome_connection_id) if preference and preference.navidrome_connection_id else None
         if stored_user is None or preference is None:
             raise HTTPException(status_code=404, detail="User settings are unavailable")
-        karaoke_enabled = session.execute(text("SELECT karaoke_processing_enabled FROM analysis_settings WHERE singleton=true")).scalar_one_or_none()
+        model_settings = session.execute(text(
+            """SELECT karaoke_processing_enabled, hum_processing_enabled
+               FROM analysis_settings WHERE singleton=true"""
+        )).one_or_none()
+        karaoke_enabled = True if model_settings is None else bool(model_settings[0])
+        hum_enabled = True if model_settings is None else bool(model_settings[1])
         return {
             "profile": {"username": stored_user.username, "email": stored_user.email, "display_name": stored_user.display_name, "is_admin": stored_user.is_admin},
-            "models": {"karaoke_processing_enabled": True if karaoke_enabled is None else bool(karaoke_enabled)},
+            "models": {
+                "karaoke_processing_enabled": karaoke_enabled,
+                "hum_processing_enabled": hum_enabled,
+            },
             "timezone": preference.timezone,
             "navidrome": None if connection is None else {
                 "id": str(connection.id), "url": connection.url, "username": connection.username,
@@ -632,6 +645,40 @@ def update_karaoke_processing_settings(
                                      WHERE kv.track_id=l.track_id AND kv.bounded=false
                                        AND kv.provenance->>'pipeline_revision'=%s)""",
                 (KARAOKE_PIPELINE_REVISION,),
+            )
+            pending = int(cursor.fetchone()["pending"])
+    return {"enabled": request.enabled, "pending": pending}
+
+
+@app.put("/settings/models/hum")
+def update_hum_processing_settings(
+    request: HumProcessingSettingsRequest, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    if not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Administrator access required")
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """INSERT INTO analysis_settings
+                 (singleton, karaoke_bound_to_synced_lines, hum_processing_enabled, updated_at)
+               VALUES (true,false,%s,now()) ON CONFLICT (singleton) DO UPDATE
+               SET hum_processing_enabled=EXCLUDED.hum_processing_enabled,
+                   karaoke_bound_to_synced_lines=false, updated_at=now()""",
+            (request.enabled,),
+        )
+        pending = 0
+        if request.enabled:
+            cursor.execute(
+                """SELECT count(DISTINCT ts.track_id) AS pending
+                   FROM track_sources ts
+                   WHERE ts.source_type='subsonic'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM melody_contours mc
+                       JOIN analysis_runs ar ON ar.id=mc.run_id
+                       WHERE mc.track_id=ts.track_id
+                         AND ar.model_name='melody_contour' AND ar.model_revision=%s
+                     )""",
+                (MELODY_CONTOUR_REVISION,),
             )
             pending = int(cursor.fetchone()["pending"])
     return {"enabled": request.enabled, "pending": pending}
