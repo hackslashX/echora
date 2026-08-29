@@ -7,7 +7,7 @@ import styles from "./AppShell.module.css";
 import PageGrid from "./PageGrid";
 import type { GridDefinition } from "./gridGeometry";
 
-type ShellUser = { username: string; onboarding_complete: boolean };
+type ShellUser = { username: string; display_name: string; onboarding_complete: boolean };
 let cachedUser: ShellUser | null = null;
 
 export default function AppShell({ title, footer, children, flush = false, fullPage = false, grid, breadcrumb = false, onboarding = false, animate = false }: { title: string; footer: ReactNode; children: ReactNode; flush?: boolean; fullPage?: boolean; grid?: GridDefinition; breadcrumb?: boolean; onboarding?: boolean; animate?: boolean }) {
@@ -46,12 +46,14 @@ export default function AppShell({ title, footer, children, flush = false, fullP
   }, [animate, grid]);
 
   if (!user) return <main className={styles.loading}>ECHORA</main>;
+  const displayName = user.display_name || user.username;
+  const initials = displayName.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join("").toUpperCase();
 
   return <main className={`${styles.canvas} ${styles[transition]}`}>
     <section className={styles.unsupported}><strong>THIS VIEW NEEDS MORE ROOM</strong><p>Resize the window to at least 900 pixels wide or open Echora on a larger screen.</p></section>
     <section className={styles.frame}>
       {grid && <PageGrid columns={grid.columns} rows={grid.rows} phase={transition} />}
-      <AppHeader title={title} breadcrumb={breadcrumb} username={user.username} initials={user.username.slice(0, 2).toUpperCase()} />
+      <AppHeader title={title} breadcrumb={breadcrumb} displayName={displayName} initials={initials || "EC"} />
       <div className={`${styles.body} ${flush ? styles.flush : ""} ${fullPage ? styles.fullPage : ""}`}>{children}</div>
       {footer}
     </section>
