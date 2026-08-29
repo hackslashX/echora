@@ -2,6 +2,7 @@
 
 import { LoaderCircle, Mic, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import AudioVisualizer from "./AudioVisualizer";
 import styles from "./HumSearchButton.module.css";
 
 type Track = { id: string; title: string; artist?: string; album?: string; duration_seconds: number; source_id?: string; cover_art?: string; similarity?: number; matched_at_seconds?: number };
@@ -10,6 +11,7 @@ type IndexStatus = { status: "missing" | "building" | "complete" | "failed"; ind
 export default function HumSearchButton({ onResults, onError }: { onResults: (tracks: Track[]) => void; onError: (message: string) => void }) {
   const [index, setIndex] = useState<IndexStatus>({ status: "missing", indexed_tracks: 0 });
   const [state, setState] = useState<"idle" | "recording" | "searching" | "building">("idle");
+  const [activeStream, setActiveStream] = useState<MediaStream | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
   const stream = useRef<MediaStream | null>(null);
   const chunks = useRef<Blob[]>([]);
@@ -47,6 +49,7 @@ export default function HumSearchButton({ onResults, onError }: { onResults: (tr
     if (index.status !== "complete") { await build(); return; }
     try {
       stream.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setActiveStream(stream.current);
       chunks.current = [];
       const active = new MediaRecorder(stream.current);
       recorder.current = active;
@@ -54,6 +57,7 @@ export default function HumSearchButton({ onResults, onError }: { onResults: (tr
       active.onstop = async () => {
         stream.current?.getTracks().forEach(track => track.stop());
         stream.current = null;
+        setActiveStream(null);
         setState("searching");
         try {
           const recording = new Blob(chunks.current, { type: active.mimeType });
@@ -66,7 +70,12 @@ export default function HumSearchButton({ onResults, onError }: { onResults: (tr
         finally { setState("idle"); }
       };
       active.start(); setState("recording"); onError("");
-    } catch { onError("Microphone access is required for hum search"); }
+    } catch {
+      stream.current?.getTracks().forEach(track => track.stop());
+      stream.current = null;
+      setActiveStream(null);
+      onError("Microphone access is required for hum search");
+    }
   }
 
   function stop() { recorder.current?.stop(); recorder.current = null; }
@@ -74,6 +83,7 @@ export default function HumSearchButton({ onResults, onError }: { onResults: (tr
   const building = state === "building" || index.status === "building";
   const label = state === "recording" ? "Stop humming" : state === "searching" ? "Matching" : building ? `Indexing ${index.indexed_tracks || 0}/50` : index.status === "complete" ? "Hum to search" : "Build hum index";
   return <button type="button" className={`${styles.button} ${state === "recording" ? styles.recording : ""}`} onClick={state === "recording" ? stop : start} disabled={state === "searching" || building} title={label}>
+    {state === "recording" && activeStream ? <AudioVisualizer stream={activeStream} /> : null}
     {state === "recording" ? <Square /> : state === "searching" || building ? <LoaderCircle className={styles.spin} /> : <Mic />}
     <span>{label}</span>
   </button>;
