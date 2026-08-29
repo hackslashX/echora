@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
+from pathlib import Path
 import platform
 import threading
 import uuid
@@ -15,6 +16,7 @@ os.environ.setdefault("NUMBA_CACHE_DIR", "/models/torch/numba")
 os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 
 import librosa
+from numba import njit
 import numpy as np
 import psycopg
 from psycopg.rows import dict_row, tuple_row
@@ -27,6 +29,7 @@ CATALOG_SAMPLE_RATE = 44_100
 QUERY_SAMPLE_RATE = 24_000
 CONTOUR_HZ = 10
 DEFAULT_CORPUS_SIZE = 50
+_TEMPO_RATIOS = (0.75, 0.9, 1.0, 1.1, 1.25, 1.4, 1.5)
 _DEMUCS_MODEL = None
 # Contours only change while a sync or corpus build is running. Caching the
 # parsed arrays removes the per-query array decoding cost.
@@ -188,39 +191,195 @@ def _dtw_cost(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray, tar
     return float(accumulated[-1, -1] / max(len(query), len(target)))
 
 
-def match_contour(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray, target_mask: np.ndarray) -> tuple[float, float]:
-    """Return a lower-is-better cost and target offset in seconds."""
+@njit(cache=True, inline="always")
+def _median_in_place(values: np.ndarray, count: int) -> float:
+    """Return the median of the populated prefix using three-way quickselect."""
+    middle = count // 2
+    left, right = 0, count - 1
+    while left < right:
+        pivot = values[(left + right) // 2]
+        lower, index, upper = left, left, right
+        while index <= upper:
+            if values[index] < pivot:
+                values[lower], values[index] = values[index], values[lower]
+                lower += 1
+                index += 1
+            elif values[index] > pivot:
+                values[index], values[upper] = values[upper], values[index]
+                upper -= 1
+            else:
+                index += 1
+        if middle < lower:
+            right = lower - 1
+        elif middle > upper:
+            left = upper + 1
+        else:
+            break
+    upper_median = values[middle]
+    if count % 2:
+        return upper_median
+    lower_median = values[0]
+    for index in range(1, middle):
+        if values[index] > lower_median:
+            lower_median = values[index]
+    return (lower_median + upper_median) / 2.0
+
+
+@njit(cache=True, nogil=True)
+def _coarse_tempo(
+    query: np.ndarray,
+    query_mask: np.ndarray,
+    target: np.ndarray,
+    target_mask: np.ndarray,
+    offsets: np.ndarray,
+    width: int,
+    stride: int,
+    minimum_voiced: float,
+) -> tuple[float, int]:
+    """Find the best window for one tempo without allocating a window matrix."""
     query_length = len(query)
-    best: tuple[float, int, np.ndarray, np.ndarray] | None = None
+    query_values = np.empty(query_length, dtype=np.float32)
+    target_values = np.empty(query_length, dtype=np.float32)
+    best_score = np.inf
+    best_start = -1
+
+    for start in range(0, len(target) - width + 1, stride):
+        voiced_count = 0
+        for index in range(query_length):
+            target_index = start + offsets[index]
+            if query_mask[index] and target_mask[target_index]:
+                query_values[voiced_count] = query[index]
+                target_values[voiced_count] = target[target_index]
+                voiced_count += 1
+        if voiced_count < minimum_voiced:
+            continue
+
+        query_median = _median_in_place(query_values, voiced_count)
+        target_median = _median_in_place(target_values, voiced_count)
+
+        delta_sum = 0.0
+        for index in range(query_length):
+            target_index = start + offsets[index]
+            if query_mask[index] and target_mask[target_index]:
+                delta = abs((query[index] - query_median) - (target[target_index] - target_median))
+                delta_sum += min(delta, 6.0)
+        score = delta_sum / voiced_count + (1.0 - voiced_count / query_length)
+        if score < best_score:
+            best_score = score
+            best_start = start
+
+    return best_score, best_start
+
+
+def _coarse_match(
+    query: np.ndarray, query_mask: np.ndarray, target: np.ndarray, target_mask: np.ndarray
+) -> tuple[float, int, np.ndarray, np.ndarray] | None:
+    query_length = len(query)
     stride = max(1, CONTOUR_HZ // 2)
-    for tempo in (0.75, 0.9, 1.0, 1.1, 1.25):
+    minimum_voiced = float(query_mask.sum()) * 0.55
+    best: tuple[float, int, np.ndarray, np.ndarray] | None = None
+    for tempo in _TEMPO_RATIOS:
         width = max(20, round(query_length * tempo))
         if width > len(target):
             continue
-        starts = np.arange(0, len(target) - width + 1, stride)
-        offsets = np.rint(np.linspace(0, width - 1, query_length)).astype(int)
-        indices = starts[:, None] + offsets[None, :]
-        candidates = target[indices]
-        candidate_masks = target_mask[indices]
-        overlaps = candidate_masks & query_mask[None, :]
-        valid = overlaps.sum(axis=1) >= query_mask.sum() * 0.55
-        if not valid.any():
+        offsets = np.rint(np.linspace(0, width - 1, query_length)).astype(np.int64)
+        score, start = _coarse_tempo(
+            query, query_mask, target, target_mask, offsets, width, stride, minimum_voiced
+        )
+        if start >= 0 and (best is None or score < best[0]):
+            indices = start + offsets
+            best = (float(score), int(start), target[indices], target_mask[indices])
+    return best
+
+
+@njit(cache=True, nogil=True)
+def _coarse_motif_batch(
+    queries: np.ndarray,
+    query_masks: np.ndarray,
+    query_lengths: np.ndarray,
+    target: np.ndarray,
+    target_mask: np.ndarray,
+    widths: np.ndarray,
+    offsets: np.ndarray,
+    stride: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Scan every prepared motif and tempo for one catalog contour."""
+    motif_count, tempo_count = widths.shape
+    best_scores = np.full(motif_count, np.inf)
+    best_starts = np.full(motif_count, -1, dtype=np.int64)
+    best_tempos = np.full(motif_count, -1, dtype=np.int64)
+    for motif_index in range(motif_count):
+        length = query_lengths[motif_index]
+        query = queries[motif_index, :length]
+        query_mask = query_masks[motif_index, :length]
+        minimum_voiced = float(query_mask.sum()) * 0.55
+        for tempo_index in range(tempo_count):
+            width = widths[motif_index, tempo_index]
+            if width > len(target):
+                continue
+            score, start = _coarse_tempo(
+                query, query_mask, target, target_mask,
+                offsets[motif_index, tempo_index, :length],
+                width, stride, minimum_voiced,
+            )
+            if start >= 0 and score < best_scores[motif_index]:
+                best_scores[motif_index] = score
+                best_starts[motif_index] = start
+                best_tempos[motif_index] = tempo_index
+    return best_scores, best_starts, best_tempos
+
+
+def _prepare_motifs(
+    windows: list[tuple[np.ndarray, np.ndarray]],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    lengths = np.asarray([len(query) for query, _ in windows], dtype=np.int64)
+    maximum = int(lengths.max())
+    queries = np.zeros((len(windows), maximum), dtype=np.float32)
+    masks = np.zeros((len(windows), maximum), dtype=bool)
+    widths = np.zeros((len(windows), len(_TEMPO_RATIOS)), dtype=np.int64)
+    offsets = np.zeros((len(windows), len(_TEMPO_RATIOS), maximum), dtype=np.int64)
+    for motif_index, (query, mask) in enumerate(windows):
+        length = len(query)
+        queries[motif_index, :length] = query
+        masks[motif_index, :length] = mask
+        for tempo_index, tempo in enumerate(_TEMPO_RATIOS):
+            width = max(20, round(length * tempo))
+            widths[motif_index, tempo_index] = width
+            offsets[motif_index, tempo_index, :length] = np.rint(
+                np.linspace(0, width - 1, length)
+            ).astype(np.int64)
+    return queries, masks, lengths, widths, offsets
+
+
+def _match_prepared_motifs(
+    prepared: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    target: np.ndarray,
+    target_mask: np.ndarray,
+) -> list[tuple[float, float]]:
+    queries, masks, lengths, widths, offsets = prepared
+    _, starts, tempos = _coarse_motif_batch(
+        queries, masks, lengths, target, target_mask, widths, offsets,
+        max(1, CONTOUR_HZ // 2),
+    )
+    matches: list[tuple[float, float]] = []
+    for motif_index, start in enumerate(starts):
+        tempo_index = tempos[motif_index]
+        if start < 0 or tempo_index < 0:
+            matches.append((float("inf"), 0.0))
             continue
-        safe_overlaps = overlaps.copy()
-        safe_overlaps[~valid, 0] = True
-        q_values = np.where(safe_overlaps, query[None, :], np.nan)
-        c_values = np.where(safe_overlaps, candidates, np.nan)
-        q_relative = query[None, :] - np.nanmedian(q_values, axis=1)[:, None]
-        c_relative = candidates - np.nanmedian(c_values, axis=1)[:, None]
-        deltas = np.minimum(np.abs(q_relative - c_relative), 6.0)
-        coarse = np.divide(
-            np.where(overlaps, deltas, 0).sum(axis=1), overlaps.sum(axis=1),
-            out=np.full(len(starts), np.inf), where=overlaps.sum(axis=1) > 0,
-        ) + (1 - overlaps.mean(axis=1))
-        coarse[~valid] = np.inf
-        index = int(np.argmin(coarse))
-        if np.isfinite(coarse[index]) and (best is None or coarse[index] < best[0]):
-            best = (float(coarse[index]), int(starts[index]), candidates[index], candidate_masks[index])
+        length = lengths[motif_index]
+        indices = start + offsets[motif_index, tempo_index, :length]
+        cost = _dtw_cost(
+            queries[motif_index, :length], masks[motif_index, :length],
+            target[indices], target_mask[indices],
+        )
+        matches.append((cost, float(start) / CONTOUR_HZ))
+    return matches
+
+
+def match_contour(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray, target_mask: np.ndarray) -> tuple[float, float]:
+    """Return a lower-is-better cost and target offset in seconds."""
+    best = _coarse_match(query, query_mask, target, target_mask)
     if best is None:
         return float("inf"), 0.0
     return _dtw_cost(query, query_mask, best[2], best[3]), best[1] / CONTOUR_HZ
@@ -359,32 +518,105 @@ def _load_contours(connection: psycopg.Connection, user_id: uuid.UUID) -> list[d
         return contours
 
 
+def _capture_hum_diagnostic(
+    user_id: uuid.UUID,
+    audio: bytes,
+    query: np.ndarray,
+    query_mask: np.ndarray,
+    results: list[dict[str, object]],
+) -> str | None:
+    root = Path(os.getenv("HUM_DIAGNOSTIC_DIR", "/models/torch/hum-diagnostics"))
+    marker = root.parent / "capture-next-hum"
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        return None
+    diagnostic_id = str(uuid.uuid4())
+    destination = root / diagnostic_id
+    destination.mkdir(parents=True, exist_ok=False)
+    (destination / "recording.bin").write_bytes(audio)
+    (destination / "diagnostic.json").write_text(json.dumps({
+        "id": diagnostic_id,
+        "user_id": str(user_id),
+        "matcher": "motif-rrf-batched-compiled-melody-dtw-v7",
+        "query_pitch": query.tolist(),
+        "query_voiced": query_mask.tolist(),
+        "query_seconds": len(query) / CONTOUR_HZ,
+        "voiced_ratio": float(query_mask.mean()),
+        "results": [{
+            "track_id": str(row["id"]),
+            "title": row["title"],
+            "artist": row.get("artist"),
+            "cost": row["match_cost"],
+            "similarity": row["similarity"],
+            "matched_at_seconds": row["matched_at_seconds"],
+            "matched_source": row["matched_source"],
+        } for row in results],
+    }, ensure_ascii=False, indent=2))
+    return diagnostic_id
+
+
+def _motif_windows(query: np.ndarray, query_mask: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Return the full query plus overlapping long and sparse short motifs."""
+    plans = [(0, len(query))]
+    if len(query) >= 90:
+        plans.extend((start, 90) for start in range(0, len(query) - 89, 20))
+    if len(query) >= 50:
+        short_starts = list(range(0, len(query) - 49, 40))
+        short_starts.append(((len(query) - 50) // 20) * 20)
+        plans.extend((start, 50) for start in short_starts)
+    plans = list(dict.fromkeys(plans))
+    return [(query[start:start + width], query_mask[start:start + width]) for start, width in plans]
+
+
 def search_corpus(user_id: uuid.UUID, audio: bytes, limit: int = 10) -> dict[str, object]:
     query, query_mask = extract_hum_contour(audio)
+    windows = _motif_windows(query, query_mask)
+    prepared_motifs = _prepare_motifs(windows)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection:
         contours = _load_contours(connection, user_id)
         if not contours:
             raise ValueError("Build the melody hum index before searching")
 
-        def scan(contour: dict[str, object]) -> tuple[float, float, str, uuid.UUID]:
-            cost, offset = match_contour(
-                query, query_mask, contour["pitch"], contour["voiced"]
-            )
-            return cost, offset, str(contour["source"]), contour["track_id"]
-
         workers = min(16, os.cpu_count() or 2)
+        best_by_window: list[dict[uuid.UUID, tuple[float, float, str]]] = [
+            {} for _ in windows
+        ]
+        best_across_windows: dict[uuid.UUID, tuple[float, float, str]] = {}
+
+        def scan(contour: dict[str, object]) -> tuple[
+            uuid.UUID, str, list[tuple[float, float]]
+        ]:
+            return (
+                contour["track_id"], str(contour["source"]),
+                _match_prepared_motifs(
+                    prepared_motifs, contour["pitch"], contour["voiced"]
+                ),
+            )
+
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            matches = pool.map(scan, contours)
-            best_by_track: dict[uuid.UUID, tuple[float, float, str]] = {}
-            for cost, offset, source, track_id in matches:
-                if not np.isfinite(cost):
-                    continue
-                current = best_by_track.get(track_id)
-                if current is None or cost < current[0]:
-                    best_by_track[track_id] = (cost, offset, source)
-        scored = [(track_id, *match) for track_id, match in best_by_track.items()]
-        scored.sort(key=lambda item: item[1])
-        selected = scored[:limit]
+            for track_id, source, matches in pool.map(scan, contours):
+                for motif_index, (cost, offset) in enumerate(matches):
+                    if not np.isfinite(cost):
+                        continue
+                    current = best_by_window[motif_index].get(track_id)
+                    if current is None or cost < current[0]:
+                        best_by_window[motif_index][track_id] = (cost, offset, source)
+                    overall = best_across_windows.get(track_id)
+                    if overall is None or cost < overall[0]:
+                        best_across_windows[track_id] = (cost, offset, source)
+
+        rankings = [
+            sorted(matches, key=lambda item: (matches[item][0], str(item)))
+            for matches in best_by_window
+        ]
+
+        fusion: dict[uuid.UUID, float] = {}
+        for ranking in rankings:
+            for rank, track_id in enumerate(ranking, 1):
+                fusion[track_id] = fusion.get(track_id, 0.0) + 1.0 / (20 + rank)
+        ordered_ids = sorted(fusion, key=lambda item: (-fusion[item], str(item)))
+        selected = [(track_id, *best_across_windows[track_id]) for track_id in ordered_ids[:limit]]
         if not selected:
             return {"tracks": [], "query_seconds": len(query) / CONTOUR_HZ}
         ids = [item[0] for item in selected]
@@ -404,8 +636,12 @@ def search_corpus(user_id: uuid.UUID, audio: bytes, limit: int = 10) -> dict[str
         row = dict(metadata[track_id])
         row.update(similarity=float(np.exp(-cost)), matched_at_seconds=offset, match_cost=cost, matched_source=source)
         results.append(row)
-    return {
+    response = {
         "tracks": results, "query_seconds": len(query) / CONTOUR_HZ,
-        "matcher": "parallel-vectorized-exhaustive-melody-dtw-v4",
-        "candidate_contours": len(contours),
+        "matcher": "motif-rrf-batched-compiled-melody-dtw-v7",
+        "candidate_contours": len(contours), "query_windows": len(windows),
     }
+    diagnostic_id = _capture_hum_diagnostic(user_id, audio, query, query_mask, results)
+    if diagnostic_id:
+        response["diagnostic_id"] = diagnostic_id
+    return response
