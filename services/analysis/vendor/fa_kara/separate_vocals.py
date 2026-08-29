@@ -1,21 +1,35 @@
 """Persistent Demucs vocal separation for the FA-Kara worker."""
 
+import os
+
 import torch
 from demucs import pretrained
 from demucs.apply import apply_model
 from demucs.audio import convert_audio
 
 _DEMUCS_MODEL = None
+_DEMUCS_MODEL_NAME = None
+_SUPPORTED_MODELS = {"htdemucs", "htdemucs_ft"}
+
+
+def demucs_model_name():
+    model_name = os.environ.get("FA_KARA_DEMUCS_MODEL", "htdemucs_ft").strip()
+    if model_name not in _SUPPORTED_MODELS:
+        supported = ", ".join(sorted(_SUPPORTED_MODELS))
+        raise ValueError(f"FA_KARA_DEMUCS_MODEL must be one of: {supported}")
+    return model_name
 
 
 def separate_vocals(audio_channels, sample_rate, *, use_gpu=True):
-    """Return a mono vocal stem while retaining the model for later jobs."""
-    global _DEMUCS_MODEL
+    """Return a mono vocal stem while retaining the selected model for later jobs."""
+    global _DEMUCS_MODEL, _DEMUCS_MODEL_NAME
     device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
-    if _DEMUCS_MODEL is None:
-        _DEMUCS_MODEL = pretrained.get_model("htdemucs")
+    model_name = demucs_model_name()
+    if _DEMUCS_MODEL is None or _DEMUCS_MODEL_NAME != model_name:
+        _DEMUCS_MODEL = pretrained.get_model(model_name)
         _DEMUCS_MODEL.eval()
         _DEMUCS_MODEL.to(device)
+        _DEMUCS_MODEL_NAME = model_name
     model = _DEMUCS_MODEL
     waveform = torch.as_tensor(audio_channels.T, dtype=torch.float32)
     waveform = convert_audio(waveform, sample_rate, model.samplerate, model.audio_channels)

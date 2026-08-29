@@ -34,6 +34,14 @@ _FA_KARA_WORKER: subprocess.Popen[str] | None = None
 _FA_KARA_WORKER_KEY: tuple[str, str] | None = None
 
 
+def _stored_model_revision(model_revision: str) -> str:
+    revision = f"{FA_KARA_REVISION}:{model_revision}"
+    if os.environ.get("FA_KARA_VOCAL_SEPARATION", "false").lower() == "true":
+        separator_model = os.environ.get("FA_KARA_DEMUCS_MODEL", "htdemucs_ft")
+        revision += f":demucs:{separator_model}"
+    return revision
+
+
 def _ass_time_ms(value: str) -> int:
     hours, minutes, seconds = value.split(":")
     return round((int(hours) * 3600 + int(minutes) * 60 + float(seconds)) * 1000)
@@ -473,7 +481,9 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
         if separate_vocals:
             alignment_document.setdefault("diagnostics", {})["audio_source"] = "demucs_vocals"
             alignment_document["diagnostics"]["separator"] = "demucs"
-            alignment_document["diagnostics"]["separator_model"] = "htdemucs"
+            alignment_document["diagnostics"]["separator_model"] = os.environ.get(
+                "FA_KARA_DEMUCS_MODEL", "htdemucs_ft"
+            )
         lines = build_lines_from_alignment_document(alignment_document)
         if not lines:
             lines = parse_ass_karaoke(ass)
@@ -511,7 +521,9 @@ def _backfill_karaoke(
     report = progress or (lambda _: None)
     summary = {"total": 0, "aligned": 0, "failed": 0}
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection, NavidromeClient(url, username, password) as client:
-        model_revision = f"{FA_KARA_REVISION}:{os.environ.get('FA_KARA_REVISION', DEFAULT_MODEL_REVISION)}"
+        model_revision = _stored_model_revision(
+            os.environ.get("FA_KARA_REVISION", DEFAULT_MODEL_REVISION)
+        )
         planned = plan_karaoke(
             connection, KARAOKE_PIPELINE_REVISION, external_ids, model_revision
         ).karaoke_external_ids
@@ -579,7 +591,7 @@ def _backfill_karaoke(
                              alignment_document=EXCLUDED.alignment_document,
                              diagnostics=EXCLUDED.diagnostics, created_at=now()""",
                         (track_id, bound_to_source, Jsonb(result["lines"]), result["ass"], result["lrc"],
-                         f"{FA_KARA_REVISION}:{result['model_revision']}", Jsonb(karaoke_provenance),
+                         _stored_model_revision(str(result["model_revision"])), Jsonb(karaoke_provenance),
                          Jsonb(result["alignment_document"]), Jsonb(result["diagnostics"])),
                     )
                     cursor.execute(
@@ -589,7 +601,7 @@ def _backfill_karaoke(
                                   provenance=provenance || %s
                            WHERE track_id=%s""",
                         (Jsonb(result["lines"]), result["ass"], result["lrc"],
-                         f"{FA_KARA_REVISION}:{result['model_revision']}", bound_to_source,
+                         _stored_model_revision(str(result["model_revision"])), bound_to_source,
                          Jsonb({"karaoke": karaoke_provenance}), track_id),
                     )
                 connection.commit()

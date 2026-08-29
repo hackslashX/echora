@@ -6,6 +6,8 @@ from typing import Iterable
 
 import psycopg
 
+from .melody_config import MELODY_CONTOUR_REVISION
+
 
 @dataclass(frozen=True)
 class ProcessingPlan:
@@ -113,6 +115,9 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
     muq_revision = os.environ.get("MUQ_REVISION", "2e01c796b71dca71b45251384c04cd7b237c9020")
     mert_revision = os.environ.get("MERT_REVISION", "12af15fef9d0ac838c3f475bfbbf26d2060dd4f5")
     with connection.cursor() as cursor:
+        cursor.execute("SELECT hum_processing_enabled FROM analysis_settings WHERE singleton=true")
+        hum_setting = cursor.fetchone()
+        hum_enabled = hum_setting is None or bool(hum_setting[0])
         cursor.execute(
             """SELECT requested.external_id,
                       ts.track_id,
@@ -127,16 +132,16 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
                       EXISTS (SELECT 1 FROM track_fingerprints tf WHERE tf.track_id=ts.track_id) AS has_fingerprint,
                       EXISTS (SELECT 1 FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
                               WHERE mc.track_id=ts.track_id AND ar.model_name='melody_contour'
-                                AND ar.model_revision='multi-source-v1') AS has_melody
+                                AND ar.model_revision=%s) AS has_melody
                FROM unnest(%s::text[]) requested(external_id)
                LEFT JOIN track_sources ts ON ts.library_id=%s AND ts.source_type='subsonic'
                                          AND ts.external_id=requested.external_id""",
-            (muq_revision, mert_revision, ids, library_id),
+            (muq_revision, mert_revision, MELODY_CONTOUR_REVISION, ids, library_id),
         )
         rows = cursor.fetchall()
     return AudioProcessingPlan(
         frozenset(str(row[0]) for row in rows if not row[2]),
         frozenset(str(row[0]) for row in rows if not row[3]),
         frozenset(str(row[0]) for row in rows if not row[4]),
-        frozenset(str(row[0]) for row in rows if not row[5]),
+        frozenset(str(row[0]) for row in rows if hum_enabled and not row[5]),
     )
