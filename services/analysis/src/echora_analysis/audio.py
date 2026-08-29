@@ -25,6 +25,23 @@ def decode_audio(data: bytes, sample_rate: int = 24_000) -> np.ndarray:
     return waveform
 
 
+def decode_audio_channels(data: bytes, sample_rate: int = 44_100, channels: int = 2) -> np.ndarray:
+    process = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0",
+            "-vn", "-ac", str(channels), "-ar", str(sample_rate), "-f", "f32le", "pipe:1",
+        ],
+        input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    if process.returncode != 0:
+        message = process.stderr.decode(errors="replace").strip()
+        raise ValueError(f"ffmpeg could not decode audio: {message[-500:]}")
+    waveform = np.frombuffer(process.stdout, dtype="<f4").copy()
+    if waveform.size == 0 or waveform.size % channels:
+        raise ValueError("Decoded audio is empty or has incomplete channels")
+    return waveform.reshape(-1, channels)
+
+
 def deterministic_windows(
     waveform: np.ndarray,
     sample_rate: int = 24_000,

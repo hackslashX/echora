@@ -30,6 +30,7 @@ from sqlalchemy.orm import joinedload
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, HttpUrl, SecretStr
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import RedirectResponse, StreamingResponse
 
@@ -38,6 +39,7 @@ from .concepts import combine_concept_percentiles, empirical_percentiles, predef
 from .curations import rank_curation
 from .db import session_scope
 from .db_models import Curation, NavidromeConnection, OidcAllowedEmail, OidcSetting, User, UserPreference, UserSession
+from .hum_search import DEFAULT_CORPUS_SIZE, build_corpus, search_corpus
 from .ingest import ingest_navidrome
 from .journeys import normalize_rows as normalize_journey_rows, select_journey, spherical_targets
 from .listening_history import recent_listens, track_listen_counts
@@ -403,6 +405,31 @@ def _run_ingest(
         logger.exception("Ingest failed")
         with _jobs_lock:
             _jobs[job_id] = {**_jobs[job_id], "status": "failed", "error": str(error)}
+
+
+def _run_hum_corpus(
+    job_id: str, corpus_id: uuid.UUID, user_id: uuid.UUID,
+    credentials: tuple[str, str, str], track_limit: int,
+) -> None:
+    def progress(update: dict[str, object]) -> None:
+        with _jobs_lock:
+            _jobs[job_id] = {**_jobs[job_id], **update, "status": "running"}
+    try:
+        summary = build_corpus(corpus_id, user_id, credentials, track_limit, progress)
+        with _jobs_lock:
+            _jobs[job_id] = {
+                "status": "complete", "phase": "complete", "completed": summary["tracks"],
+                "total": track_limit, "summary": summary, "corpus_id": str(corpus_id),
+            }
+    except Exception as error:
+        logger.exception("Hum corpus build failed")
+        with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE hum_corpora SET status='failed', error=%s WHERE id=%s",
+                (str(error), corpus_id),
+            )
+        with _jobs_lock:
+            _jobs[job_id] = {"status": "failed", "phase": "failed", "error": str(error)}
 
 
 def require_user(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
@@ -884,12 +911,8 @@ def start_navidrome_sync(
     catalog_ids = [track.id for track in tracks]
     _attach_user_library(user["id"], credentials[0])
     reconciliation = _reconcile_user_tracks(user["id"], credentials[0], catalog_ids)
-    if request.mode == "missing":
-        namespace = uuid.uuid5(uuid.NAMESPACE_URL, credentials[0].rstrip("/"))
-        with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
-            cursor.execute("SELECT ts.external_id FROM track_sources ts JOIN libraries l ON l.id=ts.library_id WHERE l.namespace=%s AND ts.source_type='subsonic'", (namespace,))
-            processed = {str(row[0]) for row in cursor.fetchall()}
-        tracks = [track for track in tracks if track.id not in processed]
+    # The ingestion planner selects missing representations per track. Keep the
+    # full catalog here so a sync can backfill newly added analysis phases.
     if not tracks:
         lyrics_total = _lyrics_work_count(catalog_ids)
         if lyrics_total:
@@ -1186,6 +1209,66 @@ def start_navidrome_ingest(
         _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": len(request.track_ids)}
     _executor.submit(_run_ingest, job_id, request)
     return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/library/hum/index", dependencies=[Depends(require_user)])
+def hum_index_status(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT count(DISTINCT mc.track_id) AS indexed_tracks
+               FROM melody_contours mc
+               WHERE EXISTS (SELECT 1 FROM user_track_links utl
+                             WHERE utl.user_id=%s AND utl.track_id=mc.track_id)""",
+            (user["id"],),
+        )
+        indexed = int(cursor.fetchone()["indexed_tracks"])
+    return {"status": "complete" if indexed else "missing", "indexed_tracks": indexed, "track_limit": indexed}
+
+
+@app.post("/library/hum/index", status_code=202, dependencies=[Depends(require_user)])
+def start_hum_index(
+    track_limit: int = DEFAULT_CORPUS_SIZE,
+    echora_session: str | None = Cookie(default=None),
+) -> dict[str, str]:
+    user = _session_user(echora_session)
+    track_limit = min(max(track_limit, 1), 500)
+    connection_id = user.get("navidrome_connection_id")
+    credentials = _load_connection(str(connection_id), user["id"]) if connection_id else None
+    if credentials is None:
+        raise HTTPException(status_code=409, detail="Connect Navidrome before building a hum index")
+    corpus_id, job_id = uuid.uuid4(), str(uuid.uuid4())
+    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO hum_corpora (id, user_id, status, track_limit) VALUES (%s,%s,'building',%s)",
+            (corpus_id, user["id"], track_limit),
+        )
+    with _jobs_lock:
+        _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": track_limit}
+    _executor.submit(_run_hum_corpus, job_id, corpus_id, user["id"], credentials, track_limit)
+    return {"job_id": job_id, "corpus_id": str(corpus_id), "status": "queued"}
+
+
+@app.post("/library/hum/search", dependencies=[Depends(require_user)])
+async def hum_search(
+    request: Request, limit: int = 10,
+    echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    audio = await request.body()
+    if not audio:
+        raise HTTPException(status_code=422, detail="The recording is empty")
+    if len(audio) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="The recording exceeds 8 MB")
+    try:
+        return await run_in_threadpool(
+            search_corpus, user["id"], audio, min(max(limit, 1), 25),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception as error:
+        logger.exception("Hum search failed")
+        raise HTTPException(status_code=500, detail="Hum search could not process this recording") from error
 
 
 @app.get("/library/tracks")

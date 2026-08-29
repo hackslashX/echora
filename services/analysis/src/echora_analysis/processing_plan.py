@@ -30,6 +30,7 @@ class AudioProcessingPlan:
     muq_external_ids: frozenset[str]
     mert_external_ids: frozenset[str]
     fingerprint_external_ids: frozenset[str]
+    melody_external_ids: frozenset[str]
 
     @property
     def needs_muq(self) -> bool:
@@ -40,8 +41,13 @@ class AudioProcessingPlan:
         return bool(self.mert_external_ids)
 
     @property
+    @property
+    def needs_melody(self) -> bool:
+        return bool(self.melody_external_ids)
+
+    @property
     def download_external_ids(self) -> frozenset[str]:
-        return self.muq_external_ids | self.mert_external_ids | self.fingerprint_external_ids
+        return self.muq_external_ids | self.mert_external_ids | self.fingerprint_external_ids | self.melody_external_ids
 
 
 def _id_filter(external_ids: Iterable[str] | None) -> tuple[str, list[object]]:
@@ -118,7 +124,10 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
                               WHERE e.track_id=ts.track_id AND e.embedding_type='audio-track'
                                 AND e.window_index IS NULL AND ar.model_name='mert'
                                 AND ar.model_revision=%s) AS has_mert,
-                      EXISTS (SELECT 1 FROM track_fingerprints tf WHERE tf.track_id=ts.track_id) AS has_fingerprint
+                      EXISTS (SELECT 1 FROM track_fingerprints tf WHERE tf.track_id=ts.track_id) AS has_fingerprint,
+                      EXISTS (SELECT 1 FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
+                              WHERE mc.track_id=ts.track_id AND ar.model_name='melody_contour'
+                                AND ar.model_revision='multi-source-v1') AS has_melody
                FROM unnest(%s::text[]) requested(external_id)
                LEFT JOIN track_sources ts ON ts.library_id=%s AND ts.source_type='subsonic'
                                          AND ts.external_id=requested.external_id""",
@@ -129,4 +138,5 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
         frozenset(str(row[0]) for row in rows if not row[2]),
         frozenset(str(row[0]) for row in rows if not row[3]),
         frozenset(str(row[0]) for row in rows if not row[4]),
+        frozenset(str(row[0]) for row in rows if not row[5]),
     )
