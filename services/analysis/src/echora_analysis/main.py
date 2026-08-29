@@ -378,7 +378,10 @@ def _run_ingest(
             _jobs[job_id] = {**current, **update, "status": "running"}
 
     with _jobs_lock:
-        _jobs[job_id] = {"status": "running", "phase": "starting", "completed": 0, "total": len(request.track_ids)}
+        _jobs[job_id] = {
+            **_jobs[job_id], "status": "running", "phase": "starting",
+            "completed": 0, "total": len(request.track_ids),
+        }
     try:
         summary = ingest_navidrome(
             *_credentials(request), request.track_ids, progress, model_total=4 if include_lyrics else 2,
@@ -950,10 +953,30 @@ def start_navidrome_sync(
     credentials = _load_connection(connection_id, user["id"])
     if credentials is None:
         raise HTTPException(status_code=404, detail="Connection not found")
+    with _jobs_lock:
+        for active_job_id, active_job in _jobs.items():
+            if (
+                active_job.get("_job_type") == "navidrome_sync"
+                and active_job.get("_connection_id") == connection_id
+                and active_job.get("_user_id") == str(user["id"])
+                and active_job.get("status") in {"queued", "running"}
+            ):
+                return {
+                    "job_id": active_job_id, "status": active_job["status"],
+                    "total": int(active_job.get("total", 0)), "existing": True,
+                }
+        job_id = str(uuid.uuid4())
+        _jobs[job_id] = {
+            "status": "queued", "phase": "scanning", "completed": 0, "total": 0,
+            "unit": "tracks", "_job_type": "navidrome_sync",
+            "_connection_id": connection_id, "_user_id": str(user["id"]),
+        }
     try:
         with NavidromeClient(*credentials) as client:
             tracks = client.all_tracks()
     except Exception as error:
+        with _jobs_lock:
+            _jobs[job_id] = {**_jobs[job_id], "status": "failed", "phase": "failed", "error": str(error)}
         raise HTTPException(status_code=502, detail="Could not scan the Navidrome library") from error
     catalog_ids = [track.id for track in tracks]
     _attach_user_library(user["id"], credentials[0])
@@ -963,19 +986,22 @@ def start_navidrome_sync(
     if not tracks:
         lyrics_total = _lyrics_work_count(catalog_ids)
         if lyrics_total:
-            job_id = str(uuid.uuid4())
             with _jobs_lock:
-                _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": lyrics_total, "unit": "tracks"}
+                _jobs[job_id] = {**_jobs[job_id], "phase": "queued", "total": lyrics_total}
             _executor.submit(_run_lyrics_backfill, job_id, credentials, catalog_ids, True, reconciliation)
             return {"job_id": job_id, "status": "queued", "total": lyrics_total, "unlinked": reconciliation["unlinked"]}
+        with _jobs_lock:
+            _jobs[job_id] = {
+                **_jobs[job_id], "status": "complete", "phase": "complete",
+                "message": "Library links, audio, and lyrics are synchronized", "summary": reconciliation,
+            }
         return {
             "status": "complete", "message": "Library links, audio, and lyrics are synchronized", "total": 0,
             "summary": reconciliation,
         }
-    job_id = str(uuid.uuid4())
     ingest_request = IngestRequest(url=credentials[0], username=credentials[1], password=credentials[2], track_ids=[track.id for track in tracks])
     with _jobs_lock:
-        _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": len(tracks)}
+        _jobs[job_id] = {**_jobs[job_id], "phase": "queued", "total": len(tracks)}
     _executor.submit(_run_ingest, job_id, ingest_request, user["id"], catalog_ids, True)
     return {"job_id": job_id, "status": "queued", "total": len(tracks), "unlinked": reconciliation["unlinked"]}
 
@@ -2391,5 +2417,5 @@ def job(job_id: str, echora_session: str | None = Cookie(default=None)) -> dict[
         value = _jobs.get(job_id)
     if value is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    public = {key: value[key] for key in value if key != "error"}
+    public = {key: value[key] for key in value if key != "error" and not key.startswith("_")}
     return {"job_id": job_id, **public}
