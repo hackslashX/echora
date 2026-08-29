@@ -5,9 +5,9 @@ import { useEffect, useState } from "react";
 import styles from "./AppHeader.module.css";
 import TransitionLink from "./TransitionLink";
 
-type Props = { title: string; username?: string; initials?: string; breadcrumb?: boolean };
+type Props = { title: string; displayName?: string; initials?: string; breadcrumb?: boolean };
 
-export default function AppHeader({ title, username = "HACKSLASH", initials = "HS", breadcrumb = false }: Props) {
+export default function AppHeader({ title, displayName = "Echora", initials = "EC", breadcrumb = false }: Props) {
   const [accountOpen, setAccountOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
 
@@ -28,7 +28,7 @@ export default function AppHeader({ title, username = "HACKSLASH", initials = "H
     <div className={styles.brand}>ECHORA<span className={styles.note} aria-hidden="true">♪</span></div>
     <div className={`${styles.location} ${accountOpen ? styles.accountOpen : ""}`}>
       <button className={styles.profile} type="button" aria-expanded={accountOpen} aria-controls="account-menu" onClick={() => setAccountOpen(true)}>
-        <span className={styles.avatar}>{initials}</span><strong>{username.toLowerCase()}</strong>
+        <span className={styles.avatar}>{initials}</span><strong>{displayName}</strong>
       </button>
       <div className={styles.menuViewport}>
         <div className={styles.navigationRow}>
