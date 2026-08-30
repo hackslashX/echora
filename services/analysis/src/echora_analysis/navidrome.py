@@ -125,14 +125,20 @@ class NavidromeClient:
         return list(payload.get("playlists", {}).get("playlist", []))
 
     def replace_playlist(self, name: str, song_ids: list[str], playlist_id: str | None = None) -> str:
-        payload = self._request("createPlaylist", name=name, songId=song_ids)
+        # Subsonic createPlaylist updates in place when playlistId is supplied.
+        # Creating by name first and deleting the old ID leaves duplicate
+        # playlists when deletion fails or clients refresh between requests.
+        params: dict[str, object] = {"songId": song_ids}
+        if playlist_id:
+            params["playlistId"] = playlist_id
+        else:
+            params["name"] = name
+        payload = self._request("createPlaylist", **params)
         playlist = payload.get("playlist") or {}
-        if not playlist.get("id"):
-            raise RuntimeError("Navidrome did not return the created playlist ID")
-        created_id = str(playlist["id"])
-        if playlist_id and playlist_id != created_id:
-            self._request("deletePlaylist", id=playlist_id)
-        return created_id
+        returned_id = str(playlist.get("id") or playlist_id or "")
+        if not returned_id:
+            raise RuntimeError("Navidrome did not return the playlist ID")
+        return returned_id
 
     def delete_playlist(self, playlist_id: str) -> None:
         self._request("deletePlaylist", id=playlist_id)

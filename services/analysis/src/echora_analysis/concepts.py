@@ -43,6 +43,49 @@ def predefined_concepts() -> list[dict[str, object]]:
     return [dict(item) for item in _PREDEFINED]
 
 
+_GROUPS_TO_EXPAND = {"voice", "mood", "texture"}
+
+_WORD_CANON = {"voices": "vocal", "voice": "vocal", "vocals": "vocal", "vocal": "vocal", "singing": "sing", "sung": "sing"}
+
+
+def _canon_words(value: str) -> set[str]:
+    """Reduce tag/concept words so 'female voice' matches 'female vocals'."""
+    words = set()
+    for word in value.casefold().split():
+        word = _WORD_CANON.get(word, word)
+        if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+            word = word[:-1]
+        words.add(_WORD_CANON.get(word, word))
+    return words
+
+
+def expand_tag_groups(tags: list[str]) -> list[list[str]]:
+    """Same expansion rules as expand_prompts, preserving tag boundaries."""
+    groups: list[list[str]] = []
+    for tag in tags:
+        value = tag.strip()
+        if not value:
+            continue
+        words = _canon_words(value)
+        match = next((definition for definition in _PREDEFINED
+                      if words and words <= _canon_words(definition["name"])), None)
+        groups.append(list(match["positive_prompts"]) if match is not None and match["group"] in _GROUPS_TO_EXPAND else [value])
+    return groups or [[tag] for tag in tags if tag.strip()]
+
+
+def expand_prompts(tags: list[str]) -> list[str]:
+    """Expand user tags into retrieval phrases, but only when phrasing helps.
+
+    Genre and instrument words (rock, hip hop, guitar) are caption vocabulary
+    the audio-text model already understands, and the measured rankings show
+    bare words beat paraphrases for them, so they pass through untouched.
+    Voice, mood, and texture attributes are relational ("female" only means
+    something as "female vocals"), so tags in those groups score against the
+    concept's full phrase set.
+    """
+    return [phrase for group in expand_tag_groups(tags) for phrase in group]
+
+
 def _normalize_rows(matrix: np.ndarray) -> np.ndarray:
     values = np.asarray(matrix, dtype=np.float32)
     return values / np.maximum(np.linalg.norm(values, axis=1, keepdims=True), 1e-8)

@@ -42,6 +42,28 @@ def decode_audio_channels(data: bytes, sample_rate: int = 44_100, channels: int 
     return waveform.reshape(-1, channels)
 
 
+def full_coverage_windows(
+    waveform: np.ndarray,
+    sample_rate: int = 24_000,
+    seconds: int = 10,
+    stride_seconds: int = 5,
+) -> list[np.ndarray]:
+    """Cover the complete waveform with overlapping fixed-duration windows."""
+    size = sample_rate * seconds
+    stride = sample_rate * stride_seconds
+    if stride <= 0 or stride > size:
+        raise ValueError("Window stride must be greater than zero and no longer than the window")
+    if waveform.size < size:
+        repeats = int(np.ceil(size / waveform.size))
+        return [np.tile(waveform, repeats)[:size].astype(np.float32)]
+
+    starts = list(range(0, waveform.size - size + 1, stride))
+    final_start = waveform.size - size
+    if starts[-1] != final_start:
+        starts.append(final_start)
+    return [np.ascontiguousarray(waveform[start:start + size], dtype=np.float32) for start in starts]
+
+
 def deterministic_windows(
     waveform: np.ndarray,
     sample_rate: int = 24_000,

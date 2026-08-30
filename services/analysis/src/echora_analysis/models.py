@@ -14,6 +14,7 @@ class EmbeddingResult:
     vector: np.ndarray
     inference_ms: int
     peak_vram_bytes: int | None
+    window_vectors: tuple[np.ndarray, ...]
 
 
 def _normalize(vector: np.ndarray) -> np.ndarray:
@@ -43,7 +44,7 @@ class AudioEmbeddingModel(ABC):
 
     @abstractmethod
     def embed_windows(self, windows: list[np.ndarray]) -> EmbeddingResult:
-        """Embed deterministic mono windows and return a normalized track vector."""
+        """Embed ordered mono windows and return their vectors plus a track aggregate."""
 
 
 class MuQMuLanModel(AudioEmbeddingModel):
@@ -69,9 +70,10 @@ class MuQMuLanModel(AudioEmbeddingModel):
                 waveform = torch.from_numpy(window).unsqueeze(0).to(self.device)
                 output = self.model(wavs=waveform)
                 vectors.append(output.detach().float().cpu().numpy()[0])
-        vector = _normalize(np.mean([_normalize(item) for item in vectors], axis=0))
+        normalized = tuple(_normalize(item) for item in vectors)
+        vector = _normalize(np.mean(normalized, axis=0))
         peak = torch.cuda.max_memory_allocated(self.device) if self.device.type == "cuda" else None
-        return EmbeddingResult(vector, round((time.perf_counter() - started) * 1000), peak)
+        return EmbeddingResult(vector, round((time.perf_counter() - started) * 1000), peak, normalized)
 
 
 class MertModel(AudioEmbeddingModel):
@@ -105,4 +107,4 @@ class MertModel(AudioEmbeddingModel):
         vectors = self.embed_each(windows)
         vector = _normalize(np.mean(vectors, axis=0))
         peak = torch.cuda.max_memory_allocated(self.device) if self.device.type == "cuda" else None
-        return EmbeddingResult(vector, round((time.perf_counter() - started) * 1000), peak)
+        return EmbeddingResult(vector, round((time.perf_counter() - started) * 1000), peak, tuple(vectors))

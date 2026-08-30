@@ -1,0 +1,4 @@
+ALTER TABLE curations
+  ADD COLUMN IF NOT EXISTS sound_prompt text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS themes_prompt text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS sound_weight smallint NOT NULL DEFAULT 50;

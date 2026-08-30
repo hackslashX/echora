@@ -35,7 +35,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import RedirectResponse, StreamingResponse
 
 from .artists import fit_artist_profile, representative_indices, soft_chamfer_similarity, weighted_center
-from .concepts import combine_concept_percentiles, empirical_percentiles, predefined_concepts, score_concept
+from .concepts import combine_concept_percentiles, empirical_percentiles, expand_prompts, expand_tag_groups, predefined_concepts, score_concept
 from .curations import rank_curation
 from .db import session_scope
 from .db_models import Curation, NavidromeConnection, OidcAllowedEmail, OidcSetting, User, UserPreference, UserSession
@@ -48,6 +48,7 @@ from .melody_config import MELODY_CONTOUR_REVISION
 from .lyrics_analysis import shared_lyrics_model
 from .lyrics_pipeline import backfill_lyrics
 from .navidrome import NavidromeClient
+from .voice_pipeline import backfill_voice
 from .processing_plan import plan_karaoke, plan_lyrics
 from .recordings import store_and_match_fingerprint
 
@@ -162,6 +163,11 @@ class CurationPreviewRequest(BaseModel):
     curation_type: str = Field(default="language", pattern="^(language|examples|time_of_day)$")
     positive_prompt: str = Field(default="", max_length=2000)
     negative_prompt: str = Field(default="", max_length=2000)
+    sound_prompts: list[str] = Field(default_factory=list, max_length=12)
+    themes_prompts: list[str] = Field(default_factory=list, max_length=12)
+    sound_negative_prompts: list[str] = Field(default_factory=list, max_length=12)
+    themes_negative_prompts: list[str] = Field(default_factory=list, max_length=12)
+    sound_weight: int = Field(default=50, ge=0, le=100)
     positive_track_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
     negative_track_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
     familiarity_percent: int = Field(default=70, ge=0, le=100)
@@ -294,14 +300,33 @@ def _run_lyrics_backfill(
             *credentials, progress=progress, external_ids=external_ids, only_missing=only_missing,
         )
         karaoke_summary = backfill_karaoke(*credentials, progress=progress, external_ids=external_ids)
+        voice_summary = backfill_voice(*credentials, progress=progress)
         combined = {**(base_summary or {}),
                     **{f"lyrics_{key}": value for key, value in summary.items()},
-                    **{f"karaoke_{key}": value for key, value in karaoke_summary.items()}}
+                    **{f"karaoke_{key}": value for key, value in karaoke_summary.items()},
+                    **{f"voice_{key}": value for key, value in voice_summary.items()}}
         with _jobs_lock:
-            _jobs[job_id] = {"status": "complete", "phase": "complete", "message": "Audio and lyrics analysis is complete",
+            _jobs[job_id] = {"status": "complete", "phase": "complete", "message": "Audio, lyrics, and voice analysis is complete",
                              "completed": summary["total"], "total": summary["total"], "unit": "tracks", "summary": combined}
     except Exception as error:
         logger.exception("Lyrics backfill failed")
+        with _jobs_lock:
+            _jobs[job_id] = {"status": "failed", "phase": "failed", "error": str(error)}
+
+
+def _run_voice_backfill(job_id: str, credentials: tuple[str, str, str]) -> None:
+    def progress(update: dict[str, object]) -> None:
+        with _jobs_lock:
+            _jobs[job_id] = {**_jobs[job_id], **update, "status": "running"}
+    try:
+        summary = backfill_voice(*credentials, progress=progress)
+        with _jobs_lock:
+            _jobs[job_id] = {"status": "complete", "phase": "complete",
+                             "message": "Voice classification is complete",
+                             "completed": summary["total"], "total": summary["total"],
+                             "unit": "tracks", "summary": summary}
+    except Exception as error:
+        logger.exception("Voice backfill failed")
         with _jobs_lock:
             _jobs[job_id] = {"status": "failed", "phase": "failed", "error": str(error)}
 
@@ -464,10 +489,28 @@ def _session_user(token: str | None) -> dict[str, object]:
         }
 
 
+def _recover_interrupted_curations() -> None:
+    """Mark refreshes owned by a previous process as failed.
+
+    A refresh cannot survive an analysis-service restart. Leaving the durable
+    row in `refreshing` makes the UI imply work is still running when no worker
+    owns it, so fail it explicitly and let the user or scheduler retry.
+    """
+    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """UPDATE curations
+               SET status='failed',
+                   last_error='Refresh interrupted by analysis service restart',
+                   updated_at=now()
+               WHERE status='refreshing'"""
+        )
+
+
 @app.on_event("startup")
 def start_background_services() -> None:
     global _scheduler_started
     _enforce_secure_cookie_policy()
+    _recover_interrupted_curations()
     if not _scheduler_started:
         _scheduler_started = True
         threading.Thread(target=_curation_scheduler, name="echora-curations", daemon=True).start()
@@ -1061,6 +1104,21 @@ def start_lyrics_backfill(
     return {"job_id": job_id, "status": "queued"}
 
 
+@app.post("/navidrome/connections/{connection_id}/voice/backfill", status_code=202, dependencies=[Depends(require_user)])
+def start_voice_backfill(
+    connection_id: str, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    credentials = _load_connection(connection_id, user["id"])
+    if credentials is None:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    job_id = str(uuid.uuid4())
+    with _jobs_lock:
+        _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": 0}
+    _executor.submit(_run_voice_backfill, job_id, credentials)
+    return {"job_id": job_id, "status": "queued"}
+
+
 @app.post("/navidrome/connections/{connection_id}/lyrics/karaoke/backfill", status_code=202, dependencies=[Depends(require_user)])
 def start_karaoke_backfill(
     connection_id: str, echora_session: str | None = Cookie(default=None),
@@ -1617,6 +1675,7 @@ def _curation_corpus(
                )
                SELECT DISTINCT ON (t.id) t.id, t.title, t.artist, t.album, t.duration_seconds,
                       selected_embeddings.embedding, lyrics_embedding.embedding AS lyrics_embedding,
+                      voice_embedding.embedding AS voice_embedding,
                       ts.external_id AS source_id, ts.source_data->>'coverArt' AS cover_art,
                       member.group_id::text AS recording_group_id
                FROM selected_embeddings
@@ -1634,6 +1693,12 @@ def _curation_corpus(
                    AND ar.model_name='bge_m3'
                  ORDER BY ar.created_at DESC LIMIT 1
                ) lyrics_embedding ON true
+               LEFT JOIN LATERAL (
+                 SELECT e.embedding::text AS embedding
+                 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+                 WHERE e.track_id=t.id AND e.embedding_type='voice-gender' AND ar.model_name='mtg-jamendo-voice-gender-v2'
+                 ORDER BY ar.created_at DESC LIMIT 1
+               ) voice_embedding ON true
                ORDER BY t.id, ts.id""",
             (user_id, connection_id),
         )
@@ -1647,16 +1712,24 @@ def _curation_corpus(
         encoded = row.pop("lyrics_embedding")
         if encoded is not None:
             lyrics_matrix[index] = np.fromstring(str(encoded).strip("[]"), sep=",")
-    return rows, matrix, lyrics_matrix, lyrics_available
+    voice_available = np.asarray([row.get("voice_embedding") is not None for row in rows], dtype=bool)
+    voice_matrix = np.zeros((len(rows), 3), dtype=np.float32)
+    for index, row in enumerate(rows):
+        encoded = row.pop("voice_embedding")
+        if encoded is not None:
+            voice_matrix[index] = np.fromstring(str(encoded).strip("[]"), sep=",")
+    return rows, matrix, lyrics_matrix, lyrics_available, voice_matrix, voice_available
 
 
 def _preview_curation(
     user_id: uuid.UUID, connection_id: uuid.UUID, request: CurationPreviewRequest,
 ) -> dict[str, object]:
-    rows, matrix, lyrics_matrix, lyrics_available = _curation_corpus(user_id, connection_id)
+    rows, matrix, lyrics_matrix, lyrics_available, voice_matrix, voice_available = _curation_corpus(user_id, connection_id)
     if request.curation_type == "time_of_day" and (not request.period_start or not request.period_end):
         raise HTTPException(status_code=422, detail="Choose a start and end time")
-    if request.curation_type == "language" and not request.positive_prompt.strip():
+    if request.curation_type == "language" and not (
+        request.positive_prompt.strip() or request.sound_prompts or request.themes_prompts
+    ):
         raise HTTPException(status_code=422, detail="Add a positive direction for this language curation")
     if request.curation_type == "examples" and not request.positive_track_ids:
         raise HTTPException(status_code=422, detail="Add at least one Songs like track")
@@ -1693,13 +1766,32 @@ def _preview_curation(
         effective_positive_ids = [uuid.UUID(identifier) for identifier in period_counts]
         if not effective_positive_ids:
             raise HTTPException(status_code=409, detail="No matched listens were found in that time period during the lookback window")
+    sound_tags = [tag.strip() for tag in request.sound_prompts if tag.strip()]
+    theme_tags = [tag.strip() for tag in request.themes_prompts if tag.strip()]
+    sound_negatives = [tag.strip() for tag in request.sound_negative_prompts if tag.strip()]
+    theme_negatives = [tag.strip() for tag in request.themes_negative_prompts if tag.strip()]
+    structured = bool(sound_tags or theme_tags or sound_negatives or theme_negatives)
+    semantic_prompts = sound_tags if structured else ([request.positive_prompt] if request.positive_prompt.strip() else [])
+    theme_prompts = theme_tags if structured else ([request.positive_prompt] if request.positive_prompt.strip() else [])
     visible_ids = {str(row["id"]) for row in rows}
-    if not request.positive_prompt.strip() and not any(str(value) in visible_ids for value in effective_positive_ids):
+    if not semantic_prompts and not theme_prompts and not any(str(value) in visible_ids for value in effective_positive_ids):
         raise HTTPException(status_code=422, detail="None of the Songs like tracks are available in this library")
     lyrics_model = shared_lyrics_model()
-    positive_queries = lyrics_model.embed_queries([request.positive_prompt]) if request.positive_prompt.strip() else None
-    negative_queries = lyrics_model.embed_queries([request.negative_prompt]) if request.negative_prompt.strip() else None
+
+    def _tag_query_centers(tags: list[str]) -> list[np.ndarray]:
+        centers: list[np.ndarray] = []
+        for group in expand_tag_groups(tags):
+            embedded = lyrics_model.embed_queries(group)
+            center = np.asarray(embedded, dtype=np.float32).mean(axis=0)
+            centers.append(center / max(float(np.linalg.norm(center)), 1e-8))
+        return centers
+
+    positive_queries = _tag_query_centers(theme_prompts) if theme_prompts else None
+    lyrics_negatives = (theme_negatives if structured else ([request.negative_prompt] if request.negative_prompt.strip() else []))
+    negative_queries = np.asarray(_tag_query_centers(lyrics_negatives), dtype=np.float32) if lyrics_negatives else None
     shuffle_seed = secrets.randbits(63)
+    expanded_sound_prompts = expand_tag_groups(sound_tags) if structured and sound_tags else None
+    expanded_sound_negatives = expand_tag_groups(sound_negatives) if structured and sound_negatives else None
     tracks, references = rank_curation(
         rows, matrix, request.positive_prompt, request.negative_prompt,
         request.track_limit, request.refresh_mode, [str(value) for value in request.existing_track_ids],
@@ -1707,11 +1799,21 @@ def _preview_curation(
         [str(value) for value in request.negative_track_ids],
         lyrics_matrix, lyrics_available, positive_queries, negative_queries,
         listen_counts, recent_ids, request.familiarity_percent, shuffle_seed,
+        voice_matrix=voice_matrix, voice_available=voice_available,
+        sound_prompts=expanded_sound_prompts,
+        themes_prompts=expand_tag_groups(theme_tags) if structured and theme_tags else None,
+        sound_negative_prompts=expanded_sound_negatives,
+        themes_negative_prompts=expand_tag_groups(theme_negatives) if structured and theme_negatives else None,
+        sound_weight=request.sound_weight if structured else None,
     )
+    if structured:
+        weights = {"semantic": request.sound_weight / 100.0, "lyrics": (100 - request.sound_weight) / 100.0}
+    else:
+        weights = {"semantic": 0.45, "lyrics": 0.55}
     return {
         "tracks": tracks, "references": references, "corpus_size": len(rows),
         "curation_type": request.curation_type,
-        "model": "muq_mulan+bge_m3", "weights": {"semantic": 0.45, "lyrics": 0.55},
+        "model": "muq_mulan+bge_m3", "weights": weights,
         "lyrics_coverage": int(lyrics_available.sum()), "shuffle_seed": shuffle_seed,
         "familiarity": {
             "percent": request.familiarity_percent, "active": listen_counts is not None,
@@ -1739,6 +1841,11 @@ def _refresh_curation(curation_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, o
         cursor.execute("UPDATE curations SET status='refreshing', last_error=NULL, updated_at=now() WHERE id=%s", (curation_id,))
     request = CurationPreviewRequest(
         curation_type=curation["curation_type"], positive_prompt=curation["positive_prompt"], negative_prompt=curation["negative_prompt"],
+        sound_prompts=curation.get("sound_prompts") or [],
+        themes_prompts=curation.get("themes_prompts") or [],
+        sound_negative_prompts=curation.get("sound_negative_prompts") or [],
+        themes_negative_prompts=curation.get("themes_negative_prompts") or [],
+        sound_weight=int(curation.get("sound_weight") or 50),
         positive_track_ids=curation["positive_track_ids"], negative_track_ids=curation["negative_track_ids"],
         familiarity_percent=curation["familiarity_percent"], period_start=curation["period_start"],
         period_end=curation["period_end"], lookback_days=curation["lookback_days"],
@@ -1760,6 +1867,10 @@ def _refresh_curation(curation_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, o
             recipe = {
                 "curation_type": request.curation_type,
                 "positive_prompt": request.positive_prompt, "negative_prompt": request.negative_prompt,
+                "sound_prompts": request.sound_prompts, "themes_prompts": request.themes_prompts,
+                "sound_negative_prompts": request.sound_negative_prompts,
+                "themes_negative_prompts": request.themes_negative_prompts,
+                "sound_weight": request.sound_weight,
                 "positive_track_ids": [str(value) for value in request.positive_track_ids],
                 "negative_track_ids": [str(value) for value in request.negative_track_ids],
                 "familiarity_percent": request.familiarity_percent,
@@ -1811,19 +1922,33 @@ def list_curations(echora_session: str | None = Cookie(default=None)) -> dict[st
     user = _session_user(echora_session)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
-            """SELECT c.*,
+            """SELECT c.*, latest.recipe,
                    coalesce((SELECT jsonb_agg(jsonb_build_object('id', pt.id, 'title', pt.title, 'artist', pt.artist, 'album', pt.album)) FROM tracks pt WHERE pt.id=ANY(c.positive_track_ids)), '[]') AS positive_tracks,
                    coalesce((SELECT jsonb_agg(jsonb_build_object('id', nt.id, 'title', nt.title, 'artist', nt.artist, 'album', nt.album)) FROM tracks nt WHERE nt.id=ANY(c.negative_track_ids)), '[]') AS negative_tracks,
                    coalesce(jsonb_agg(jsonb_build_object(
                      'id', t.id, 'title', t.title, 'artist', t.artist, 'album', t.album,
                      'duration_seconds', t.duration_seconds, 'source_id', crt.source_id,
-                     'position', crt.position, 'score', crt.score
+                     'position', crt.position, 'score', crt.score,
+                     'percentile', nullif(crt.evidence->>'percentile','')::real,
+                     'retained', coalesce((crt.evidence->>'retained')::boolean, false),
+                     'evidence', crt.evidence,
+                     'cover_art', (
+                       SELECT max(ts.source_data->>'coverArt')
+                       FROM user_track_links utl
+                       JOIN track_sources ts ON ts.library_id=utl.library_id
+                                             AND ts.track_id=utl.track_id
+                                             AND ts.external_id=crt.source_id
+                       WHERE utl.user_id=c.user_id AND utl.track_id=crt.track_id
+                     )
                    ) ORDER BY crt.position) FILTER (WHERE crt.track_id IS NOT NULL), '[]') AS tracks
                FROM curations c
-               LEFT JOIN LATERAL (SELECT id FROM curation_revisions WHERE curation_id=c.id ORDER BY revision_number DESC LIMIT 1) latest ON true
+               LEFT JOIN LATERAL (
+                 SELECT id, recipe FROM curation_revisions
+                 WHERE curation_id=c.id ORDER BY revision_number DESC LIMIT 1
+               ) latest ON true
                LEFT JOIN curation_revision_tracks crt ON crt.revision_id=latest.id
                LEFT JOIN tracks t ON t.id=crt.track_id
-               WHERE c.user_id=%s GROUP BY c.id ORDER BY c.updated_at DESC""",
+               WHERE c.user_id=%s GROUP BY c.id, latest.recipe ORDER BY c.updated_at DESC""",
             (user["id"],),
         )
         return {"curations": cursor.fetchall()}
@@ -1840,6 +1965,10 @@ def create_curation(request: CurationCreateRequest, echora_session: str | None =
             user_id=user["id"], navidrome_connection_id=connection_id, name=request.name.strip(),
             curation_type=request.curation_type,
             positive_prompt=request.positive_prompt.strip(), negative_prompt=request.negative_prompt.strip(),
+            sound_prompts=request.sound_prompts, themes_prompts=request.themes_prompts,
+            sound_negative_prompts=request.sound_negative_prompts,
+            themes_negative_prompts=request.themes_negative_prompts,
+            sound_weight=request.sound_weight,
             positive_track_ids=request.positive_track_ids, negative_track_ids=request.negative_track_ids,
             familiarity_percent=request.familiarity_percent, period_start=request.period_start,
             period_end=request.period_end, lookback_days=request.lookback_days,
@@ -1880,19 +2009,30 @@ def refresh_curation(curation_id: uuid.UUID, echora_session: str | None = Cookie
 
 
 @app.delete("/library/curations/{curation_id}", status_code=204)
-def delete_curation(curation_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> Response:
+def delete_curation(
+    curation_id: uuid.UUID, delete_navidrome: bool = True,
+    echora_session: str | None = Cookie(default=None),
+) -> Response:
     user = _session_user(echora_session)
     with session_scope() as session:
         curation = session.scalar(select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"]))
         if curation is None:
             raise HTTPException(status_code=404, detail="Curation not found")
         connection_id, playlist_id = curation.navidrome_connection_id, curation.navidrome_playlist_id
-        session.delete(curation)
-    if playlist_id:
+
+    # Delete remotely first so a Navidrome failure does not leave an orphaned
+    # playlist after Echora has already forgotten its ID.
+    if delete_navidrome and playlist_id:
         credentials = _load_connection(str(connection_id))
-        if credentials:
-            with NavidromeClient(*credentials) as client:
-                client.delete_playlist(str(playlist_id))
+        if credentials is None:
+            raise HTTPException(status_code=409, detail="Navidrome connection is unavailable; keep the Navidrome playlist or reconnect the server")
+        with NavidromeClient(*credentials) as client:
+            client.delete_playlist(str(playlist_id))
+
+    with session_scope() as session:
+        curation = session.scalar(select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"]))
+        if curation is not None:
+            session.delete(curation)
     return Response(status_code=204)
 
 
