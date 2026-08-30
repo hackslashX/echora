@@ -1,0 +1,10 @@
+.field{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-height:42px;padding:5px 8px;border:1px solid #354047;background:#0a1118;cursor:text}
+.field:focus-within{border-color:var(--aqua)}
+.field input{flex:1;min-width:120px;height:30px;padding:0;border:0;outline:0;background:transparent;color:#eef4f1;font:var(--type-body)/1.4 var(--ui-font)}
+.field input::placeholder{color:#5f6c67}
+.positive,.negative{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 8px;font:var(--type-caption) var(--ui-font);white-space:nowrap}
+.positive{background:#18342f;color:var(--aqua)}
+.negative{background:#382127;color:#ffb3bd}
+.positive button,.negative button{display:grid;place-items:center;flex:none;width:16px;height:16px;padding:0;border:0;background:transparent;color:inherit;cursor:pointer;opacity:.7}
+.positive button:hover,.negative button:hover{opacity:1}
+.positive button svg,.negative button svg{width:11px;height:11px}
