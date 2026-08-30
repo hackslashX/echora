@@ -127,15 +127,21 @@ def rank_curation(
     discovery_target = track_limit - familiar_target if listen_counts is not None else track_limit
     selected_indices: list[int] = []
     artist_counts: dict[str, int] = {}
+    used_recording_groups: set[str] = set()
 
     def take(order: list[int], amount: int) -> None:
         for index in order:
             if len(selected_indices) >= amount or index in selected_indices:
                 continue
+            recording_group = str(rows[index].get("recording_group_id") or "")
+            if recording_group and recording_group in used_recording_groups:
+                continue
             artist_key = _normalize(str(rows[index].get("artist") or "Unknown artist"))
             if artist_counts.get(artist_key, 0) >= 2:
                 continue
             artist_counts[artist_key] = artist_counts.get(artist_key, 0) + 1
+            if recording_group:
+                used_recording_groups.add(recording_group)
             selected_indices.append(index)
 
     take(familiar_order, familiar_target)

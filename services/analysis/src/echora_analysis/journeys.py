@@ -36,7 +36,9 @@ def select_journey(
     artist_counts: dict[str, int] = {}
     if artists[start_index]:
         artist_counts[artists[start_index].casefold()] = 1
-    used_groups = {recording_groups[start_index]} if recording_groups[start_index] else set()
+    used_groups = {
+        group for group in (recording_groups[start_index], recording_groups[end_index]) if group
+    }
     previous = start_index
     steps: list[tuple[int, float, float]] = [(start_index, 1.0, 0.0)]
     for position, target in enumerate(targets[1:-1], start=1):
