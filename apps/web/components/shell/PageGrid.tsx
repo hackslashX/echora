@@ -53,7 +53,7 @@ export default function PageGrid({ columns, rows, phase }: GridDefinition & { ph
   }, [columns, rows, signature]);
 
   return <div className={`${styles.grid} ${styles[phase]}`} aria-hidden="true">
-    {vertical.map((line, index) => <i key={line.id} className={`${styles.line} ${styles.vertical}`} style={style("left", line, phase === "leaving" ? 200 + index * 42 : 0)} />)}
-    {horizontal.map((line, index) => <i key={line.id} className={`${styles.line} ${styles.horizontal}`} style={style("top", line, phase === "leaving" ? 200 + index * 32 : 0)} />)}
+    {vertical.map(line => <i key={line.id} className={`${styles.line} ${styles.vertical}`} style={style("left", line)} />)}
+    {horizontal.map(line => <i key={line.id} className={`${styles.line} ${styles.horizontal}`} style={style("top", line)} />)}
   </div>;
 }

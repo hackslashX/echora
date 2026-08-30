@@ -7,6 +7,11 @@ import TransitionLink from "./TransitionLink";
 
 type Props = { title: string; displayName?: string; initials?: string; breadcrumb?: boolean };
 
+const mobileDestinations = [
+  ["Home", "/home"], ["Browse", "/library"], ["Curate", "/curate"],
+  ["Galaxy", "/galaxy"], ["Sync", "/sync"], ["Settings", "/settings"],
+] as const;
+
 export default function AppHeader({ title, displayName = "Echora", initials = "EC", breadcrumb = false }: Props) {
   const [accountOpen, setAccountOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -42,5 +47,8 @@ export default function AppHeader({ title, displayName = "Echora", initials = "E
         </div>
       </div>
     </div>
+    <nav className={styles.mobilePivots} aria-label="Primary navigation">
+      {mobileDestinations.map(([label, href]) => <TransitionLink key={href} href={href} className={title.toLowerCase() === label.toLowerCase() ? styles.currentPivot : ""}>{label}</TransitionLink>)}
+    </nav>
   </header>;
 }

@@ -12,8 +12,8 @@ export default function TransitionLink({ href, children, onClick, ...props }: Pr
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     window.dispatchEvent(new Event("echora:navigation-leave"));
-    const delay = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 820;
-    window.setTimeout(() => router.push(href), delay);
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.setTimeout(() => router.push(href), reduced ? 0 : 260);
   }
   return <a href={href} onClick={navigate} {...props}>{children}</a>;
 }
