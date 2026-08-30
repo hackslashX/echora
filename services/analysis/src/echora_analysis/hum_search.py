@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import random
 import threading
 import uuid
 
@@ -102,27 +103,93 @@ def extract_catalog_contour(audio: bytes) -> tuple[np.ndarray, np.ndarray]:
     return extract_waveform_contour(decode_audio(audio, CATALOG_SAMPLE_RATE), CATALOG_SAMPLE_RATE)
 
 
+def _demucs_shift_offsets(model: object, length: int, overlap: float) -> list[int]:
+    """Advance Demucs's shared RNG in the same order as serial bag inference."""
+    offsets = []
+    for submodel in model.models:
+        max_shift = int(0.5 * submodel.samplerate)
+        offset = random.randint(0, max_shift)
+        offsets.append(offset)
+        shifted_length = length + max_shift - offset
+        segment_length = int(submodel.samplerate * submodel.segment)
+        stride = int((1 - overlap) * segment_length)
+        segment_count = (shifted_length + stride - 1) // stride
+        transformer = submodel.crosstransformer
+        for _ in range(segment_count):
+            random.randrange(transformer.sin_random_shift + 1)
+    return offsets
+
+
+def _apply_demucs_checkpoint(submodel, mix, offset: int, device, overlap: float):
+    import torch
+    from demucs.apply import TensorChunk, apply_model
+
+    length = mix.shape[-1]
+    max_shift = int(0.5 * submodel.samplerate)
+    padded_mix = TensorChunk(mix).padded(length + 2 * max_shift)
+    shifted = TensorChunk(padded_mix, offset, length + max_shift - offset)
+    if device.type == "cuda":
+        stream = torch.cuda.Stream(device=device)
+        with torch.cuda.stream(stream), torch.inference_mode():
+            output = apply_model(
+                submodel, shifted, shifts=0, split=True, overlap=overlap,
+                progress=False, device=device,
+            )[..., max_shift - offset:]
+        stream.synchronize()
+        return output
+    with torch.inference_mode():
+        return apply_model(
+            submodel, shifted, shifts=0, split=True, overlap=overlap,
+            progress=False, device=device,
+        )[..., max_shift - offset:]
+
+
+def _apply_demucs_checkpoints(model, mix, device, concurrency: int):
+    import torch
+
+    overlap = 0.25
+    offsets = _demucs_shift_offsets(model, mix.shape[-1], overlap)
+
+    def apply(index: int):
+        return _apply_demucs_checkpoint(
+            model.models[index], mix, offsets[index], device, overlap,
+        )
+
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        outputs = list(executor.map(apply, range(len(model.models))))
+    with torch.inference_mode():
+        estimates = torch.zeros_like(outputs[0])
+        totals = [0.0] * len(model.sources)
+        for output, weights in zip(outputs, model.weights):
+            for source_index, weight in enumerate(weights):
+                output[:, source_index] *= weight
+                totals[source_index] += weight
+            estimates += output
+        for source_index, total in enumerate(totals):
+            estimates[:, source_index] /= total
+    return estimates
+
+
 def separate_melody_sources(audio: bytes) -> dict[str, tuple[np.ndarray, int]]:
     global _DEMUCS_MODEL
     import torch
     from demucs import pretrained
-    from demucs.apply import apply_model
     from demucs.audio import convert_audio
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if _DEMUCS_MODEL is None:
         _DEMUCS_MODEL = pretrained.get_model(MELODY_DEMUCS_MODEL).eval().to(device)
     model = _DEMUCS_MODEL
+    concurrency = int(os.environ.get("MELODY_DEMUCS_CHECKPOINT_CONCURRENCY", "4"))
+    if concurrency not in {1, 2, 4}:
+        raise ValueError("MELODY_DEMUCS_CHECKPOINT_CONCURRENCY must be 1, 2, or 4")
     channels = decode_audio_channels(audio, CATALOG_SAMPLE_RATE, 2)
     waveform = torch.as_tensor(channels.T, dtype=torch.float32)
     waveform = convert_audio(waveform, CATALOG_SAMPLE_RATE, model.samplerate, model.audio_channels)
     reference = waveform.mean(0)
     mean, std = reference.mean(), reference.std().clamp_min(1e-8)
-    with torch.inference_mode():
-        sources = apply_model(
-            model, ((waveform - mean) / std).unsqueeze(0), device=device,
-            shifts=1, split=True, overlap=0.25, progress=False,
-        )[0] * std + mean
+    normalized = ((waveform - mean) / std).unsqueeze(0)
+    sources = _apply_demucs_checkpoints(model, normalized, device, concurrency)[0] * std + mean
     vocals = sources[model.sources.index("vocals")].mean(0).cpu().numpy()
     accompaniment = sources[[index for index, name in enumerate(model.sources) if name != "vocals"]].sum(0).mean(0).cpu().numpy()
     return {

@@ -151,7 +151,10 @@ def main(argv=None):
     input_sr = sr
     reference_audio = audio_channels.mean(axis=1) if args.separate_vocals else None
     if args.separate_vocals:
-        from separate_vocals import separate_vocals
+        if os.environ.get("FA_KARA_SINGLE_VOCAL_CHECKPOINT", "true").lower() == "true":
+            from separate_vocals import separate_vocals_single_checkpoint as separate_vocals
+        else:
+            from separate_vocals import separate_vocals
         audio_file, sr = separate_vocals(audio_channels, sr, use_gpu=align_use_gpu)
     else:
         audio_file = audio_channels.mean(axis=1)
