@@ -87,7 +87,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 Track identity is SHA-256 of the source audio bytes, represented as a UUIDv5. Fingerprints group equivalent recordings without replacing canonical track identity. Model revisions are pinned in `compose.yaml` and `services/analysis/src/echora_analysis/download_models.py`.
 
-Echora's source code uses the MIT license. Model weights keep their upstream licenses. MuQ-MuLan weights use CC-BY-NC-4.0, so review that license before use outside personal or research work. HeartCLAP remains excluded because there is no reproducible official public checkpoint and inference interface for the planned comparison.
+Echora's source code is licensed under the GNU Affero General Public License v3.0. Model weights keep their upstream licenses. MuQ-MuLan weights use CC-BY-NC-4.0, and the Essentia models use the license published by MTG for its model directory. Both restrict commercial use unless separately licensed. HeartCLAP remains excluded because there is no reproducible official public checkpoint and inference interface for the planned comparison.
 
 ## Deployment
 
