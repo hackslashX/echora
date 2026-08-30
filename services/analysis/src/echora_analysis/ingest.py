@@ -14,7 +14,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 import torch
 
-from .audio import decode_audio, deterministic_windows
+from .audio import decode_audio, full_coverage_windows
 from .hum_search import create_sync_run, release_separator, store_track_contours
 from .models import AudioEmbeddingModel, MertModel, MuQMuLanModel, release_model
 from .navidrome import NavidromeClient, NavidromeTrack
@@ -52,13 +52,17 @@ def _config_hash(value: dict[str, object]) -> str:
 
 
 def _create_run(connection: psycopg.Connection, model: AudioEmbeddingModel) -> uuid.UUID:
+    detailed = model.name in {"muq_mulan", "mert"}
     config = {
         "model": model.name,
         "revision": model.revision,
         "sample_rate": model.sample_rate,
-        "windows": [0.15, 0.5, 0.85],
+        "coverage": "full-track" if detailed else "sampled",
+        "windows": None if detailed else [0.15, 0.5, 0.85],
         "window_seconds": model.window_seconds,
+        "stride_seconds": 5 if detailed else None,
         "aggregation": "normalized_mean",
+        "store_window_embeddings": True,
     }
     environment = {
         "python": platform.python_version(),
@@ -109,6 +113,19 @@ def _store_embedding(connection: psycopg.Connection, track_id: uuid.UUID, run_id
             ON CONFLICT (track_id, run_id, embedding_type, window_index) DO NOTHING
             """,
             (track_id, run_id, len(result.vector), _vector_literal(result.vector), result.inference_ms, result.peak_vram_bytes),
+        )
+        cursor.executemany(
+            """
+            INSERT INTO embeddings
+              (track_id, run_id, embedding_type, window_index, dimension,
+               aggregation, embedding)
+            VALUES (%s, %s, 'audio-window', %s, %s, 'none', %s::vector)
+            ON CONFLICT (track_id, run_id, embedding_type, window_index) DO NOTHING
+            """,
+            [
+                (track_id, run_id, window_index, len(vector), _vector_literal(vector))
+                for window_index, vector in enumerate(result.window_vectors)
+            ],
         )
 
 
@@ -229,7 +246,7 @@ def ingest_navidrome(
                 try:
                     audio, track_id = audio_track(song)
                     waveform = decode_audio(audio)
-                    windows = deterministic_windows(waveform)
+                    windows = full_coverage_windows(waveform)
                     del waveform, audio
                     _store_embedding(connection, track_id, run_id, model, windows)
                     if phase == "muq":

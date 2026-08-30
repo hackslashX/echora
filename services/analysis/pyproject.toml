@@ -9,6 +9,7 @@ dependencies = [
   "cryptography==50.0.0",
   "demucs==4.1.0",
   "essentia==2.1b6.dev1389",
+  "onnxruntime==1.23.2",
   "fastapi==0.141.1",
   "httpx==0.28.1",
   "huggingface-hub==1.28.0",

@@ -124,11 +124,19 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
                       EXISTS (SELECT 1 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                               WHERE e.track_id=ts.track_id AND e.embedding_type='audio-track'
                                 AND e.window_index IS NULL AND ar.model_name='muq_mulan'
-                                AND ar.model_revision=%s) AS has_muq,
+                                AND ar.model_revision=%s
+                                AND ar.config->>'coverage'='full-track'
+                                AND ar.config->>'window_seconds'='10'
+                                AND ar.config->>'stride_seconds'='5'
+                                AND ar.config->>'store_window_embeddings'='true') AS has_muq,
                       EXISTS (SELECT 1 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                               WHERE e.track_id=ts.track_id AND e.embedding_type='audio-track'
                                 AND e.window_index IS NULL AND ar.model_name='mert'
-                                AND ar.model_revision=%s) AS has_mert,
+                                AND ar.model_revision=%s
+                                AND ar.config->>'coverage'='full-track'
+                                AND ar.config->>'window_seconds'='10'
+                                AND ar.config->>'stride_seconds'='5'
+                                AND ar.config->>'store_window_embeddings'='true') AS has_mert,
                       EXISTS (SELECT 1 FROM track_fingerprints tf WHERE tf.track_id=ts.track_id) AS has_fingerprint,
                       EXISTS (SELECT 1 FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
                               WHERE mc.track_id=ts.track_id AND ar.model_name='melody_contour'
