@@ -38,7 +38,7 @@ A user's current link to a shared track through one library. Synchronization cre
 
 ## Recording group
 
-A non-destructive set of tracks believed to contain the same recording. Membership records evidence and confidence. Grouping never deletes or replaces tracks.
+A non-destructive set of tracks believed to contain the same recording. Membership records evidence and confidence. Grouping never deletes or replaces tracks. Members are alternative copies when Echora generates a journey or curation, so one generated selection contains at most one member.
 
 ## Representation
 

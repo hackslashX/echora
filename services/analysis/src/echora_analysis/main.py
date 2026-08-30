@@ -1617,7 +1617,8 @@ def _curation_corpus(
                )
                SELECT DISTINCT ON (t.id) t.id, t.title, t.artist, t.album, t.duration_seconds,
                       selected_embeddings.embedding, lyrics_embedding.embedding AS lyrics_embedding,
-                      ts.external_id AS source_id, ts.source_data->>'coverArt' AS cover_art
+                      ts.external_id AS source_id, ts.source_data->>'coverArt' AS cover_art,
+                      member.group_id::text AS recording_group_id
                FROM selected_embeddings
                JOIN tracks t ON t.id=selected_embeddings.track_id
                JOIN track_sources ts ON ts.track_id=t.id AND ts.source_type='subsonic'
@@ -1625,6 +1626,7 @@ def _curation_corpus(
                JOIN user_track_links ul ON ul.library_id=l.id AND ul.track_id=t.id AND ul.user_id=%s
                JOIN navidrome_connections nc ON nc.id=%s
                  AND lower(rtrim(nc.url, '/'))=lower(rtrim(l.root_path, '/'))
+               LEFT JOIN recording_group_members member ON member.track_id=t.id
                LEFT JOIN LATERAL (
                  SELECT e.embedding::text AS embedding
                  FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
@@ -2351,6 +2353,11 @@ def preview_journey(
     start_index, end_index = identifiers.get(str(request.start_track_id)), identifiers.get(str(request.end_track_id))
     if start_index is None or end_index is None:
         raise HTTPException(status_code=404, detail="One or both journey endpoints lack required embeddings")
+    start_group = rows[start_index].get("recording_group_id")
+    if start_group and start_group == rows[end_index].get("recording_group_id"):
+        raise HTTPException(
+            status_code=422, detail="Journey endpoints must be different recordings",
+        )
     semantic = normalize_journey_rows(np.stack([np.fromstring(row.pop("semantic_embedding").strip("[]"), sep=",") for row in rows]))
     acoustic = normalize_journey_rows(np.stack([np.fromstring(row.pop("acoustic_embedding").strip("[]"), sep=",") for row in rows]))
     if request.mode == "semantic":
