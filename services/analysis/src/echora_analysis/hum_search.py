@@ -17,7 +17,7 @@ os.environ.setdefault("NUMBA_CACHE_DIR", "/models/torch/numba")
 os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 
 import librosa
-from numba import njit
+from numba import njit, prange
 import numpy as np
 import psycopg
 from psycopg.rows import dict_row, tuple_row
@@ -295,42 +295,59 @@ def _median_in_place(values: np.ndarray, count: int) -> float:
 
 @njit(cache=True, nogil=True)
 def _coarse_tempo(
-    query: np.ndarray,
-    query_mask: np.ndarray,
+    query_values: np.ndarray,
     target: np.ndarray,
     target_mask: np.ndarray,
-    offsets: np.ndarray,
+    voiced_offsets: np.ndarray,
     width: int,
     stride: int,
     minimum_voiced: float,
+    query_length: int,
 ) -> tuple[float, int]:
-    """Find the best window for one tempo without allocating a window matrix."""
-    query_length = len(query)
-    query_values = np.empty(query_length, dtype=np.float32)
-    target_values = np.empty(query_length, dtype=np.float32)
+    """Find the best window for one tempo without allocating a matrix.
+
+    query_values and voiced_offsets cover only the voiced query positions, so
+    unvoiced frames cost no iterations. A window is abandoned once its maximum
+    possible voiced overlap can no longer reach minimum_voiced, which rejects
+    exactly the windows the full count would reject.
+    """
+    voiced_total = len(query_values)
+    target_values = np.empty(voiced_total, dtype=np.float32)
+    query_pair_values = np.empty(voiced_total, dtype=np.float32)
+    # _median_in_place partitions its input, so each start medians copies while
+    # the delta loop keeps reading the unpermuted values.
+    query_scratch = np.empty(voiced_total, dtype=np.float32)
+    target_scratch = np.empty(voiced_total, dtype=np.float32)
     best_score = np.inf
     best_start = -1
 
     for start in range(0, len(target) - width + 1, stride):
         voiced_count = 0
-        for index in range(query_length):
-            target_index = start + offsets[index]
-            if query_mask[index] and target_mask[target_index]:
-                query_values[voiced_count] = query[index]
+        feasible = True
+        for index in range(voiced_total):
+            target_index = start + voiced_offsets[index]
+            if target_mask[target_index]:
+                query_pair_values[voiced_count] = query_values[index]
                 target_values[voiced_count] = target[target_index]
                 voiced_count += 1
-        if voiced_count < minimum_voiced:
+            elif voiced_count + (voiced_total - index - 1) < minimum_voiced:
+                feasible = False
+                break
+        if not feasible or voiced_count < minimum_voiced:
             continue
 
-        query_median = _median_in_place(query_values, voiced_count)
-        target_median = _median_in_place(target_values, voiced_count)
+        query_scratch[:voiced_count] = query_pair_values[:voiced_count]
+        target_scratch[:voiced_count] = target_values[:voiced_count]
+        query_median = _median_in_place(query_scratch, voiced_count)
+        target_median = _median_in_place(target_scratch, voiced_count)
 
         delta_sum = 0.0
-        for index in range(query_length):
-            target_index = start + offsets[index]
-            if query_mask[index] and target_mask[target_index]:
-                delta = abs((query[index] - query_median) - (target[target_index] - target_median))
-                delta_sum += min(delta, 6.0)
+        for index in range(voiced_count):
+            delta = abs(
+                (query_pair_values[index] - query_median)
+                - (target_values[index] - target_median)
+            )
+            delta_sum += min(delta, 6.0)
         score = delta_sum / voiced_count + (1.0 - voiced_count / query_length)
         if score < best_score:
             best_score = score
@@ -345,6 +362,8 @@ def _coarse_match(
     query_length = len(query)
     stride = max(1, CONTOUR_HZ // 2)
     minimum_voiced = float(query_mask.sum()) * 0.55
+    voiced_indices = np.flatnonzero(query_mask)
+    query_values = query[voiced_indices]
     best: tuple[float, int, np.ndarray, np.ndarray] | None = None
     for tempo in _TEMPO_RATIOS:
         width = max(20, round(query_length * tempo))
@@ -352,7 +371,8 @@ def _coarse_match(
             continue
         offsets = np.rint(np.linspace(0, width - 1, query_length)).astype(np.int64)
         score, start = _coarse_tempo(
-            query, query_mask, target, target_mask, offsets, width, stride, minimum_voiced
+            query_values, target, target_mask, offsets[voiced_indices],
+            width, stride, minimum_voiced, query_length,
         )
         if start >= 0 and (best is None or score < best[0]):
             indices = start + offsets
@@ -360,35 +380,40 @@ def _coarse_match(
     return best
 
 
-@njit(cache=True, nogil=True)
+@njit(cache=True, nogil=True, parallel=True)
 def _coarse_motif_batch(
-    queries: np.ndarray,
-    query_masks: np.ndarray,
+    query_values_padded: np.ndarray,
+    voiced_counts: np.ndarray,
     query_lengths: np.ndarray,
     target: np.ndarray,
     target_mask: np.ndarray,
     widths: np.ndarray,
-    offsets: np.ndarray,
+    voiced_offsets: np.ndarray,
     stride: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Scan every prepared motif and tempo for one catalog contour."""
+    """Scan every prepared motif and tempo for one catalog contour.
+
+    Motifs are independent, so scanning them in parallel is bit-exact with the
+    serial loop: every start position is scored with identical arithmetic and
+    each motif keeps its own deterministic minimum.
+    """
     motif_count, tempo_count = widths.shape
     best_scores = np.full(motif_count, np.inf)
     best_starts = np.full(motif_count, -1, dtype=np.int64)
     best_tempos = np.full(motif_count, -1, dtype=np.int64)
-    for motif_index in range(motif_count):
+    for motif_index in prange(motif_count):
         length = query_lengths[motif_index]
-        query = queries[motif_index, :length]
-        query_mask = query_masks[motif_index, :length]
-        minimum_voiced = float(query_mask.sum()) * 0.55
+        voiced_count = voiced_counts[motif_index]
+        query_values = query_values_padded[motif_index, :voiced_count]
+        minimum_voiced = float(voiced_count) * 0.55
         for tempo_index in range(tempo_count):
             width = widths[motif_index, tempo_index]
             if width > len(target):
                 continue
             score, start = _coarse_tempo(
-                query, query_mask, target, target_mask,
-                offsets[motif_index, tempo_index, :length],
-                width, stride, minimum_voiced,
+                query_values, target, target_mask,
+                voiced_offsets[motif_index, tempo_index, :voiced_count],
+                width, stride, minimum_voiced, length,
             )
             if start >= 0 and score < best_scores[motif_index]:
                 best_scores[motif_index] = score
@@ -399,35 +424,44 @@ def _coarse_motif_batch(
 
 def _prepare_motifs(
     windows: list[tuple[np.ndarray, np.ndarray]],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     lengths = np.asarray([len(query) for query, _ in windows], dtype=np.int64)
+    voiced_counts = np.asarray([int(mask.sum()) for _, mask in windows], dtype=np.int64)
     maximum = int(lengths.max())
+    maximum_voiced = int(voiced_counts.max())
+    # Only voiced query positions are scored, so pack their values and their
+    # per-tempo target offsets once instead of re-deriving them per window.
+    query_values = np.zeros((len(windows), maximum_voiced), dtype=np.float32)
     queries = np.zeros((len(windows), maximum), dtype=np.float32)
     masks = np.zeros((len(windows), maximum), dtype=bool)
+    voiced_offsets = np.zeros((len(windows), len(_TEMPO_RATIOS), maximum_voiced), dtype=np.int64)
     widths = np.zeros((len(windows), len(_TEMPO_RATIOS)), dtype=np.int64)
     offsets = np.zeros((len(windows), len(_TEMPO_RATIOS), maximum), dtype=np.int64)
     for motif_index, (query, mask) in enumerate(windows):
         length = len(query)
         queries[motif_index, :length] = query
         masks[motif_index, :length] = mask
+        voiced_indices = np.flatnonzero(mask)
+        query_values[motif_index, :len(voiced_indices)] = query[voiced_indices]
+        length = len(query)
         for tempo_index, tempo in enumerate(_TEMPO_RATIOS):
             width = max(20, round(length * tempo))
             widths[motif_index, tempo_index] = width
-            offsets[motif_index, tempo_index, :length] = np.rint(
-                np.linspace(0, width - 1, length)
-            ).astype(np.int64)
-    return queries, masks, lengths, widths, offsets
+            motif_offsets = np.rint(np.linspace(0, width - 1, length)).astype(np.int64)
+            offsets[motif_index, tempo_index, :length] = motif_offsets
+            voiced_offsets[motif_index, tempo_index, :len(voiced_indices)] = motif_offsets[voiced_indices]
+    return query_values, voiced_counts, lengths, queries, masks, widths, voiced_offsets, offsets
 
 
 def _match_prepared_motifs(
-    prepared: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    prepared: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
     target: np.ndarray,
     target_mask: np.ndarray,
 ) -> list[tuple[float, float]]:
-    queries, masks, lengths, widths, offsets = prepared
+    query_values, voiced_counts, lengths, queries, masks, widths, voiced_offsets, offsets = prepared
     _, starts, tempos = _coarse_motif_batch(
-        queries, masks, lengths, target, target_mask, widths, offsets,
-        max(1, CONTOUR_HZ // 2),
+        query_values, voiced_counts, lengths, target, target_mask, widths,
+        voiced_offsets, max(1, CONTOUR_HZ // 2),
     )
     matches: list[tuple[float, float]] = []
     for motif_index, start in enumerate(starts):
