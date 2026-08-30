@@ -31,6 +31,7 @@ export default function BrowseLibrary() {
   const [sortBy, setSortBy] = useState<"name" | "artist" | "released">("name");
   const [connectionId, setConnectionId] = useState("");
   const [humResults, setHumResults] = useState(false);
+  const [mobilePane, setMobilePane] = useState<"tracks" | "filters">("tracks");
   const listRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const pageSize = 10;
@@ -73,7 +74,7 @@ export default function BrowseLibrary() {
   function resetResults() { setHumResults(false); setTracks([]); setTotal(0); setBatch(0); listRef.current?.scrollTo({ top: 0 }); }
 
   function showHumResults(results: Track[]) {
-    setHumResults(true); setTracks(results); setTotal(results.length); setBatch(0);
+    setHumResults(true); setTracks(results); setTotal(results.length); setBatch(0); setMobilePane("tracks");
     listRef.current?.scrollTo({ top: 0 });
   }
 
@@ -90,12 +91,13 @@ export default function BrowseLibrary() {
   const rows = [1];
   return <AppShell title="Browse" footer={<CopyrightFooter />} grid={{ columns, rows }} flush fullPage breadcrumb>
     <section className={styles.layout} style={{ gridTemplateColumns: trackTemplate(columns, 180), gridTemplateRows: trackTemplate(rows, 152) }}>
-      <aside className={styles.filters}>
+      <nav className={styles.mobilePivots} aria-label="Browse sections"><button className={mobilePane === "tracks" ? styles.activePivot : ""} onClick={() => setMobilePane("tracks")}>tracks <b>{total}</b></button><button className={mobilePane === "filters" ? styles.activePivot : ""} onClick={() => setMobilePane("filters")}>filters</button></nav>
+      <aside className={`${styles.filters} ${mobilePane === "filters" ? styles.mobileActive : ""}`}>
         <h1>Filters</h1>
         <section className={styles.filterGroup}><span>Artists</span><input value={artistQuery} onChange={event => setArtistQuery(event.target.value)} placeholder="Search artists" /><div><button type="button" className={!artist ? styles.selected : ""} onClick={() => { setArtist(""); setAlbum(""); resetResults(); }}>All artists</button>{artists.map(item => <button type="button" className={artist === item.name ? styles.selected : ""} onClick={() => { setArtist(item.name); setAlbum(""); resetResults(); }} key={item.name}>{item.name}<b>{item.tracks}</b></button>)}</div></section>
         <section className={styles.filterGroup}><span>Albums</span><input value={albumQuery} onChange={event => setAlbumQuery(event.target.value)} placeholder="Search albums" /><div><button type="button" className={!album ? styles.selected : ""} onClick={() => { setAlbum(""); resetResults(); }}>All albums</button>{albums.map(item => <button type="button" className={album === item.name ? styles.selected : ""} onClick={() => { setAlbum(item.name); resetResults(); }} key={item.name}>{item.name}<b>{item.tracks}</b></button>)}</div></section>
       </aside>
-      <section className={styles.listing}>
+      <section className={`${styles.listing} ${mobilePane === "tracks" ? styles.mobileActive : ""}`}>
         <header><h2>{humResults ? "Hum matches" : "Tracks"}</h2><strong>{total}</strong></header>
         <div className={styles.search}><label><Search /><input value={query} onChange={event => { setQuery(event.target.value); resetResults(); }} placeholder="Search tracks" /></label><HumSearchButton onResults={showHumResults} onError={setError} /><select aria-label="Sort tracks" value={sortBy} onChange={event => { setSortBy(event.target.value as "name" | "artist" | "released"); resetResults(); }}><option value="name">Name</option><option value="artist">Artist</option><option value="released">Date released</option></select></div>
         <div className={styles.list} ref={listRef}>{loading && tracks.length === 0 ? <div className={styles.empty}>Loading library</div> : error ? <div className={styles.empty}>{error}</div> : tracks.length === 0 ? <div className={styles.empty}>No matching tracks</div> : <>{tracks.map(track => <button type="button" className={`${styles.row} ${player.track?.id === track.id ? styles.current : ""}`} key={track.id} onClick={() => play(track)} disabled={!connectionId || !track.source_id}>

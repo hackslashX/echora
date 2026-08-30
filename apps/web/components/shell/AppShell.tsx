@@ -38,12 +38,16 @@ export default function AppShell({ title, footer, children, flush = false, fullP
   }, [onboarding, router]);
 
   useEffect(() => {
-    if (!grid && !animate) return;
-    const entered = window.setTimeout(() => setTransition("idle"), 900);
-    const leave = () => { window.clearTimeout(entered); setTransition("leaving"); };
+    if (transition !== "entering") return;
+    const timer = window.setTimeout(() => setTransition("idle"), 300);
+    return () => window.clearTimeout(timer);
+  }, [transition]);
+
+  useEffect(() => {
+    const leave = () => setTransition("leaving");
     window.addEventListener("echora:navigation-leave", leave);
-    return () => { window.clearTimeout(entered); window.removeEventListener("echora:navigation-leave", leave); };
-  }, [animate, grid]);
+    return () => window.removeEventListener("echora:navigation-leave", leave);
+  }, []);
 
   if (!user) return <main className={styles.loading}>ECHORA</main>;
   const displayName = user.display_name || user.username;

@@ -12,6 +12,7 @@
 import { useEffect, useRef } from "react";
 import { BackdropPreset, PlaybackPreferences, readPlaybackPreferences } from "../player/playbackPreferences";
 import styles from "./Backdrop.module.css";
+import { readCompactLayoutPreference } from "./layoutPreference";
 
 type RenderLayer = { render: (time: number) => void };
 type Color = [number, number, number];
@@ -391,6 +392,7 @@ export default function Backdrop() {
   const sceneRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
+    if (readCompactLayoutPreference() || window.matchMedia("(max-width: 1199px), (max-height: 719px)").matches) return;
     const maybeGlCanvas = glRef.current;
     const maybeSceneCanvas = sceneRef.current;
     if (!maybeGlCanvas || !maybeSceneCanvas) return;
