@@ -12,6 +12,7 @@ from psycopg.types.json import Jsonb
 import torch
 
 from .lyrics_analysis import LyricsEmbeddingModel
+from .language_detection import detect_distribution
 from .models import release_model
 from .navidrome import NavidromeClient
 from .processing_plan import plan_lyrics
@@ -45,6 +46,10 @@ def _store_lyrics(connection: psycopg.Connection, track_id: uuid.UUID, result: d
     text = result.get("text")
     status = str(result.get("status") or "unavailable")
     source = "embedded" if text else "none"
+    language_distribution = detect_distribution(str(text) if text else None)
+    language = language_distribution.get("primary_language") or result.get("language")
+    if language == "xxx":
+        language = None
     with connection.cursor() as cursor:
         cursor.execute(
             """INSERT INTO lyrics (track_id, source, text, language, provenance, availability_status)
@@ -53,9 +58,10 @@ def _store_lyrics(connection: psycopg.Connection, track_id: uuid.UUID, result: d
                  language=EXCLUDED.language, provenance=EXCLUDED.provenance,
                  availability_status=EXCLUDED.availability_status, created_at=now()
                RETURNING id""",
-            (track_id, source, text, result.get("language"), Jsonb({
+            (track_id, source, text, language, Jsonb({
                 "provider": "navidrome", "endpoint": result.get("source"),
                 "synced": result.get("synced"), "lines": result.get("lines") or [],
+                **({"languages": language_distribution} if language_distribution else {}),
             }), status),
         )
         return cursor.fetchone()[0]
