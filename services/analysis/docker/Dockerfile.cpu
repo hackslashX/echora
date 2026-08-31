@@ -18,7 +18,7 @@ COPY services/analysis/src ./src
 COPY services/analysis/vendor ./vendor
 COPY services/analysis/alembic.ini ./alembic.ini
 COPY services/analysis/alembic ./alembic
-ENV PATH="/opt/venv/bin:$PATH" PYTHONPATH="/service/src" TORCH_HOME="/models/torch" NLTK_DATA="/usr/local/share/nltk_data"
+ENV PATH="/opt/venv/bin:$PATH" PYTHONPATH="/service/src" TORCH_HOME="/models/torch" LID_MODEL_PATH="/models/lid.176.bin" NLTK_DATA="/usr/local/share/nltk_data"
 RUN mkdir -p /models/huggingface && chown -R echora /models
 EXPOSE 8000
 CMD ["sh", "-c", "chown -R echora /models && runuser -u echora -- alembic upgrade head && exec runuser -u echora -- uvicorn echora_analysis.main:app --host 0.0.0.0 --port 8000"]

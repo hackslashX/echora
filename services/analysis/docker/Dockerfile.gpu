@@ -22,6 +22,7 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONPATH="/service/src" \
     HF_HOME="/models/huggingface" \
     TORCH_HOME="/models/torch" \
+    LID_MODEL_PATH="/models/lid.176.bin" \
     NLTK_DATA="/usr/local/share/nltk_data"
 RUN mkdir -p /models/huggingface && chown -R echora /models
 EXPOSE 8000

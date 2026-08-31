@@ -43,6 +43,7 @@ from .hum_search import DEFAULT_CORPUS_SIZE, build_corpus, search_corpus
 from .ingest import ingest_navidrome
 from .journeys import normalize_rows as normalize_journey_rows, select_journey, spherical_targets
 from .listening_history import recent_listens, track_listen_counts
+from .language_detection import LANGUAGE_NAMES, PRIMARY_SHARE, language_affinity
 from .karaoke_pipeline import KARAOKE_PIPELINE_REVISION, backfill_karaoke
 from .melody_config import MELODY_CONTOUR_REVISION
 from .lyrics_analysis import shared_lyrics_model
@@ -176,6 +177,8 @@ class CurationPreviewRequest(BaseModel):
     lookback_days: int = Field(default=7, ge=1, le=90)
     track_limit: int = Field(default=30, ge=5, le=200)
     refresh_mode: str = Field(default="stable", pattern="^(stable|fresh)$")
+    target_language: str = Field(default="", pattern="^$|^[a-z]{2,3}$")
+    language_strictness: str = Field(default="primarily", pattern="^(only|primarily|sprinkle)$")
     existing_track_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
 
 
@@ -1725,12 +1728,31 @@ def _preview_curation(
     user_id: uuid.UUID, connection_id: uuid.UUID, request: CurationPreviewRequest,
 ) -> dict[str, object]:
     rows, matrix, lyrics_matrix, lyrics_available, voice_matrix, voice_available = _curation_corpus(user_id, connection_id)
+    language_map: dict[str, dict[str, object]] = {}
+    if request.curation_type == "language" and request.target_language:
+        with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT l.track_id::text AS id, l.provenance->'languages' AS distribution
+                   FROM lyrics l WHERE l.provenance ? 'languages'""")
+            language_map = {row["id"]: row["distribution"] for row in cursor.fetchall() if row["distribution"]}
+        if request.language_strictness == "only":
+            keep = [index for index, row in enumerate(rows)
+                    if language_affinity(language_map.get(str(row["id"])), request.target_language) >= PRIMARY_SHARE]
+            if not keep:
+                raise HTTPException(status_code=409, detail=
+                    f"No tracks with confident {LANGUAGE_NAMES.get(request.target_language, request.target_language)} lyrics were found in this library")
+            rows = [rows[index] for index in keep]
+            matrix = matrix[keep]
+            lyrics_matrix = lyrics_matrix[keep]
+            lyrics_available = lyrics_available[keep]
+            voice_matrix = voice_matrix[keep]
+            voice_available = voice_available[keep]
     if request.curation_type == "time_of_day" and (not request.period_start or not request.period_end):
         raise HTTPException(status_code=422, detail="Choose a start and end time")
     if request.curation_type == "language" and not (
-        request.positive_prompt.strip() or request.sound_prompts or request.themes_prompts
+        request.positive_prompt.strip() or request.sound_prompts or request.themes_prompts or request.target_language
     ):
-        raise HTTPException(status_code=422, detail="Add a positive direction for this language curation")
+        raise HTTPException(status_code=422, detail="Pick a language or add a positive direction for this language curation")
     if request.curation_type == "examples" and not request.positive_track_ids:
         raise HTTPException(status_code=422, detail="Add at least one Songs like track")
     overlap = set(request.positive_track_ids) & set(request.negative_track_ids)
@@ -1771,6 +1793,8 @@ def _preview_curation(
     sound_negatives = [tag.strip() for tag in request.sound_negative_prompts if tag.strip()]
     theme_negatives = [tag.strip() for tag in request.themes_negative_prompts if tag.strip()]
     structured = bool(sound_tags or theme_tags or sound_negatives or theme_negatives)
+    if request.curation_type == "language" and request.target_language and not structured and not request.positive_prompt.strip():
+        request.positive_prompt = f"{LANGUAGE_NAMES.get(request.target_language, request.target_language)} music with vocals"
     semantic_prompts = sound_tags if structured else ([request.positive_prompt] if request.positive_prompt.strip() else [])
     theme_prompts = theme_tags if structured else ([request.positive_prompt] if request.positive_prompt.strip() else [])
     visible_ids = {str(row["id"]) for row in rows}
@@ -1790,11 +1814,13 @@ def _preview_curation(
     lyrics_negatives = (theme_negatives if structured else ([request.negative_prompt] if request.negative_prompt.strip() else []))
     negative_queries = np.asarray(_tag_query_centers(lyrics_negatives), dtype=np.float32) if lyrics_negatives else None
     shuffle_seed = secrets.randbits(63)
+    language_mode = request.curation_type == "language" and request.target_language
+    rank_limit = len(rows) if (language_mode and request.language_strictness == "primarily") else request.track_limit
     expanded_sound_prompts = expand_tag_groups(sound_tags) if structured and sound_tags else None
     expanded_sound_negatives = expand_tag_groups(sound_negatives) if structured and sound_negatives else None
     tracks, references = rank_curation(
         rows, matrix, request.positive_prompt, request.negative_prompt,
-        request.track_limit, request.refresh_mode, [str(value) for value in request.existing_track_ids],
+        rank_limit, request.refresh_mode, [str(value) for value in request.existing_track_ids],
         [str(value) for value in effective_positive_ids],
         [str(value) for value in request.negative_track_ids],
         lyrics_matrix, lyrics_available, positive_queries, negative_queries,
@@ -1806,6 +1832,25 @@ def _preview_curation(
         themes_negative_prompts=expand_tag_groups(theme_negatives) if structured and theme_negatives else None,
         sound_weight=request.sound_weight if structured else None,
     )
+    language_report: dict[str, object] | None = None
+    if language_mode:
+        affinity = {str(track["id"]): language_affinity(language_map.get(str(track["id"])), request.target_language) for track in tracks}
+        if request.language_strictness == "primarily":
+            primary = [track for track in tracks if affinity[str(track["id"])] >= PRIMARY_SHARE]
+            filler = [track for track in tracks if affinity[str(track["id"])] < PRIMARY_SHARE]
+            tracks = (primary + filler)[: request.track_limit]
+            language_report = {"target": request.target_language, "strictness": "primarily",
+                               "matched_tracks": len(primary), "requested": request.track_limit}
+        elif request.language_strictness == "sprinkle":
+            count = len(tracks)
+            boosted = [((1 - index / max(count, 1)) * (1 + 0.5 * affinity[str(track["id"])]), track)
+                       for index, track in enumerate(tracks)]
+            tracks = [track for _, track in sorted(boosted, key=lambda item: -item[0])]
+            language_report = {"target": request.target_language, "strictness": "sprinkle",
+                               "matched_tracks": sum(value >= PRIMARY_SHARE for value in affinity.values()), "requested": request.track_limit}
+        else:
+            language_report = {"target": request.target_language, "strictness": "only",
+                               "matched_tracks": len(tracks), "requested": request.track_limit}
     if structured:
         weights = {"semantic": request.sound_weight / 100.0, "lyrics": (100 - request.sound_weight) / 100.0}
     else:
@@ -1815,6 +1860,7 @@ def _preview_curation(
         "curation_type": request.curation_type,
         "model": "muq_mulan+bge_m3", "weights": weights,
         "lyrics_coverage": int(lyrics_available.sum()), "shuffle_seed": shuffle_seed,
+        "language": language_report,
         "familiarity": {
             "percent": request.familiarity_percent, "active": listen_counts is not None,
             "lookback_days": request.lookback_days,
@@ -1849,7 +1895,9 @@ def _refresh_curation(curation_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, o
         positive_track_ids=curation["positive_track_ids"], negative_track_ids=curation["negative_track_ids"],
         familiarity_percent=curation["familiarity_percent"], period_start=curation["period_start"],
         period_end=curation["period_end"], lookback_days=curation["lookback_days"],
-        track_limit=curation["track_limit"], refresh_mode=curation["refresh_mode"], existing_track_ids=existing,
+        track_limit=curation["track_limit"], refresh_mode=curation["refresh_mode"],
+        target_language=str(curation.get("target_language") or ""), language_strictness=str(curation.get("language_strictness") or "primarily"),
+        existing_track_ids=existing,
     )
     try:
         result = _preview_curation(user_id, curation["navidrome_connection_id"], request)
@@ -1877,6 +1925,7 @@ def _refresh_curation(curation_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, o
                 "period_start": request.period_start, "period_end": request.period_end,
                 "lookback_days": request.lookback_days,
                 "track_limit": request.track_limit, "refresh_mode": request.refresh_mode,
+                "target_language": request.target_language, "language_strictness": request.language_strictness,
                 "references": result["references"], "model": result["model"],
                 "weights": result.get("weights"), "lyrics_coverage": result.get("lyrics_coverage"),
                 "familiarity": result.get("familiarity"), "shuffle_seed": result.get("shuffle_seed"),
@@ -1897,7 +1946,7 @@ def _refresh_curation(curation_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, o
                 )
             cursor.execute(
                 """UPDATE curations SET navidrome_playlist_id=%s, status='ready', last_error=NULL,
-                   last_refreshed_at=now(), next_refresh_at=CASE WHEN refresh_enabled THEN now() + interval '6 hours' END,
+                   last_refreshed_at=now(), next_refresh_at=CASE WHEN refresh_enabled THEN now() + make_interval(hours => refresh_interval_hours) END,
                    updated_at=now() WHERE id=%s""",
                 (playlist_id, curation_id),
             )
@@ -1973,6 +2022,7 @@ def create_curation(request: CurationCreateRequest, echora_session: str | None =
             familiarity_percent=request.familiarity_percent, period_start=request.period_start,
             period_end=request.period_end, lookback_days=request.lookback_days,
             track_limit=request.track_limit, refresh_mode=request.refresh_mode,
+            target_language=request.target_language, language_strictness=request.language_strictness,
             refresh_enabled=request.refresh_enabled,
         )
         session.add(curation)
