@@ -27,11 +27,22 @@ def process_main(result_list, tag_offset=-150, bpm=60, beats_per_bar=3):
                 current_line += countdown_str_forward(current_start_time, bpm, beats_per_bar)
 
         if item['type'] in [1, 3, 4, 5] or item['type'] == 0 and item['orig']!='\n' and 'start' in item:
-            current_line += f"{item['start']}{item['orig']}"
-            last_end = item['end']
+            # Guard the same missing-timestamp case as the type-2 branch:
+            # emit untagged text rather than crashing the document.
+            if 'start' in item:
+                current_line += f"{item['start']}{item['orig']}"
+                last_end = item['end']
+            else:
+                current_line += item['orig']
         elif item['type'] == 2:
             if item['orig'] != '':
-                current_line += f"{item['start']}{item['orig']}"
+                # An aligned word token can arrive without a timestamp when
+                # the aligner drops it; emit the text without a tag instead
+                # of crashing the whole document.
+                if 'start' in item:
+                    current_line += f"{item['start']}{item['orig']}"
+                else:
+                    current_line += item['orig']
             if item.get('end'):
                 last_end = item.get('end')
         elif item['type'] == 0 and item['orig']!='\n' and 'start' not in item:
@@ -162,10 +173,20 @@ def process_rlf(result_list):
         item = result_list[i]
 
         if item['type'] in [1, 3, 4, 5] or item['type'] == 0 and 'start' in item and item['orig'] not in ('\n', '', ' ', '　'):
-            current_line += f"[1|{item['start'][1:-1]}]{item['orig']}"
-            last_end = item['end']
+            # Missing-timestamp guard: emit untagged text instead of failing.
+            if 'start' in item:
+                current_line += f"[1|{item['start'][1:-1]}]{item['orig']}"
+                last_end = item['end']
+            else:
+                current_line += item['orig']
         elif item['type'] == 2: # 不考虑加号
             assert item['orig'] != '', "空字符有注音，rlf生成失败！"
+            if 'start' not in item:
+                # Aligned word without a timestamp: emit the surface text
+                # without ruby annotation rather than crashing.
+                current_line += item['orig']
+                i += 1
+                continue
             kana_cnt = 1
             kanji_surf = item['orig']
             struc_str = f"{item['start'][1:-1]}]{item['ruby']}"

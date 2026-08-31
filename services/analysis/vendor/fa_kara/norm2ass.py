@@ -94,6 +94,13 @@ def process_norm2assV2(struc, pretime = 20, posttime = 20):
         elif item['type'] == 2 and 'start' not in item:
             asstxt += item.get('ruby', '')
         else:
+            # Missing-timestamp guard: an aligned token can arrive without a
+            # timestamp when the aligner drops it; emit plain text instead of
+            # crashing the whole document.
+            if 'start' not in item:
+                asstxt += item.get('orig', '')
+                i += 1
+                continue
             # Use the aligner's token end. Extending a token to the next token's
             # start makes karaoke freeze on a word during pauses, then race
             # through the remaining words. Untimed spaces below represent gaps.
