@@ -1,6 +1,6 @@
 [project]
 name = "echora-analysis"
-version = "0.1.0"
+version = "0.1.8"
 description = "Reproducible music embedding and evaluation worker"
 requires-python = ">=3.12"
 dependencies = [
