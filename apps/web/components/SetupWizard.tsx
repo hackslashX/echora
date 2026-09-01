@@ -1,6 +1,7 @@
 "use client";
 
 import LoadingImage from "./media/LoadingImage";
+import { coverArtUrl } from "./media/coverArt";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import AppFooter from "./shell/AppFooter";
@@ -117,7 +118,7 @@ export default function SetupWizard({ initialStep = 0 }: { initialStep?: number 
           <div className="table-tools"><button onClick={() => setSelected(selected.size === tracks.length ? new Set() : new Set(tracks.map(track => track.id)))}>{selected.size === tracks.length ? "Clear selection" : "Select all"}</button><span>{selected.size} selected</span></div>
           <div className="song-list">{tracks.map((track, index) => <label key={track.id} className={selected.has(track.id) ? "song chosen" : "song"}>
             <input type="checkbox" checked={selected.has(track.id)} onChange={() => toggle(track.id)} />
-            <span className={`art art-${index % 5}`}>{track.cover_art && connectionId ? <LoadingImage sizes="42px" src={`/analysis/navidrome/connections/${connectionId}/cover/${encodeURIComponent(track.cover_art)}`} alt="" /> : <i />}</span>
+            <span className={`art art-${index % 5}`}>{track.cover_art && connectionId ? <LoadingImage sizes="42px" src={coverArtUrl(connectionId, track.cover_art, 84)} alt="" /> : <i />}</span>
             <span className="song-name"><strong>{track.title}</strong><small>{track.artist || "Unknown artist"}</small></span>
             <span className="song-album">{track.album || "Unknown album"}</span><time>{formatDuration(track.duration)}</time>
           </label>)}</div>
