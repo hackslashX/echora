@@ -32,6 +32,28 @@ function publishPalette(palette: TrackPalette | null) {
   window.dispatchEvent(new CustomEvent("echora:track-palette", { detail: { active: Boolean(palette), palette } }));
 }
 
+function hasMediaSession() {
+  return typeof navigator !== "undefined" && "mediaSession" in navigator;
+}
+
+function publishMediaMetadata(track: PlayerTrack) {
+  if (!hasMediaSession() || typeof MediaMetadata === "undefined") return;
+  const artwork = track.coverUrl ? [{ src: new URL(track.coverUrl, window.location.href).href }] : [];
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: track.title || "Unknown title",
+    artist: track.artist || "Unknown artist",
+    album: track.album || "",
+    artwork,
+  });
+}
+
+function publishMediaPosition(player: HTMLAudioElement, fallbackDuration = 0) {
+  if (!hasMediaSession() || !navigator.mediaSession.setPositionState) return;
+  const duration = Number.isFinite(player.duration) && player.duration > 0 ? player.duration : fallbackDuration;
+  if (!Number.isFinite(duration) || duration <= 0) return;
+  navigator.mediaSession.setPositionState({ duration, playbackRate: player.playbackRate || 1, position: Math.min(Math.max(player.currentTime || 0, 0), duration) });
+}
+
 async function artworkPalette(url: string): Promise<TrackPalette> {
   const image = new Image(); image.crossOrigin = "anonymous"; image.src = url;
   await image.decode();
@@ -107,23 +129,34 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const player = new Audio(); audio.current = player;
-    const time = () => setCurrentTime(player.currentTime || 0);
+    const time = () => { setCurrentTime(player.currentTime || 0); publishMediaPosition(player, trackRef.current?.durationSeconds); };
     const metadata = () => {
       const canonical = trackRef.current?.durationSeconds;
       setDuration(current => canonical && canonical > 0 ? canonical : Number.isFinite(player.duration) && player.duration > 0 ? player.duration : current);
+      publishMediaPosition(player, canonical);
     };
     const progress = () => setBuffered(player.buffered.length ? player.buffered.end(player.buffered.length - 1) : 0);
     const ended = () => { publishPalette(null); if (queueIndexRef.current >= 0 && queueIndexRef.current < queueRef.current.length - 1) activateQueueIndexRef.current(queueIndexRef.current + 1); else setPlaying(false); };
-    const paused = () => { setPlaying(false); publishPalette(null); };
+    const paused = () => { setPlaying(false); publishPalette(null); if (hasMediaSession()) navigator.mediaSession.playbackState = "paused"; };
     const waiting = () => setBuffering(true);
     const ready = () => setBuffering(false);
-    const started = () => { setPlaying(true); setBuffering(false); publishPalette(paletteRef.current); };
+    const started = () => { setPlaying(true); setBuffering(false); publishPalette(paletteRef.current); if (hasMediaSession()) navigator.mediaSession.playbackState = "playing"; publishMediaPosition(player, trackRef.current?.durationSeconds); };
+    const setAction = (action: MediaSessionAction, handler: MediaSessionActionHandler | null) => { try { navigator.mediaSession.setActionHandler(action, handler); } catch {} };
+    if (hasMediaSession()) {
+      setAction("play", () => { startAnalysis(); player.play().catch(() => setPlaying(false)); });
+      setAction("pause", () => player.pause());
+      setAction("previoustrack", previous);
+      setAction("nexttrack", next);
+      setAction("seekbackward", details => seek(Math.max(0, player.currentTime - (details.seekOffset || 10))));
+      setAction("seekforward", details => seek(player.currentTime + (details.seekOffset || 10)));
+      setAction("seekto", details => { if (typeof details.seekTime === "number") seek(details.seekTime); });
+    }
     player.addEventListener("timeupdate", time); player.addEventListener("durationchange", metadata);
     player.addEventListener("loadedmetadata", metadata); player.addEventListener("progress", progress); player.addEventListener("ended", ended);
     player.addEventListener("pause", paused); player.addEventListener("play", started);
     player.addEventListener("loadstart", waiting); player.addEventListener("waiting", waiting);
     player.addEventListener("canplay", ready); player.addEventListener("playing", ready);
-    return () => { player.pause(); publishPalette(null); cancelAnimationFrame(analysisFrame.current); audioContext.current?.close(); player.remove(); };
+    return () => { player.pause(); publishPalette(null); if (hasMediaSession()) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = "none"; ["play", "pause", "previoustrack", "nexttrack", "seekbackward", "seekforward", "seekto"].forEach(action => setAction(action as MediaSessionAction, null)); } cancelAnimationFrame(analysisFrame.current); audioContext.current?.close(); player.remove(); };
   }, []);
 
   function startAnalysis() {
@@ -179,6 +212,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   function load(next: PlayerTrack) {
     const player = audio.current; if (!player) return;
     paletteRef.current = null; paletteTrackRef.current = next.id; trackRef.current = next; setBuffered(0); setBuffering(true); publishPalette(null); window.dispatchEvent(new CustomEvent("echora:track-change", { detail: next.id }));
+    publishMediaMetadata(next);
     if (next.coverUrl) artworkPalette(next.coverUrl).then(palette => {
       if (paletteTrackRef.current !== next.id) return;
       paletteRef.current = palette;
@@ -215,7 +249,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }
   function clearQueue() { queueRef.current = track ? [track] : []; queueIndexRef.current = track ? 0 : -1; setQueue(queueRef.current); setQueueIndex(queueIndexRef.current); }
   function toggle() { const player = audio.current; if (!player || !track) return; startAnalysis(); if (player.paused) player.play(); else player.pause(); }
-  function seek(seconds: number) { const player = audio.current; if (!player || !Number.isFinite(seconds)) return; player.currentTime = seconds; setCurrentTime(seconds); }
+  function seek(seconds: number) { const player = audio.current; if (!player || !Number.isFinite(seconds)) return; player.currentTime = seconds; setCurrentTime(seconds); publishMediaPosition(player, trackRef.current?.durationSeconds); }
   function toggleMute() { const player = audio.current; if (!player) return; player.muted = !player.muted; setMuted(player.muted); }
 
   return <PlayerContext.Provider value={{ track, audioQuality, playing, buffering, currentTime, duration, buffered, muted, expanded, queue, queueIndex, play, playQueue, next, previous, clearQueue, toggle, seek, toggleMute, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
