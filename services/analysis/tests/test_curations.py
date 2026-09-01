@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 import echora_analysis.concepts as concepts
-from echora_analysis.curations import rank_curation
+from echora_analysis.curations import mode_transport_similarity, rank_curation
 
 
 @pytest.fixture()
@@ -188,3 +188,142 @@ def test_curation_selects_only_one_track_per_recording_group():
     selected_groups = [row.get("recording_group_id") for row in selected]
     assert selected_groups.count("same-recording") == 1
     assert len(selected) == 3
+
+
+def test_mode_transport_conserves_duration_weights():
+    left = (
+        np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+        np.asarray([0.9, 0.1], dtype=np.float32),
+    )
+    mostly_matching = (
+        np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+        np.asarray([0.8, 0.2], dtype=np.float32),
+    )
+    brief_matching = (
+        np.asarray([[1.0, 0.0], [-1.0, 0.0]], dtype=np.float32),
+        np.asarray([0.1, 0.9], dtype=np.float32),
+    )
+
+    assert mode_transport_similarity(left, mostly_matching) > mode_transport_similarity(
+        left, brief_matching,
+    )
+
+
+def test_song_examples_use_mert_when_both_tracks_have_it():
+    rows = [
+        {"id": "reference", "title": "Reference", "artist": "A", "recording_group_id": None},
+        {"id": "acoustic-match", "title": "Match", "artist": "B", "recording_group_id": None},
+        {"id": "acoustic-miss", "title": "Miss", "artist": "C", "recording_group_id": None},
+    ]
+    # MuQ cannot distinguish the two candidates; MERT can.
+    semantic = np.asarray([[1.0, 0.0], [0.8, 0.2], [0.8, 0.2]], dtype=np.float32)
+    acoustic = np.asarray([[1.0, 0.0], [0.95, 0.05], [0.0, 1.0]], dtype=np.float32)
+
+    selected, _ = rank_curation(
+        rows, semantic, "", "", track_limit=3, refresh_mode="fresh",
+        positive_track_ids=["reference"], shuffle_seed=1,
+        acoustic_matrix=acoustic, acoustic_available=np.ones(3, dtype=bool),
+    )
+    by_id = {row["id"]: row for row in selected}
+
+    assert by_id["acoustic-match"]["score"] > by_id["acoustic-miss"]["score"]
+    assert "positive_mert_global_similarity" in by_id["acoustic-match"]["evidence"]["example_similarity"]
+
+
+def test_song_examples_fall_back_to_muq_when_the_reference_has_no_mert():
+    rows = [
+        {"id": "reference", "title": "Reference", "artist": "A", "recording_group_id": None},
+        {"id": "semantic-match", "title": "Match", "artist": "B", "recording_group_id": None},
+        {"id": "semantic-miss", "title": "Miss", "artist": "C", "recording_group_id": None},
+    ]
+    semantic = np.asarray([[1.0, 0.0], [0.95, 0.05], [0.0, 1.0]], dtype=np.float32)
+    acoustic = np.asarray([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
+
+    selected, _ = rank_curation(
+        rows, semantic, "", "", track_limit=3, refresh_mode="fresh",
+        positive_track_ids=["reference"], shuffle_seed=1,
+        acoustic_matrix=acoustic,
+        acoustic_available=np.asarray([False, True, True]),
+    )
+    by_id = {row["id"]: row for row in selected}
+
+    assert by_id["semantic-match"]["score"] > by_id["semantic-miss"]["score"]
+    assert "positive_mert_global_similarity" not in by_id["semantic-match"]["evidence"]["example_similarity"]
+
+
+def test_no_musical_direction_is_explicitly_neutral():
+    rows = [
+        {"id": "a", "title": "A", "artist": "A", "recording_group_id": None},
+        {"id": "b", "title": "B", "artist": "B", "recording_group_id": None},
+    ]
+
+    selected, _ = rank_curation(
+        rows, np.eye(2, dtype=np.float32), "", "",
+        track_limit=2, refresh_mode="fresh", shuffle_seed=1,
+    )
+
+    assert {track["score"] for track in selected} == {0.5}
+    assert {track["percentile"] for track in selected} == {0.5}
+
+
+def test_free_form_sound_direction_uses_duration_weighted_muq_modes(fake_text_embeddings):
+    rows = [
+        {"id": "mode-match", "title": "Match", "artist": "A", "recording_group_id": None},
+        {"id": "mode-miss", "title": "Miss", "artist": "B", "recording_group_id": None},
+    ]
+    # Global vectors tie; their duration-weighted local identities separate them.
+    global_vectors = np.asarray([[1.0, 1.0], [1.0, 1.0]], dtype=np.float32)
+    modes = [
+        (np.asarray([[1.0, 0.0]], dtype=np.float32), np.asarray([1.0], dtype=np.float32)),
+        (np.asarray([[0.0, 1.0]], dtype=np.float32), np.asarray([1.0], dtype=np.float32)),
+    ]
+
+    selected, _ = rank_curation(
+        rows, global_vectors, "pop", "", track_limit=2,
+        refresh_mode="fresh", shuffle_seed=1, semantic_modes=modes,
+    )
+    by_id = {track["id"]: track for track in selected}
+
+    assert by_id["mode-match"]["score"] > by_id["mode-miss"]["score"]
+
+
+def test_manual_and_time_examples_are_independent_active_signals():
+    rows = [
+        {"id": "manual", "title": "Manual", "artist": "A", "recording_group_id": None},
+        {"id": "time", "title": "Time", "artist": "B", "recording_group_id": None},
+        {"id": "balanced", "title": "Balanced", "artist": "C", "recording_group_id": None},
+        {"id": "manual-only", "title": "Manual only", "artist": "D", "recording_group_id": None},
+        {"id": "time-only", "title": "Time only", "artist": "E", "recording_group_id": None},
+    ]
+    matrix = np.asarray([
+        [1.0, 0.0], [0.0, 1.0], [0.7, 0.7], [0.99, 0.1], [0.1, 0.99],
+    ], dtype=np.float32)
+
+    selected, _ = rank_curation(
+        rows, matrix, "", "", track_limit=5, refresh_mode="fresh",
+        positive_track_ids=["manual"], context_track_ids=["time"], shuffle_seed=1,
+    )
+    by_id = {track["id"]: track for track in selected}
+
+    assert by_id["balanced"]["score"] > by_id["manual-only"]["score"]
+    assert by_id["balanced"]["score"] > by_id["time-only"]["score"]
+    assert "time_positive_muq_global_similarity" in by_id["balanced"]["evidence"]["example_similarity"]
+
+
+def test_ineligible_reference_can_guide_an_eligible_language_pool():
+    rows = [
+        {"id": "outside-reference", "title": "Reference", "artist": "A", "recording_group_id": None},
+        {"id": "eligible-match", "title": "Match", "artist": "B", "recording_group_id": None},
+        {"id": "eligible-miss", "title": "Miss", "artist": "C", "recording_group_id": None},
+    ]
+    matrix = np.asarray([[1.0, 0.0], [0.95, 0.05], [0.0, 1.0]], dtype=np.float32)
+
+    selected, _ = rank_curation(
+        rows, matrix, "", "", track_limit=2, refresh_mode="fresh",
+        positive_track_ids=["outside-reference"],
+        eligible_track_ids={"eligible-match", "eligible-miss"}, shuffle_seed=1,
+    )
+
+    assert {track["id"] for track in selected} == {"eligible-match", "eligible-miss"}
+    by_id = {track["id"]: track for track in selected}
+    assert by_id["eligible-match"]["score"] > by_id["eligible-miss"]["score"]
