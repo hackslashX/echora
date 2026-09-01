@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, ReactNode, useContext, useEffect, useRef, useState } from "react";
+import { sizedCoverArtUrl } from "../media/coverArt";
 import FullscreenPlayer from "./FullscreenPlayer";
 import { readPlaybackPreferences, streamUrlForQuality } from "./playbackPreferences";
 
@@ -38,7 +39,7 @@ function hasMediaSession() {
 
 function publishMediaMetadata(track: PlayerTrack) {
   if (!hasMediaSession() || typeof MediaMetadata === "undefined") return;
-  const artwork = track.coverUrl ? [{ src: new URL(track.coverUrl, window.location.href).href }] : [];
+  const artwork = track.coverUrl ? [{ src: new URL(sizedCoverArtUrl(track.coverUrl, 512), window.location.href).href }] : [];
   navigator.mediaSession.metadata = new MediaMetadata({
     title: track.title || "Unknown title",
     artist: track.artist || "Unknown artist",
@@ -213,7 +214,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const player = audio.current; if (!player) return;
     paletteRef.current = null; paletteTrackRef.current = next.id; trackRef.current = next; setBuffered(0); setBuffering(true); publishPalette(null); window.dispatchEvent(new CustomEvent("echora:track-change", { detail: next.id }));
     publishMediaMetadata(next);
-    if (next.coverUrl) artworkPalette(next.coverUrl).then(palette => {
+    if (next.coverUrl) artworkPalette(sizedCoverArtUrl(next.coverUrl, 128)).then(palette => {
       if (paletteTrackRef.current !== next.id) return;
       paletteRef.current = palette;
       if (!audio.current?.paused) publishPalette(palette);
