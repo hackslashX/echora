@@ -1,13 +1,15 @@
 "use client";
 
 import { createContext, ReactNode, useContext, useEffect, useRef, useState } from "react";
+import { sizedPlayerCoverArtUrl } from "../media/coverArt";
 import FullscreenPlayer from "./FullscreenPlayer";
 import { readPlaybackPreferences, streamUrlForQuality } from "./playbackPreferences";
 
 export type PlayerTrack = { id: string; title: string; artist?: string; album?: string; durationSeconds?: number; streamUrl: string; coverUrl?: string };
 export type AudioQuality = { codec?: string; content_type?: string; bit_rate_kbps?: number; bit_depth?: number; sample_rate_hz?: number; channels?: number; lossless?: boolean; streamQuality: "original" | "320" | "120" };
+export type PlayerLyrics = { trackId: string; available: boolean; karaoke?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[]; text?: string; language?: string; provenance?: { synced?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[] } };
 type PlayerState = {
-  track: PlayerTrack | null; audioQuality: AudioQuality | null; playing: boolean; buffering: boolean; currentTime: number; duration: number; buffered: number; muted: boolean; expanded: boolean;
+  track: PlayerTrack | null; audioQuality: AudioQuality | null; lyrics: PlayerLyrics | null; lyricsLoading: boolean; playing: boolean; buffering: boolean; currentTime: number; duration: number; buffered: number; muted: boolean; expanded: boolean;
   queue: PlayerTrack[]; queueIndex: number;
   play: (track: PlayerTrack) => void; playQueue: (tracks: PlayerTrack[], startIndex?: number) => void;
   next: () => void; previous: () => void; clearQueue: () => void;
@@ -30,6 +32,28 @@ function publishPalette(palette: TrackPalette | null) {
     root.style.removeProperty("--accent-rgb"); root.style.removeProperty("--aqua"); root.style.removeProperty("--line"); root.style.removeProperty("--glass-stroke");
   }
   window.dispatchEvent(new CustomEvent("echora:track-palette", { detail: { active: Boolean(palette), palette } }));
+}
+
+function hasMediaSession() {
+  return typeof navigator !== "undefined" && "mediaSession" in navigator;
+}
+
+function publishMediaMetadata(track: PlayerTrack) {
+  if (!hasMediaSession() || typeof MediaMetadata === "undefined") return;
+  const artwork = track.coverUrl ? [{ src: new URL(sizedPlayerCoverArtUrl(track.coverUrl, 512), window.location.href).href }] : [];
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: track.title || "Unknown title",
+    artist: track.artist || "Unknown artist",
+    album: track.album || "",
+    artwork,
+  });
+}
+
+function publishMediaPosition(player: HTMLAudioElement, fallbackDuration = 0) {
+  if (!hasMediaSession() || !navigator.mediaSession.setPositionState) return;
+  const duration = Number.isFinite(player.duration) && player.duration > 0 ? player.duration : fallbackDuration;
+  if (!Number.isFinite(duration) || duration <= 0) return;
+  navigator.mediaSession.setPositionState({ duration, playbackRate: player.playbackRate || 1, position: Math.min(Math.max(player.currentTime || 0, 0), duration) });
 }
 
 async function artworkPalette(url: string): Promise<TrackPalette> {
@@ -91,10 +115,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const trackRef = useRef<PlayerTrack | null>(null);
   const paletteRef = useRef<TrackPalette | null>(null);
   const paletteTrackRef = useRef("");
+  const lyricsCacheRef = useRef(new Map<string, PlayerLyrics>());
+  const lyricsRequestsRef = useRef(new Set<string>());
   const queueIndexRef = useRef(-1);
   const activateQueueIndexRef = useRef<(index: number) => void>(() => {});
   const [track, setTrack] = useState<PlayerTrack | null>(null);
   const [audioQuality, setAudioQuality] = useState<AudioQuality | null>(null);
+  const [lyrics, setLyrics] = useState<PlayerLyrics | null>(null);
+  const [lyricsLoading, setLyricsLoading] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -107,23 +135,34 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const player = new Audio(); audio.current = player;
-    const time = () => setCurrentTime(player.currentTime || 0);
+    const time = () => { setCurrentTime(player.currentTime || 0); publishMediaPosition(player, trackRef.current?.durationSeconds); };
     const metadata = () => {
       const canonical = trackRef.current?.durationSeconds;
       setDuration(current => canonical && canonical > 0 ? canonical : Number.isFinite(player.duration) && player.duration > 0 ? player.duration : current);
+      publishMediaPosition(player, canonical);
     };
     const progress = () => setBuffered(player.buffered.length ? player.buffered.end(player.buffered.length - 1) : 0);
     const ended = () => { publishPalette(null); if (queueIndexRef.current >= 0 && queueIndexRef.current < queueRef.current.length - 1) activateQueueIndexRef.current(queueIndexRef.current + 1); else setPlaying(false); };
-    const paused = () => { setPlaying(false); publishPalette(null); };
+    const paused = () => { setPlaying(false); publishPalette(null); if (hasMediaSession()) navigator.mediaSession.playbackState = "paused"; };
     const waiting = () => setBuffering(true);
     const ready = () => setBuffering(false);
-    const started = () => { setPlaying(true); setBuffering(false); publishPalette(paletteRef.current); };
+    const started = () => { setPlaying(true); setBuffering(false); publishPalette(paletteRef.current); if (hasMediaSession()) navigator.mediaSession.playbackState = "playing"; publishMediaPosition(player, trackRef.current?.durationSeconds); };
+    const setAction = (action: MediaSessionAction, handler: MediaSessionActionHandler | null) => { try { navigator.mediaSession.setActionHandler(action, handler); } catch {} };
+    if (hasMediaSession()) {
+      setAction("play", () => { startAnalysis(); player.play().catch(() => setPlaying(false)); });
+      setAction("pause", () => player.pause());
+      setAction("previoustrack", previous);
+      setAction("nexttrack", next);
+      setAction("seekbackward", details => seek(Math.max(0, player.currentTime - (details.seekOffset || 10))));
+      setAction("seekforward", details => seek(player.currentTime + (details.seekOffset || 10)));
+      setAction("seekto", details => { if (typeof details.seekTime === "number") seek(details.seekTime); });
+    }
     player.addEventListener("timeupdate", time); player.addEventListener("durationchange", metadata);
     player.addEventListener("loadedmetadata", metadata); player.addEventListener("progress", progress); player.addEventListener("ended", ended);
     player.addEventListener("pause", paused); player.addEventListener("play", started);
     player.addEventListener("loadstart", waiting); player.addEventListener("waiting", waiting);
     player.addEventListener("canplay", ready); player.addEventListener("playing", ready);
-    return () => { player.pause(); publishPalette(null); cancelAnimationFrame(analysisFrame.current); audioContext.current?.close(); player.remove(); };
+    return () => { player.pause(); publishPalette(null); if (hasMediaSession()) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = "none"; ["play", "pause", "previoustrack", "nexttrack", "seekbackward", "seekforward", "seekto"].forEach(action => setAction(action as MediaSessionAction, null)); } cancelAnimationFrame(analysisFrame.current); audioContext.current?.close(); player.remove(); };
   }, []);
 
   function startAnalysis() {
@@ -176,10 +215,29 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     context.resume(); analyze();
   }
 
+  function loadLyrics(next: PlayerTrack) {
+    const cached = lyricsCacheRef.current.get(next.id);
+    if (cached) { setLyrics(cached); setLyricsLoading(false); return; }
+    setLyrics(null); setLyricsLoading(true);
+    if (lyricsRequestsRef.current.has(next.id)) return;
+    lyricsRequestsRef.current.add(next.id);
+    fetch(`/analysis/library/tracks/${next.id}/lyrics`).then(response => response.ok ? response.json() : null).then(value => {
+      const resolved: PlayerLyrics = value ? { ...value, trackId: next.id } : { trackId: next.id, available: false };
+      lyricsCacheRef.current.set(next.id, resolved);
+      if (trackRef.current?.id === next.id) { setLyrics(resolved); setLyricsLoading(false); }
+    }).catch(() => {
+      const resolved: PlayerLyrics = { trackId: next.id, available: false };
+      lyricsCacheRef.current.set(next.id, resolved);
+      if (trackRef.current?.id === next.id) { setLyrics(resolved); setLyricsLoading(false); }
+    }).finally(() => lyricsRequestsRef.current.delete(next.id));
+  }
+
   function load(next: PlayerTrack) {
     const player = audio.current; if (!player) return;
     paletteRef.current = null; paletteTrackRef.current = next.id; trackRef.current = next; setBuffered(0); setBuffering(true); publishPalette(null); window.dispatchEvent(new CustomEvent("echora:track-change", { detail: next.id }));
-    if (next.coverUrl) artworkPalette(next.coverUrl).then(palette => {
+    publishMediaMetadata(next);
+    loadLyrics(next);
+    if (next.coverUrl) artworkPalette(sizedPlayerCoverArtUrl(next.coverUrl, 128)).then(palette => {
       if (paletteTrackRef.current !== next.id) return;
       paletteRef.current = palette;
       if (!audio.current?.paused) publishPalette(palette);
@@ -215,10 +273,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }
   function clearQueue() { queueRef.current = track ? [track] : []; queueIndexRef.current = track ? 0 : -1; setQueue(queueRef.current); setQueueIndex(queueIndexRef.current); }
   function toggle() { const player = audio.current; if (!player || !track) return; startAnalysis(); if (player.paused) player.play(); else player.pause(); }
-  function seek(seconds: number) { const player = audio.current; if (!player || !Number.isFinite(seconds)) return; player.currentTime = seconds; setCurrentTime(seconds); }
+  function seek(seconds: number) { const player = audio.current; if (!player || !Number.isFinite(seconds)) return; player.currentTime = seconds; setCurrentTime(seconds); publishMediaPosition(player, trackRef.current?.durationSeconds); }
   function toggleMute() { const player = audio.current; if (!player) return; player.muted = !player.muted; setMuted(player.muted); }
 
-  return <PlayerContext.Provider value={{ track, audioQuality, playing, buffering, currentTime, duration, buffered, muted, expanded, queue, queueIndex, play, playQueue, next, previous, clearQueue, toggle, seek, toggleMute, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
+  return <PlayerContext.Provider value={{ track, audioQuality, lyrics, lyricsLoading, playing, buffering, currentTime, duration, buffered, muted, expanded, queue, queueIndex, play, playQueue, next, previous, clearQueue, toggle, seek, toggleMute, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
 }
 
 export function usePlayer() {
