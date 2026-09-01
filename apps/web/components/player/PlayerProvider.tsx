@@ -7,8 +7,9 @@ import { readPlaybackPreferences, streamUrlForQuality } from "./playbackPreferen
 
 export type PlayerTrack = { id: string; title: string; artist?: string; album?: string; durationSeconds?: number; streamUrl: string; coverUrl?: string };
 export type AudioQuality = { codec?: string; content_type?: string; bit_rate_kbps?: number; bit_depth?: number; sample_rate_hz?: number; channels?: number; lossless?: boolean; streamQuality: "original" | "320" | "120" };
+export type PlayerLyrics = { trackId: string; available: boolean; karaoke?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[]; text?: string; language?: string; provenance?: { synced?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[] } };
 type PlayerState = {
-  track: PlayerTrack | null; audioQuality: AudioQuality | null; playing: boolean; buffering: boolean; currentTime: number; duration: number; buffered: number; muted: boolean; expanded: boolean;
+  track: PlayerTrack | null; audioQuality: AudioQuality | null; lyrics: PlayerLyrics | null; lyricsLoading: boolean; playing: boolean; buffering: boolean; currentTime: number; duration: number; buffered: number; muted: boolean; expanded: boolean;
   queue: PlayerTrack[]; queueIndex: number;
   play: (track: PlayerTrack) => void; playQueue: (tracks: PlayerTrack[], startIndex?: number) => void;
   next: () => void; previous: () => void; clearQueue: () => void;
@@ -114,10 +115,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const trackRef = useRef<PlayerTrack | null>(null);
   const paletteRef = useRef<TrackPalette | null>(null);
   const paletteTrackRef = useRef("");
+  const lyricsCacheRef = useRef(new Map<string, PlayerLyrics>());
+  const lyricsRequestsRef = useRef(new Set<string>());
   const queueIndexRef = useRef(-1);
   const activateQueueIndexRef = useRef<(index: number) => void>(() => {});
   const [track, setTrack] = useState<PlayerTrack | null>(null);
   const [audioQuality, setAudioQuality] = useState<AudioQuality | null>(null);
+  const [lyrics, setLyrics] = useState<PlayerLyrics | null>(null);
+  const [lyricsLoading, setLyricsLoading] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -210,10 +215,28 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     context.resume(); analyze();
   }
 
+  function loadLyrics(next: PlayerTrack) {
+    const cached = lyricsCacheRef.current.get(next.id);
+    if (cached) { setLyrics(cached); setLyricsLoading(false); return; }
+    setLyrics(null); setLyricsLoading(true);
+    if (lyricsRequestsRef.current.has(next.id)) return;
+    lyricsRequestsRef.current.add(next.id);
+    fetch(`/analysis/library/tracks/${next.id}/lyrics`).then(response => response.ok ? response.json() : null).then(value => {
+      const resolved: PlayerLyrics = value ? { ...value, trackId: next.id } : { trackId: next.id, available: false };
+      lyricsCacheRef.current.set(next.id, resolved);
+      if (trackRef.current?.id === next.id) { setLyrics(resolved); setLyricsLoading(false); }
+    }).catch(() => {
+      const resolved: PlayerLyrics = { trackId: next.id, available: false };
+      lyricsCacheRef.current.set(next.id, resolved);
+      if (trackRef.current?.id === next.id) { setLyrics(resolved); setLyricsLoading(false); }
+    }).finally(() => lyricsRequestsRef.current.delete(next.id));
+  }
+
   function load(next: PlayerTrack) {
     const player = audio.current; if (!player) return;
     paletteRef.current = null; paletteTrackRef.current = next.id; trackRef.current = next; setBuffered(0); setBuffering(true); publishPalette(null); window.dispatchEvent(new CustomEvent("echora:track-change", { detail: next.id }));
     publishMediaMetadata(next);
+    loadLyrics(next);
     if (next.coverUrl) artworkPalette(sizedPlayerCoverArtUrl(next.coverUrl, 128)).then(palette => {
       if (paletteTrackRef.current !== next.id) return;
       paletteRef.current = palette;
@@ -253,7 +276,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   function seek(seconds: number) { const player = audio.current; if (!player || !Number.isFinite(seconds)) return; player.currentTime = seconds; setCurrentTime(seconds); publishMediaPosition(player, trackRef.current?.durationSeconds); }
   function toggleMute() { const player = audio.current; if (!player) return; player.muted = !player.muted; setMuted(player.muted); }
 
-  return <PlayerContext.Provider value={{ track, audioQuality, playing, buffering, currentTime, duration, buffered, muted, expanded, queue, queueIndex, play, playQueue, next, previous, clearQueue, toggle, seek, toggleMute, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
+  return <PlayerContext.Provider value={{ track, audioQuality, lyrics, lyricsLoading, playing, buffering, currentTime, duration, buffered, muted, expanded, queue, queueIndex, play, playQueue, next, previous, clearQueue, toggle, seek, toggleMute, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
 }
 
 export function usePlayer() {
