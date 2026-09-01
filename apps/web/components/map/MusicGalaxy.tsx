@@ -1,6 +1,7 @@
 "use client";
 
 import { Disc3, ListFilter, LocateFixed, Network, Pause, Play, Route, ScanSearch, Search, X } from "lucide-react";
+import { coverArtUrl } from "../media/coverArt";
 import LoadingImage from "../media/LoadingImage";
 import { PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { usePlayer } from "../player/PlayerProvider";
@@ -169,7 +170,7 @@ export default function MusicGalaxy() {
     if (!connectionId || !point.source_id) return null;
     return { id: point.id, title: point.title, artist: point.artist, album: point.album, durationSeconds: point.duration_seconds,
       streamUrl: `/analysis/navidrome/connections/${connectionId}/stream/${encodeURIComponent(point.source_id)}`,
-      coverUrl: point.cover_art ? `/analysis/navidrome/connections/${connectionId}/cover/${encodeURIComponent(point.cover_art)}` : undefined };
+      coverUrl: point.cover_art ? coverArtUrl(connectionId, point.cover_art) : undefined };
   }
   function generateJourney(destination: Point) {
     if (!journeyStart || destination.id === journeyStart.id) return;
@@ -224,7 +225,7 @@ export default function MusicGalaxy() {
   function play(point: Point) { const playable = playerTrack(point); if (playable) player.play(playable); }
   function focus(point: Point) { const box = canvas.current?.getBoundingClientRect(); if (!box) return; selectedId.current = point.id; view.current = { x: -point.x * box.width * .37, y: -point.y * box.height * .37, zoom: 2.2 }; setSelected(point); }
   const matches = query.trim() ? points.filter(point => `${point.title} ${point.artist} ${point.album}`.toLowerCase().includes(query.toLowerCase())).slice(0, 6) : [];
-  const cover = selected?.cover_art && connectionId ? `/analysis/navidrome/connections/${connectionId}/cover/${encodeURIComponent(selected.cover_art)}` : "";
+  const cover = selected?.cover_art && connectionId ? coverArtUrl(connectionId, selected.cover_art, 340) : "";
   const selectedCommunity = selected ? communities.find(community => community.id === selected.cluster) : undefined;
   const selectedConceptMatches = selected && selectedConcepts.length ? (conceptScores[selected.id] || []).filter(item => item.percentile >= conceptThreshold).sort((left, right) => right.percentile - left.percentile) : [];
 

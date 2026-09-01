@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter, OrderedDict
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -51,6 +51,7 @@ from .listening_history import recent_listens, track_listen_counts
 from .language_detection import LANGUAGE_NAMES, PRIMARY_SHARE, language_affinity
 from .karaoke_pipeline import KARAOKE_PIPELINE_REVISION, backfill_karaoke
 from .melody_config import MELODY_CONTOUR_REVISION
+from .media_cache import cache_key, media_cache
 from .lyrics_analysis import shared_lyrics_model
 from .lyrics_pipeline import backfill_lyrics
 from .navidrome import NavidromeClient
@@ -76,12 +77,8 @@ _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="echora-ingest"
 _profile_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="echora-audio-profile")
 _jobs: dict[str, dict[str, object]] = {}
 _jobs_lock = threading.Lock()
-_stream_cache: OrderedDict[tuple[str, str, str], tuple[bytes, str]] = OrderedDict()
-_stream_cache_lock = threading.Lock()
-_STREAM_CACHE_LIMIT = 12
 _scheduler_started = False
 _SESSION_HOURS = 2
-_STREAM_CACHE_ENTRY_LIMIT = 20 * 1024 * 1024
 logger = logging.getLogger(__name__)
 _COMMUNITY_SNAPSHOT_REVISION = 1
 
@@ -1318,11 +1315,9 @@ def stream_track(
     if quality not in {"original", "320", "120"}:
         raise HTTPException(status_code=422, detail="Quality must be original, 320, or 120")
     bit_rate = None if quality == "original" else int(quality)
-    cache_key = (connection_id, song_id, quality)
-    with _stream_cache_lock:
-        cached = _stream_cache.get(cache_key)
-        if cached is not None:
-            _stream_cache.move_to_end(cache_key)
+    cache = media_cache() if request.query_params.get("cache") == "player" else None
+    key = cache_key("stream", user["id"], connection_id, song_id, quality)
+    cached = cache.get(key) if cache else None
     range_header = request.headers.get("range")
     starts_at_zero = not range_header or range_header in {"bytes=0-", "bytes=0"}
     if cached is None and starts_at_zero:
@@ -1332,46 +1327,43 @@ def stream_track(
         except Exception as error:
             client.close()
             raise HTTPException(status_code=502, detail="Could not open this track") from error
-        collected = bytearray()
         content_type = upstream.headers.get("content-type", "audio/mpeg")
+        writer = cache.stream_writer(key, content_type) if cache else None
         def stream_and_cache():
             completed = False
             try:
                 try:
                     for chunk in upstream.iter_raw(64 * 1024):
-                        if len(collected) + len(chunk) <= _STREAM_CACHE_ENTRY_LIMIT:
-                            collected.extend(chunk)
+                        if writer:
+                            writer.append(chunk)
                         yield chunk
                 except httpx.RemoteProtocolError:
-                    logger.warning("Navidrome closed %s after %s bytes despite its estimated content length", song_id, len(collected))
-                completed = bool(collected) and len(collected) < _STREAM_CACHE_ENTRY_LIMIT
+                    logger.warning("Navidrome closed %s while streaming", song_id)
+                else:
+                    completed = True
             finally:
                 upstream.close()
                 client.close()
-                if completed:
-                    with _stream_cache_lock:
-                        _stream_cache[cache_key] = (bytes(collected), content_type)
-                        _stream_cache.move_to_end(cache_key)
-                        while len(_stream_cache) > _STREAM_CACHE_LIMIT:
-                            _stream_cache.popitem(last=False)
+                if writer:
+                    if completed:
+                        writer.commit()
+                    else:
+                        writer.abort()
         forwarded = {key: value for key, value in upstream.headers.items() if key.lower() in {"content-range", "accept-ranges"}}
         return StreamingResponse(
             stream_and_cache(), status_code=upstream.status_code, media_type=content_type,
-            headers={**forwarded, "Cache-Control": "no-store"},
+            headers={**forwarded, "Cache-Control": "private, max-age=3600" if cache else "no-store"},
         )
     if cached is None:
         try:
             with NavidromeClient(*credentials) as client:
-                cached = client.transcode(song_id, bit_rate)
+                content, content_type = client.transcode(song_id, bit_rate)
         except Exception as error:
             raise HTTPException(status_code=502, detail="Could not open this track") from error
-        with _stream_cache_lock:
-            if len(cached[0]) <= _STREAM_CACHE_ENTRY_LIMIT:
-                _stream_cache[cache_key] = cached
-                _stream_cache.move_to_end(cache_key)
-                while len(_stream_cache) > _STREAM_CACHE_LIMIT:
-                    _stream_cache.popitem(last=False)
-    content, content_type = cached
+        if cache:
+            cache.set(key, content, content_type)
+    else:
+        content, content_type = cached.content, cached.content_type
     total = len(content)
     headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600"}
     if range_header and range_header.startswith("bytes="):
@@ -1404,11 +1396,19 @@ def cover_art(
     credentials = _load_connection(connection_id, user["id"])
     if credentials is None:
         raise HTTPException(status_code=404, detail="Connection not found")
+    bounded_size = min(max(size, 64), 1600)
+    cache = media_cache() if request.query_params.get("cache") == "player" else None
+    key = cache_key("cover", user["id"], connection_id, cover_id, bounded_size)
+    cached = cache.get(key) if cache else None
+    if cached:
+        return Response(content=cached.content, media_type=cached.content_type, headers={"Cache-Control": "private, max-age=3600"})
     try:
         with NavidromeClient(*credentials) as client:
-            content, content_type = client.cover_art(cover_id, min(max(size, 64), 1600))
+            content, content_type = client.cover_art(cover_id, bounded_size)
     except Exception as error:
         raise HTTPException(status_code=404, detail="Artwork unavailable") from error
+    if cache:
+        cache.set(key, content, content_type)
     return Response(content=content, media_type=content_type, headers={"Cache-Control": "private, max-age=3600"})
 
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { Disc3, Search } from "lucide-react";
+import { coverArtUrl } from "../media/coverArt";
 import LoadingImage from "../media/LoadingImage";
 import { useEffect, useRef, useState } from "react";
 import { usePlayer } from "../player/PlayerProvider";
@@ -83,7 +84,7 @@ export default function BrowseLibrary() {
     player.play({
       id: track.id, title: track.title, artist: track.artist, album: track.album, durationSeconds: track.duration_seconds,
       streamUrl: `/analysis/navidrome/connections/${connectionId}/stream/${encodeURIComponent(track.source_id)}`,
-      coverUrl: track.cover_art ? `/analysis/navidrome/connections/${connectionId}/cover/${encodeURIComponent(track.cover_art)}` : undefined,
+      coverUrl: track.cover_art ? coverArtUrl(connectionId, track.cover_art) : undefined,
     });
   }
 
@@ -101,7 +102,7 @@ export default function BrowseLibrary() {
         <header><h2>{humResults ? "Hum matches" : "Tracks"}</h2><strong>{total}</strong></header>
         <div className={styles.search}><label><Search /><input value={query} onChange={event => { setQuery(event.target.value); resetResults(); }} placeholder="Search tracks" /></label><HumSearchButton onResults={showHumResults} onError={setError} /><select aria-label="Sort tracks" value={sortBy} onChange={event => { setSortBy(event.target.value as "name" | "artist" | "released"); resetResults(); }}><option value="name">Name</option><option value="artist">Artist</option><option value="released">Date released</option></select></div>
         <div className={styles.list} ref={listRef}>{loading && tracks.length === 0 ? <div className={styles.empty}>Loading library</div> : error ? <div className={styles.empty}>{error}</div> : tracks.length === 0 ? <div className={styles.empty}>No matching tracks</div> : <>{tracks.map(track => <button type="button" className={`${styles.row} ${player.track?.id === track.id ? styles.current : ""}`} key={track.id} onClick={() => play(track)} disabled={!connectionId || !track.source_id}>
-          <span className={styles.art}>{track.cover_art && connectionId ? <LoadingImage sizes="48px" alt="" src={`/analysis/navidrome/connections/${connectionId}/cover/${encodeURIComponent(track.cover_art)}`} /> : <Disc3 />}</span>
+          <span className={styles.art}>{track.cover_art && connectionId ? <LoadingImage sizes="48px" alt="" src={coverArtUrl(connectionId, track.cover_art, 96)} /> : <Disc3 />}</span>
           <span className={styles.track}><strong>{track.title}</strong><small>{track.artist || "Unknown artist"}</small></span><span className={styles.album}>{track.similarity == null ? track.album || "Unknown album" : `${Math.round(track.similarity * 100)}% match · ${duration(track.matched_at_seconds || 0)} · ${track.matched_source || "melody"}`}</span><time>{duration(track.duration_seconds)}</time>
         </button>)}<div ref={sentinelRef} className={styles.sentinel}>{loading ? "Loading more tracks" : tracks.length < total ? "Scroll for more" : `${tracks.length} tracks loaded`}</div></>}</div>
       </section>
