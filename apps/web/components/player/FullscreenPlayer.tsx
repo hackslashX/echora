@@ -1,7 +1,7 @@
 "use client";
 
 import { AArrowDown, AArrowUp, Disc3, ListMusic, MicVocal, Pause, Play, SkipBack, SkipForward, Type, Volume2, VolumeX, X } from "lucide-react";
-import { sizedCoverArtUrl } from "../media/coverArt";
+import { sizedPlayerCoverArtUrl } from "../media/coverArt";
 import LoadingImage from "../media/LoadingImage";
 import { useEffect, useRef, useState } from "react";
 import { trackTemplate } from "../shell/gridGeometry";
@@ -77,9 +77,9 @@ export default function FullscreenPlayer() {
   const activeLine = timedLines.reduce((active, line, index) => Number(line.start_ms) <= playbackTime * 1000 ? index : active, -1);
   if (!player.track) return null;
   const progress = player.duration ? Math.min(100, player.currentTime / player.duration * 100) : 0;
-  const headerCover = player.track.coverUrl ? sizedCoverArtUrl(player.track.coverUrl, 128) : "";
-  const mobileCover = player.track.coverUrl ? sizedCoverArtUrl(player.track.coverUrl, 600) : "";
-  const fullCover = player.track.coverUrl ? sizedCoverArtUrl(player.track.coverUrl, 1200) : "";
+  const headerCover = player.track.coverUrl ? sizedPlayerCoverArtUrl(player.track.coverUrl, 128) : "";
+  const mobileCover = player.track.coverUrl ? sizedPlayerCoverArtUrl(player.track.coverUrl, 600) : "";
+  const fullCover = player.track.coverUrl ? sizedPlayerCoverArtUrl(player.track.coverUrl, 1200) : "";
   const innerWidth = Math.max(1, viewport.width - 360);
   const innerHeight = Math.max(1, viewport.height - 304);
   const playbackHeight = Math.min(innerHeight * .55, Math.max(160, playbackContentHeight));
