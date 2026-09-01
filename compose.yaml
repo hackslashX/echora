@@ -17,12 +17,22 @@ services:
       retries: 10
     ports: ["5432:5432"]
 
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "5gb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   analysis:
     build:
       context: .
       dockerfile: services/analysis/docker/Dockerfile.gpu
     environment: &analysis-environment
       DATABASE_URL: ${DATABASE_URL:-postgresql://echora:echora-local@postgres:5432/echora}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?Set CREDENTIAL_ENCRYPTION_KEY in .env}
       OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
@@ -56,6 +66,7 @@ services:
       - ./data/models/torch:/models/torch
     depends_on:
       postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
     gpus: all
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -70,6 +81,7 @@ services:
     volumes: *analysis-volumes
     depends_on:
       postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
     ports: ["8001:8000"]
 
   web:

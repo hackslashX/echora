@@ -39,5 +39,6 @@ export function writePlaybackPreferences(value: PlaybackPreferences) {
 export function streamUrlForQuality(url: string, quality: PlaybackQuality) {
   const next = new URL(url, window.location.origin);
   next.searchParams.set("quality", quality);
+  next.searchParams.set("cache", "player");
   return `${next.pathname}${next.search}`;
 }
