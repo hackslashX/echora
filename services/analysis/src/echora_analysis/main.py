@@ -35,8 +35,13 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import RedirectResponse, StreamingResponse
 
 from .artists import fit_artist_profile, representative_indices, soft_chamfer_similarity, weighted_center
+from .audio_profiles import (
+    AUDIO_PROFILE_REVISION,
+    SUPPORTED_PROFILE_MODELS,
+    build_audio_profiles,
+)
 from .concepts import combine_concept_percentiles, empirical_percentiles, expand_prompts, expand_tag_groups, predefined_concepts, score_concept
-from .curations import rank_curation
+from .curations import CURATION_SCORING_REVISION, EXAMPLE_COMPONENT_WEIGHTS, rank_curation
 from .db import session_scope
 from .db_models import Curation, NavidromeConnection, OidcAllowedEmail, OidcSetting, User, UserPreference, UserSession
 from .hum_search import DEFAULT_CORPUS_SIZE, build_corpus, search_corpus
@@ -68,6 +73,7 @@ if _oidc_issuer and os.environ.get("OIDC_CLIENT_ID") and os.environ.get("OIDC_CL
         client_kwargs={"scope": os.environ.get("OIDC_SCOPES", "openid profile email")},
     )
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="echora-ingest")
+_profile_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="echora-audio-profile")
 _jobs: dict[str, dict[str, object]] = {}
 _jobs_lock = threading.Lock()
 _stream_cache: OrderedDict[tuple[str, str, str], tuple[bytes, str]] = OrderedDict()
@@ -161,7 +167,7 @@ class ConceptLensRequest(BaseModel):
 
 
 class CurationPreviewRequest(BaseModel):
-    curation_type: str = Field(default="language", pattern="^(language|examples|time_of_day)$")
+    curation_type: str = Field(default="combined", pattern="^(combined|language|examples|time_of_day)$")
     positive_prompt: str = Field(default="", max_length=2000)
     negative_prompt: str = Field(default="", max_length=2000)
     sound_prompts: list[str] = Field(default_factory=list, max_length=12)
@@ -174,6 +180,7 @@ class CurationPreviewRequest(BaseModel):
     familiarity_percent: int = Field(default=70, ge=0, le=100)
     period_start: str | None = Field(default=None, pattern="^(?:[01]\\d|2[0-3]):[0-5]\\d$")
     period_end: str | None = Field(default=None, pattern="^(?:[01]\\d|2[0-3]):[0-5]\\d$")
+    time_of_day_enabled: bool = False
     lookback_days: int = Field(default=7, ge=1, le=90)
     track_limit: int = Field(default=30, ge=5, le=200)
     refresh_mode: str = Field(default="stable", pattern="^(stable|fresh)$")
@@ -332,6 +339,50 @@ def _run_voice_backfill(job_id: str, credentials: tuple[str, str, str]) -> None:
         logger.exception("Voice backfill failed")
         with _jobs_lock:
             _jobs[job_id] = {"status": "failed", "phase": "failed", "error": str(error)}
+
+
+def _run_audio_profiles(job_id: str, track_ids: list[uuid.UUID]) -> None:
+    def progress(update: dict[str, object]) -> None:
+        with _jobs_lock:
+            _jobs[job_id] = {**_jobs[job_id], **update, "status": "running"}
+    try:
+        with _jobs_lock:
+            job_total = int(_jobs[job_id].get("total", 0))
+        completed_offset = 0
+        model_summaries: dict[str, dict[str, object]] = {}
+        for model_name in SUPPORTED_PROFILE_MODELS:
+            offset = completed_offset
+
+            def model_progress(update: dict[str, object], offset: int = offset) -> None:
+                progress({
+                    **update,
+                    "completed": offset + int(update.get("completed", 0)),
+                    "total": job_total,
+                    "unit": "representations",
+                })
+
+            model_summary = build_audio_profiles(
+                track_ids, model_progress, model_name=model_name,
+            )
+            model_summaries[model_name] = model_summary
+            completed_offset += int(model_summary["total"])
+        summary = {
+            "models": model_summaries,
+            "total": sum(int(value["total"]) for value in model_summaries.values()),
+            "profiled": sum(int(value["profiled"]) for value in model_summaries.values()),
+            "failed": sum(int(value["failed"]) for value in model_summaries.values()),
+        }
+        with _jobs_lock:
+            _jobs[job_id] = {
+                **_jobs[job_id], "status": "complete", "phase": "complete",
+                "message": "Multi-vector audio profiles are complete",
+                "completed": summary["profiled"], "total": summary["total"],
+                "unit": "tracks", "summary": summary,
+            }
+    except Exception as error:
+        logger.exception("Audio-profile derivation failed")
+        with _jobs_lock:
+            _jobs[job_id] = {**_jobs[job_id], "status": "failed", "phase": "failed", "error": str(error)}
 
 
 def _run_karaoke_backfill(job_id: str, credentials: tuple[str, str, str]) -> None:
@@ -1667,18 +1718,26 @@ def concept_lens(request: ConceptLensRequest, echora_session: str | None = Cooki
 
 def _curation_corpus(
     user_id: uuid.UUID, connection_id: uuid.UUID,
-) -> tuple[list[dict[str, object]], np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[
+    list[dict[str, object]], np.ndarray, np.ndarray, np.ndarray,
+    np.ndarray, np.ndarray, list[tuple[np.ndarray, np.ndarray] | None],
+    np.ndarray | None, np.ndarray, list[tuple[np.ndarray, np.ndarray] | None],
+]:
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """WITH selected_embeddings AS (
-                 SELECT DISTINCT ON (e.track_id) e.track_id, e.embedding::text AS embedding
+                 SELECT DISTINCT ON (e.track_id) e.track_id, e.embedding::text AS embedding,
+                        e.run_id
                  FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
-                 WHERE e.embedding_type='audio-track' AND e.window_index IS NULL AND ar.model_name='muq_mulan'
+                 WHERE e.embedding_type='audio-track' AND e.window_index IS NULL
+                   AND ar.model_name='muq_mulan' AND ar.status='complete'
                  ORDER BY e.track_id, ar.created_at DESC
                )
                SELECT DISTINCT ON (t.id) t.id, t.title, t.artist, t.album, t.duration_seconds,
                       selected_embeddings.embedding, lyrics_embedding.embedding AS lyrics_embedding,
                       voice_embedding.embedding AS voice_embedding,
+                      acoustic_embedding.embedding AS acoustic_embedding,
+                      muq_profile.id AS muq_profile_id, mert_profile.id AS mert_profile_id,
                       ts.external_id AS source_id, ts.source_data->>'coverArt' AS cover_art,
                       member.group_id::text AS recording_group_id
                FROM selected_embeddings
@@ -1689,6 +1748,27 @@ def _curation_corpus(
                JOIN navidrome_connections nc ON nc.id=%s
                  AND lower(rtrim(nc.url, '/'))=lower(rtrim(l.root_path, '/'))
                LEFT JOIN recording_group_members member ON member.track_id=t.id
+               LEFT JOIN LATERAL (
+                 SELECT e.embedding::text AS embedding, e.run_id
+                 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+                 WHERE e.track_id=t.id AND e.embedding_type='audio-track'
+                   AND e.window_index IS NULL AND ar.model_name='mert' AND ar.status='complete'
+                 ORDER BY ar.created_at DESC LIMIT 1
+               ) acoustic_embedding ON true
+               LEFT JOIN LATERAL (
+                 SELECT tap.id FROM track_audio_profiles tap
+                 JOIN analysis_runs profile_run ON profile_run.id=tap.profile_run_id
+                 WHERE tap.track_id=t.id AND tap.source_run_id=selected_embeddings.run_id
+                   AND tap.model_name='muq_mulan' AND profile_run.status='complete'
+                 ORDER BY tap.created_at DESC LIMIT 1
+               ) muq_profile ON true
+               LEFT JOIN LATERAL (
+                 SELECT tap.id FROM track_audio_profiles tap
+                 JOIN analysis_runs profile_run ON profile_run.id=tap.profile_run_id
+                 WHERE tap.track_id=t.id AND tap.source_run_id=acoustic_embedding.run_id
+                   AND tap.model_name='mert' AND profile_run.status='complete'
+                 ORDER BY tap.created_at DESC LIMIT 1
+               ) mert_profile ON true
                LEFT JOIN LATERAL (
                  SELECT e.embedding::text AS embedding
                  FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
@@ -1706,6 +1786,19 @@ def _curation_corpus(
             (user_id, connection_id),
         )
         rows = cursor.fetchall()
+        profile_ids = [
+            value for row in rows
+            for value in (row.get("muq_profile_id"), row.get("mert_profile_id")) if value is not None
+        ]
+        mode_rows: list[dict[str, object]] = []
+        if profile_ids:
+            cursor.execute(
+                """SELECT profile_id, mode_index, duration_weight, embedding::text AS embedding
+                   FROM audio_modes WHERE profile_id=ANY(%s)
+                   ORDER BY profile_id, mode_index""",
+                (profile_ids,),
+            )
+            mode_rows = cursor.fetchall()
     if not rows:
         raise HTTPException(status_code=409, detail="No semantic embeddings are available in this library")
     matrix = np.stack([np.fromstring(row.pop("embedding").strip("[]"), sep=",") for row in rows])
@@ -1721,33 +1814,51 @@ def _curation_corpus(
         encoded = row.pop("voice_embedding")
         if encoded is not None:
             voice_matrix[index] = np.fromstring(str(encoded).strip("[]"), sep=",")
-    return rows, matrix, lyrics_matrix, lyrics_available, voice_matrix, voice_available
+    acoustic_available = np.asarray([row.get("acoustic_embedding") is not None for row in rows], dtype=bool)
+    acoustic_dimension = next((
+        len(np.fromstring(str(row["acoustic_embedding"]).strip("[]"), sep=","))
+        for row in rows if row.get("acoustic_embedding") is not None
+    ), 0)
+    acoustic_matrix = np.zeros((len(rows), acoustic_dimension), dtype=np.float32)
+    for index, row in enumerate(rows):
+        encoded = row.pop("acoustic_embedding")
+        if encoded is not None:
+            acoustic_matrix[index] = np.fromstring(str(encoded).strip("[]"), sep=",")
+    grouped_modes: dict[uuid.UUID, list[dict[str, object]]] = {}
+    for mode_row in mode_rows:
+        grouped_modes.setdefault(mode_row["profile_id"], []).append(mode_row)
+    modes_by_profile: dict[uuid.UUID, tuple[np.ndarray, np.ndarray]] = {}
+    for profile_id, members in grouped_modes.items():
+        if members:
+            modes_by_profile[profile_id] = (
+                np.stack([np.fromstring(str(row["embedding"]).strip("[]"), sep=",") for row in members]),
+                np.asarray([row["duration_weight"] for row in members], dtype=np.float32),
+            )
+    semantic_modes = [modes_by_profile.get(row.pop("muq_profile_id")) for row in rows]
+    acoustic_modes = [modes_by_profile.get(row.pop("mert_profile_id")) for row in rows]
+    return (
+        rows, matrix, lyrics_matrix, lyrics_available, voice_matrix, voice_available,
+        semantic_modes, acoustic_matrix if acoustic_dimension else None,
+        acoustic_available, acoustic_modes,
+    )
 
 
 def _preview_curation(
     user_id: uuid.UUID, connection_id: uuid.UUID, request: CurationPreviewRequest,
 ) -> dict[str, object]:
-    rows, matrix, lyrics_matrix, lyrics_available, voice_matrix, voice_available = _curation_corpus(user_id, connection_id)
+    (
+        rows, matrix, lyrics_matrix, lyrics_available, voice_matrix, voice_available,
+        semantic_modes, acoustic_matrix, acoustic_available, acoustic_modes,
+    ) = _curation_corpus(user_id, connection_id)
     language_map: dict[str, dict[str, object]] = {}
-    if request.curation_type == "language" and request.target_language:
+    if request.target_language:
         with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
             cursor.execute(
                 """SELECT l.track_id::text AS id, l.provenance->'languages' AS distribution
                    FROM lyrics l WHERE l.provenance ? 'languages'""")
             language_map = {row["id"]: row["distribution"] for row in cursor.fetchall() if row["distribution"]}
-        if request.language_strictness == "only":
-            keep = [index for index, row in enumerate(rows)
-                    if language_affinity(language_map.get(str(row["id"])), request.target_language) >= PRIMARY_SHARE]
-            if not keep:
-                raise HTTPException(status_code=409, detail=
-                    f"No tracks with confident {LANGUAGE_NAMES.get(request.target_language, request.target_language)} lyrics were found in this library")
-            rows = [rows[index] for index in keep]
-            matrix = matrix[keep]
-            lyrics_matrix = lyrics_matrix[keep]
-            lyrics_available = lyrics_available[keep]
-            voice_matrix = voice_matrix[keep]
-            voice_available = voice_available[keep]
-    if request.curation_type == "time_of_day" and (not request.period_start or not request.period_end):
+    time_of_day_enabled = request.time_of_day_enabled or request.curation_type == "time_of_day"
+    if time_of_day_enabled and (not request.period_start or not request.period_end):
         raise HTTPException(status_code=422, detail="Choose a start and end time")
     if request.curation_type == "language" and not (
         request.positive_prompt.strip() or request.sound_prompts or request.themes_prompts or request.target_language
@@ -1774,31 +1885,33 @@ def _preview_curation(
             listens = recent_listens(lastfm_username, api_key, datetime.now(timezone.utc) - timedelta(days=request.lookback_days))
             all_counts, period_counts = track_listen_counts(
                 rows, listens, timezone_name,
-                request.period_start if request.curation_type == "time_of_day" else None,
-                request.period_end if request.curation_type == "time_of_day" else None,
+                request.period_start if time_of_day_enabled else None,
+                request.period_end if time_of_day_enabled else None,
             )
-            listen_counts = period_counts if request.curation_type == "time_of_day" else all_counts
+            listen_counts = period_counts if time_of_day_enabled else all_counts
             recent_ids = set(all_counts)
         except Exception as error:
             raise HTTPException(status_code=502, detail=f"Could not read Last.fm listening history: {error}") from error
-    elif request.curation_type == "time_of_day":
+    elif time_of_day_enabled:
         raise HTTPException(status_code=409, detail="Connect Last.fm in Settings before creating a time-of-day curation")
     effective_positive_ids = list(request.positive_track_ids)
-    if request.curation_type == "time_of_day":
-        effective_positive_ids = [uuid.UUID(identifier) for identifier in period_counts]
-        if not effective_positive_ids:
+    time_of_day_track_ids: list[uuid.UUID] = []
+    if time_of_day_enabled:
+        time_of_day_track_ids = [uuid.UUID(identifier) for identifier in period_counts]
+        if not time_of_day_track_ids:
             raise HTTPException(status_code=409, detail="No matched listens were found in that time period during the lookback window")
     sound_tags = [tag.strip() for tag in request.sound_prompts if tag.strip()]
     theme_tags = [tag.strip() for tag in request.themes_prompts if tag.strip()]
     sound_negatives = [tag.strip() for tag in request.sound_negative_prompts if tag.strip()]
     theme_negatives = [tag.strip() for tag in request.themes_negative_prompts if tag.strip()]
     structured = bool(sound_tags or theme_tags or sound_negatives or theme_negatives)
-    if request.curation_type == "language" and request.target_language and not structured and not request.positive_prompt.strip():
-        request.positive_prompt = f"{LANGUAGE_NAMES.get(request.target_language, request.target_language)} music with vocals"
     semantic_prompts = sound_tags if structured else ([request.positive_prompt] if request.positive_prompt.strip() else [])
     theme_prompts = theme_tags if structured else ([request.positive_prompt] if request.positive_prompt.strip() else [])
     visible_ids = {str(row["id"]) for row in rows}
-    if not semantic_prompts and not theme_prompts and not any(str(value) in visible_ids for value in effective_positive_ids):
+    has_language_constraint = bool(request.target_language)
+    if not has_language_constraint and not semantic_prompts and not theme_prompts and not any(
+        str(value) in visible_ids for value in [*effective_positive_ids, *time_of_day_track_ids]
+    ):
         raise HTTPException(status_code=422, detail="None of the Songs like tracks are available in this library")
     lyrics_model = shared_lyrics_model()
 
@@ -1814,8 +1927,23 @@ def _preview_curation(
     lyrics_negatives = (theme_negatives if structured else ([request.negative_prompt] if request.negative_prompt.strip() else []))
     negative_queries = np.asarray(_tag_query_centers(lyrics_negatives), dtype=np.float32) if lyrics_negatives else None
     shuffle_seed = secrets.randbits(63)
-    language_mode = request.curation_type == "language" and request.target_language
-    rank_limit = len(rows) if (language_mode and request.language_strictness == "primarily") else request.track_limit
+    language_mode = bool(request.target_language)
+    language_eligible_ids: set[str] | None = None
+    if language_mode and request.language_strictness == "only":
+        language_eligible_ids = {
+            str(row["id"]) for row in rows
+            if language_affinity(language_map.get(str(row["id"])), request.target_language) >= PRIMARY_SHARE
+        }
+        if not language_eligible_ids:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "No tracks with confident "
+                    f"{LANGUAGE_NAMES.get(request.target_language, request.target_language)} "
+                    "lyrics were found in this library"
+                ),
+            )
+    rank_limit = len(rows) if language_mode and language_eligible_ids is None else request.track_limit
     expanded_sound_prompts = expand_tag_groups(sound_tags) if structured and sound_tags else None
     expanded_sound_negatives = expand_tag_groups(sound_negatives) if structured and sound_negatives else None
     tracks, references = rank_curation(
@@ -1831,34 +1959,79 @@ def _preview_curation(
         sound_negative_prompts=expanded_sound_negatives,
         themes_negative_prompts=expand_tag_groups(theme_negatives) if structured and theme_negatives else None,
         sound_weight=request.sound_weight if structured else None,
+        semantic_modes=semantic_modes,
+        acoustic_matrix=acoustic_matrix, acoustic_available=acoustic_available,
+        acoustic_modes=acoustic_modes,
+        context_track_ids=[str(value) for value in time_of_day_track_ids],
+        eligible_track_ids=language_eligible_ids,
     )
     language_report: dict[str, object] | None = None
     if language_mode:
         affinity = {str(track["id"]): language_affinity(language_map.get(str(track["id"])), request.target_language) for track in tracks}
         if request.language_strictness == "primarily":
-            primary = [track for track in tracks if affinity[str(track["id"])] >= PRIMARY_SHARE]
-            filler = [track for track in tracks if affinity[str(track["id"])] < PRIMARY_SHARE]
+            ranked = sorted(tracks, key=lambda track: float(track["percentile"]), reverse=True)
+            primary = [track for track in ranked if affinity[str(track["id"])] >= PRIMARY_SHARE]
+            filler = [track for track in ranked if affinity[str(track["id"])] < PRIMARY_SHARE]
             tracks = (primary + filler)[: request.track_limit]
             language_report = {"target": request.target_language, "strictness": "primarily",
                                "matched_tracks": len(primary), "requested": request.track_limit}
         elif request.language_strictness == "sprinkle":
-            count = len(tracks)
-            boosted = [((1 - index / max(count, 1)) * (1 + 0.5 * affinity[str(track["id"])]), track)
-                       for index, track in enumerate(tracks)]
+            boosted = [
+                (0.85 * float(track["percentile"]) + 0.15 * affinity[str(track["id"])], track)
+                for track in tracks
+            ]
             tracks = [track for _, track in sorted(boosted, key=lambda item: -item[0])]
+            tracks = tracks[: request.track_limit]
             language_report = {"target": request.target_language, "strictness": "sprinkle",
                                "matched_tracks": sum(value >= PRIMARY_SHARE for value in affinity.values()), "requested": request.track_limit}
         else:
             language_report = {"target": request.target_language, "strictness": "only",
                                "matched_tracks": len(tracks), "requested": request.track_limit}
-    if structured:
+    if not structured and not request.positive_prompt.strip() and not (
+        effective_positive_ids or time_of_day_track_ids
+    ):
+        weights = {"semantic": 0.0, "lyrics": 0.0}
+    elif structured and (sound_tags or sound_negatives) and not (theme_tags or theme_negatives):
+        weights = {"semantic": 1.0, "lyrics": 0.0}
+    elif structured and (theme_tags or theme_negatives) and not (sound_tags or sound_negatives):
+        weights = {"semantic": 0.0, "lyrics": 1.0}
+    elif structured:
         weights = {"semantic": request.sound_weight / 100.0, "lyrics": (100 - request.sound_weight) / 100.0}
     else:
         weights = {"semantic": 0.45, "lyrics": 0.55}
+    signal_weights: dict[str, float] = {}
+    has_sound = bool(sound_tags or sound_negatives)
+    has_themes = bool(theme_tags or theme_negatives)
+    if has_sound and has_themes:
+        signal_weights["sound"] = request.sound_weight / 100.0
+        signal_weights["themes"] = (100 - request.sound_weight) / 100.0
+    elif has_sound:
+        signal_weights["sound"] = 1.0
+    elif has_themes:
+        signal_weights["themes"] = 1.0
+    elif request.positive_prompt.strip():
+        signal_weights["free_form"] = 1.0
+    if effective_positive_ids or request.negative_track_ids:
+        signal_weights["examples"] = 1.0
+    if time_of_day_track_ids:
+        signal_weights["time_of_day"] = 1.0
+    signal_total = sum(signal_weights.values())
+    if signal_total:
+        signal_weights = {
+            name: value / signal_total for name, value in signal_weights.items()
+        }
     return {
         "tracks": tracks, "references": references, "corpus_size": len(rows),
         "curation_type": request.curation_type,
-        "model": "muq_mulan+bge_m3", "weights": weights,
+        "model": "muq_mulan+mert+bge_m3", "weights": weights,
+        "signal_weights": signal_weights,
+        "scoring_revision": CURATION_SCORING_REVISION,
+        "example_component_weights": EXAMPLE_COMPONENT_WEIGHTS,
+        "audio_profile_coverage": {
+            "muq_mulan": sum(profile is not None for profile in semantic_modes),
+            "mert": sum(profile is not None for profile in acoustic_modes),
+            "mert_global": int(acoustic_available.sum()),
+        },
         "lyrics_coverage": int(lyrics_available.sum()), "shuffle_seed": shuffle_seed,
         "language": language_report,
         "familiarity": {
@@ -1895,6 +2068,7 @@ def _refresh_curation(curation_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, o
         positive_track_ids=curation["positive_track_ids"], negative_track_ids=curation["negative_track_ids"],
         familiarity_percent=curation["familiarity_percent"], period_start=curation["period_start"],
         period_end=curation["period_end"], lookback_days=curation["lookback_days"],
+        time_of_day_enabled=bool(curation.get("time_of_day_enabled")),
         track_limit=curation["track_limit"], refresh_mode=curation["refresh_mode"],
         target_language=str(curation.get("target_language") or ""), language_strictness=str(curation.get("language_strictness") or "primarily"),
         existing_track_ids=existing,
@@ -1923,11 +2097,16 @@ def _refresh_curation(curation_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, o
                 "negative_track_ids": [str(value) for value in request.negative_track_ids],
                 "familiarity_percent": request.familiarity_percent,
                 "period_start": request.period_start, "period_end": request.period_end,
+                "time_of_day_enabled": request.time_of_day_enabled,
                 "lookback_days": request.lookback_days,
                 "track_limit": request.track_limit, "refresh_mode": request.refresh_mode,
                 "target_language": request.target_language, "language_strictness": request.language_strictness,
                 "references": result["references"], "model": result["model"],
                 "weights": result.get("weights"), "lyrics_coverage": result.get("lyrics_coverage"),
+                "signal_weights": result.get("signal_weights"),
+                "scoring_revision": result.get("scoring_revision"),
+                "example_component_weights": result.get("example_component_weights"),
+                "audio_profile_coverage": result.get("audio_profile_coverage"),
                 "familiarity": result.get("familiarity"), "shuffle_seed": result.get("shuffle_seed"),
             }
             cursor.execute(
@@ -2021,6 +2200,7 @@ def create_curation(request: CurationCreateRequest, echora_session: str | None =
             positive_track_ids=request.positive_track_ids, negative_track_ids=request.negative_track_ids,
             familiarity_percent=request.familiarity_percent, period_start=request.period_start,
             period_end=request.period_end, lookback_days=request.lookback_days,
+            time_of_day_enabled=request.time_of_day_enabled,
             track_limit=request.track_limit, refresh_mode=request.refresh_mode,
             target_language=request.target_language, language_strictness=request.language_strictness,
             refresh_enabled=request.refresh_enabled,
@@ -2047,7 +2227,10 @@ def update_curation(
         for key, value in values.items():
             setattr(curation, key, value)
         if "refresh_enabled" in values:
-            curation.next_refresh_at = datetime.now(timezone.utc) + timedelta(hours=6) if values["refresh_enabled"] else None
+            curation.next_refresh_at = (
+                datetime.now(timezone.utc) + timedelta(hours=curation.refresh_interval_hours)
+                if values["refresh_enabled"] else None
+            )
         curation.updated_at = datetime.now(timezone.utc)
     return {"id": str(curation_id), **values}
 
@@ -2155,6 +2338,162 @@ def _cluster_embeddings(normalized: np.ndarray, similarities: np.ndarray) -> tup
         "resolution": selected["resolution"], "silhouette": selected["silhouette"],
         "seed_stability_ari": selected["stability"], "resolutions_tested": resolutions,
     }
+
+
+@app.get("/library/audio-profiles/status")
+def audio_profile_status(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
+    models: dict[str, dict[str, int]] = {}
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        for model_name in SUPPORTED_PROFILE_MODELS:
+            cursor.execute(
+                """WITH latest_source AS (
+                 SELECT DISTINCT ON (e.track_id) e.track_id, e.run_id
+                 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+                 WHERE e.embedding_type='audio-track' AND e.window_index IS NULL
+                   AND ar.model_name=%s AND ar.status='complete'
+                   AND EXISTS (SELECT 1 FROM user_track_links utl
+                               WHERE utl.user_id=%s AND utl.track_id=e.track_id)
+                 ORDER BY e.track_id, ar.created_at DESC
+               )
+               SELECT count(*) AS total,
+                      count(*) FILTER (WHERE EXISTS (
+                        SELECT 1 FROM track_audio_profiles tap
+                        JOIN analysis_runs profile_run ON profile_run.id=tap.profile_run_id
+                        WHERE tap.track_id=latest_source.track_id
+                          AND tap.source_run_id=latest_source.run_id
+                          AND tap.model_name=%s
+                          AND profile_run.kind='audio_profile'
+                          AND profile_run.model_revision=%s
+                          AND profile_run.status='complete'
+                      )) AS current
+               FROM latest_source""",
+                (model_name, user["id"], model_name, AUDIO_PROFILE_REVISION),
+            )
+            value = cursor.fetchone()
+            total, current = int(value["total"]), int(value["current"])
+            models[model_name] = {"total": total, "current": current, "missing": total - current}
+    return {
+        "revision": AUDIO_PROFILE_REVISION,
+        "models": models,
+        "total": sum(value["total"] for value in models.values()),
+        "current": sum(value["current"] for value in models.values()),
+        "missing": sum(value["missing"] for value in models.values()),
+    }
+
+
+@app.post("/library/audio-profiles/rebuild", status_code=202)
+def start_audio_profile_rebuild(
+    echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT DISTINCT e.track_id, ar.model_name
+               FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+               WHERE e.embedding_type='audio-track' AND e.window_index IS NULL
+                 AND ar.model_name=ANY(%s) AND ar.status='complete'
+                 AND EXISTS (SELECT 1 FROM user_track_links utl
+                             WHERE utl.user_id=%s AND utl.track_id=e.track_id)
+               ORDER BY e.track_id, ar.model_name""",
+            (list(SUPPORTED_PROFILE_MODELS), user["id"]),
+        )
+        source_rows = cursor.fetchall()
+        track_ids = sorted({row[0] for row in source_rows})
+        representation_total = len(source_rows)
+    with _jobs_lock:
+        for active_job_id, active_job in _jobs.items():
+            if (
+                active_job.get("_job_type") == "audio_profiles"
+                and active_job.get("_user_id") == str(user["id"])
+                and active_job.get("status") in {"queued", "running"}
+            ):
+                return {
+                    "job_id": active_job_id, "status": active_job["status"],
+                    "total": int(active_job.get("total", 0)), "existing": True,
+                }
+        job_id = str(uuid.uuid4())
+        _jobs[job_id] = {
+            "status": "queued", "phase": "queued", "completed": 0,
+            "total": representation_total, "unit": "representations",
+            "_job_type": "audio_profiles",
+            "_user_id": str(user["id"]),
+        }
+    _profile_executor.submit(_run_audio_profiles, job_id, track_ids)
+    return {"job_id": job_id, "status": "queued", "total": representation_total}
+
+
+@app.get("/library/tracks/{track_id}/audio-profile")
+def track_audio_profile(
+    track_id: uuid.UUID, model: str = "muq_mulan",
+    echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    if model not in SUPPORTED_PROFILE_MODELS:
+        raise HTTPException(status_code=422, detail="Audio profiles support muq_mulan or mert")
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT tap.*, profile_run.model_revision AS profile_revision,
+                      profile_run.config AS profile_config, profile_run.created_at AS profile_created_at,
+                      source_run.model_revision AS source_model_revision,
+                      source_run.config AS source_config
+               FROM track_audio_profiles tap
+               JOIN analysis_runs profile_run ON profile_run.id=tap.profile_run_id
+               JOIN analysis_runs source_run ON source_run.id=tap.source_run_id
+               WHERE tap.track_id=%s AND tap.model_name=%s AND profile_run.status='complete'
+                 AND EXISTS (SELECT 1 FROM user_track_links utl
+                             WHERE utl.user_id=%s AND utl.track_id=tap.track_id)
+               ORDER BY profile_run.created_at DESC, tap.created_at DESC LIMIT 1""",
+            (track_id, model, user["id"]),
+        )
+        profile = cursor.fetchone()
+        if profile is None:
+            raise HTTPException(status_code=404, detail="Audio profile not found")
+        cursor.execute(
+            """SELECT segment_index, start_seconds, end_seconds, cohesion,
+                      representative_window_index
+               FROM audio_temporal_segments
+               WHERE profile_id=%s ORDER BY segment_index""",
+            (profile["id"],),
+        )
+        segments = cursor.fetchall()
+        cursor.execute(
+            """SELECT am.id, am.mode_index, am.duration_weight, am.cohesion,
+                      am.representative_window_index
+               FROM audio_modes am
+               WHERE am.profile_id=%s ORDER BY am.mode_index""",
+            (profile["id"],),
+        )
+        modes = cursor.fetchall()
+        for mode in modes:
+            cursor.execute(
+                """SELECT start_seconds, end_seconds FROM audio_mode_intervals
+                   WHERE mode_id=%s ORDER BY interval_index""",
+                (mode["id"],),
+            )
+            mode["intervals"] = cursor.fetchall()
+            mode.pop("id")
+    return jsonable_encoder({
+        "track_id": track_id,
+        "profile_run_id": profile["profile_run_id"],
+        "source_run_id": profile["source_run_id"],
+        "profile_revision": profile["profile_revision"],
+        "profile_created_at": profile["profile_created_at"],
+        "profile_config": profile["profile_config"],
+        "source": {
+            "model": profile["model_name"], "revision": profile["source_model_revision"],
+            "config": profile["source_config"],
+        },
+        "timestamps_exact": profile["timestamps_exact"],
+        "diagnostics": {
+            "resultant_length": profile["resultant_length"],
+            "mean_global_similarity": profile["mean_global_similarity"],
+            "p05_global_similarity": profile["p05_global_similarity"],
+            "adjacent_change_mean": profile["adjacent_change_mean"],
+            "adjacent_change_p95": profile["adjacent_change_p95"],
+        },
+        "segments": segments, "modes": modes,
+    })
 
 
 @app.get("/library/map")

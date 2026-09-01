@@ -104,6 +104,7 @@ class Curation(Base):
     familiarity_percent: Mapped[int] = mapped_column(Integer, default=70)
     period_start: Mapped[str | None] = mapped_column(Text)
     period_end: Mapped[str | None] = mapped_column(Text)
+    time_of_day_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     lookback_days: Mapped[int] = mapped_column(Integer, default=7)
     track_limit: Mapped[int] = mapped_column(Integer, default=30)
     refresh_mode: Mapped[str] = mapped_column(Text, default="stable")
