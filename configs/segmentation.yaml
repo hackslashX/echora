@@ -1,8 +1,9 @@
-version: 1
+version: 2
 channel_policy: mono
 windows:
-  positions: [0.15, 0.50, 0.85]
+  coverage: full-track
   duration_seconds: 10
+  stride_seconds: 5
   short_track_policy: wrap
 aggregation:
   per_window_normalization: l2

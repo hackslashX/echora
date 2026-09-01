@@ -5,6 +5,36 @@ import subprocess
 import numpy as np
 
 
+def full_coverage_window_ranges(
+    waveform: np.ndarray,
+    sample_rate: int = 24_000,
+    seconds: int = 10,
+    stride_seconds: int = 5,
+) -> list[tuple[np.ndarray, float, float]]:
+    """Cover a waveform and retain the source-time range for each model input."""
+    size = sample_rate * seconds
+    stride = sample_rate * stride_seconds
+    if stride <= 0 or stride > size:
+        raise ValueError("Window stride must be greater than zero and no longer than the window")
+    if waveform.size < size:
+        repeats = int(np.ceil(size / waveform.size))
+        window = np.tile(waveform, repeats)[:size].astype(np.float32)
+        return [(window, 0.0, waveform.size / sample_rate)]
+
+    starts = list(range(0, waveform.size - size + 1, stride))
+    final_start = waveform.size - size
+    if starts[-1] != final_start:
+        starts.append(final_start)
+    return [
+        (
+            np.ascontiguousarray(waveform[start:start + size], dtype=np.float32),
+            start / sample_rate,
+            (start + size) / sample_rate,
+        )
+        for start in starts
+    ]
+
+
 def decode_audio(data: bytes, sample_rate: int = 24_000) -> np.ndarray:
     process = subprocess.run(
         [
@@ -49,19 +79,9 @@ def full_coverage_windows(
     stride_seconds: int = 5,
 ) -> list[np.ndarray]:
     """Cover the complete waveform with overlapping fixed-duration windows."""
-    size = sample_rate * seconds
-    stride = sample_rate * stride_seconds
-    if stride <= 0 or stride > size:
-        raise ValueError("Window stride must be greater than zero and no longer than the window")
-    if waveform.size < size:
-        repeats = int(np.ceil(size / waveform.size))
-        return [np.tile(waveform, repeats)[:size].astype(np.float32)]
-
-    starts = list(range(0, waveform.size - size + 1, stride))
-    final_start = waveform.size - size
-    if starts[-1] != final_start:
-        starts.append(final_start)
-    return [np.ascontiguousarray(waveform[start:start + size], dtype=np.float32) for start in starts]
+    return [item[0] for item in full_coverage_window_ranges(
+        waveform, sample_rate, seconds, stride_seconds,
+    )]
 
 
 def deterministic_windows(
