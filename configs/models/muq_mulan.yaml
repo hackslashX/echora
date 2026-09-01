@@ -1,6 +1,6 @@
 model: muq_mulan
 model_id: OpenMuQ/MuQ-MuLan-large
-revision: TO_BE_PINNED_AFTER_DOWNLOAD
+revision: 2e01c796b71dca71b45251384c04cd7b237c9020
 sample_rate: 24000
 clip_seconds: 10
 precision: float32

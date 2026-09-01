@@ -14,7 +14,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 import torch
 
-from .audio import decode_audio, full_coverage_windows
+from .audio import decode_audio, full_coverage_window_ranges
 from .hum_search import create_sync_run, release_separator, store_track_contours
 from .models import AudioEmbeddingModel, MertModel, MuQMuLanModel, release_model
 from .navidrome import NavidromeClient, NavidromeTrack
@@ -101,7 +101,11 @@ def _model_has_embedding(connection: psycopg.Connection, track_id: uuid.UUID, ru
         return cursor.fetchone() is not None
 
 
-def _store_embedding(connection: psycopg.Connection, track_id: uuid.UUID, run_id: uuid.UUID, model: AudioEmbeddingModel, windows: list[np.ndarray]) -> None:
+def _store_embedding(
+    connection: psycopg.Connection, track_id: uuid.UUID, run_id: uuid.UUID,
+    model: AudioEmbeddingModel, windows: list[np.ndarray],
+    ranges: list[tuple[float, float]] | None = None,
+) -> None:
     result = model.embed_windows(windows)
     with connection.cursor() as cursor:
         cursor.execute(
@@ -117,13 +121,18 @@ def _store_embedding(connection: psycopg.Connection, track_id: uuid.UUID, run_id
         cursor.executemany(
             """
             INSERT INTO embeddings
-              (track_id, run_id, embedding_type, window_index, dimension,
-               aggregation, embedding)
-            VALUES (%s, %s, 'audio-window', %s, %s, 'none', %s::vector)
+              (track_id, run_id, embedding_type, window_index, window_start_seconds,
+               window_end_seconds, dimension, aggregation, embedding)
+            VALUES (%s, %s, 'audio-window', %s, %s, %s, %s, 'none', %s::vector)
             ON CONFLICT (track_id, run_id, embedding_type, window_index) DO NOTHING
             """,
             [
-                (track_id, run_id, window_index, len(vector), _vector_literal(vector))
+                (
+                    track_id, run_id, window_index,
+                    ranges[window_index][0] if ranges else None,
+                    ranges[window_index][1] if ranges else None,
+                    len(vector), _vector_literal(vector),
+                )
                 for window_index, vector in enumerate(result.window_vectors)
             ],
         )
@@ -246,9 +255,11 @@ def ingest_navidrome(
                 try:
                     audio, track_id = audio_track(song)
                     waveform = decode_audio(audio)
-                    windows = full_coverage_windows(waveform)
+                    ranged_windows = full_coverage_window_ranges(waveform)
+                    windows = [item[0] for item in ranged_windows]
+                    ranges = [(item[1], item[2]) for item in ranged_windows]
                     del waveform, audio
-                    _store_embedding(connection, track_id, run_id, model, windows)
+                    _store_embedding(connection, track_id, run_id, model, windows, ranges)
                     if phase == "muq":
                         summary.embedded_muq += 1
                     else:
@@ -274,8 +285,11 @@ def ingest_navidrome(
         if plan.needs_muq:
             report({"phase": "models", "message": "Loading semantic model", "completed": loaded,
                     "total": required_models, "unit": "models"})
-            muq = MuQMuLanModel(os.getenv("MUQ_MODEL_ID", "OpenMuQ/MuQ-MuLan-large"),
-                                os.getenv("MUQ_REVISION", "main"), device)
+            muq = MuQMuLanModel(
+                os.getenv("MUQ_MODEL_ID", "OpenMuQ/MuQ-MuLan-large"),
+                os.getenv("MUQ_REVISION", "2e01c796b71dca71b45251384c04cd7b237c9020"),
+                device,
+            )
             try:
                 embedding_phase("muq", "Embedding semantics for", plan.muq_external_ids, muq)
             finally:
@@ -286,8 +300,11 @@ def ingest_navidrome(
         if plan.needs_mert:
             report({"phase": "models", "message": "Loading acoustic model", "completed": loaded,
                     "total": required_models, "unit": "models"})
-            mert = MertModel(os.getenv("MERT_MODEL_ID", "m-a-p/MERT-v1-95M"),
-                             os.getenv("MERT_REVISION", "main"), device)
+            mert = MertModel(
+                os.getenv("MERT_MODEL_ID", "m-a-p/MERT-v1-95M"),
+                os.getenv("MERT_REVISION", "12af15fef9d0ac838c3f475bfbbf26d2060dd4f5"),
+                device,
+            )
             try:
                 embedding_phase("mert", "Embedding acoustics for", plan.mert_external_ids, mert)
             finally:

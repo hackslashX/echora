@@ -102,7 +102,9 @@ def embed_texts(texts: list[str]) -> np.ndarray:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             _model = MuQMuLan.from_pretrained(
                 os.environ.get("MUQ_MODEL_ID", "OpenMuQ/MuQ-MuLan-large"),
-                revision=os.environ.get("MUQ_REVISION"),
+                revision=os.environ.get(
+                    "MUQ_REVISION", "2e01c796b71dca71b45251384c04cd7b237c9020",
+                ),
             ).to(device).eval()
         with torch.inference_mode():
             vectors = _model(texts=texts).detach().float().cpu().numpy()
