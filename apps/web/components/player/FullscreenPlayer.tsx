@@ -1,6 +1,7 @@
 "use client";
 
 import { AArrowDown, AArrowUp, Disc3, ListMusic, MicVocal, Pause, Play, SkipBack, SkipForward, Type, Volume2, VolumeX, X } from "lucide-react";
+import { sizedCoverArtUrl } from "../media/coverArt";
 import LoadingImage from "../media/LoadingImage";
 import { useEffect, useRef, useState } from "react";
 import { trackTemplate } from "../shell/gridGeometry";
@@ -76,7 +77,9 @@ export default function FullscreenPlayer() {
   const activeLine = timedLines.reduce((active, line, index) => Number(line.start_ms) <= playbackTime * 1000 ? index : active, -1);
   if (!player.track) return null;
   const progress = player.duration ? Math.min(100, player.currentTime / player.duration * 100) : 0;
-  const fullCover = player.track.coverUrl ? `${player.track.coverUrl}${player.track.coverUrl.includes("?") ? "&" : "?"}size=1200` : "";
+  const headerCover = player.track.coverUrl ? sizedCoverArtUrl(player.track.coverUrl, 128) : "";
+  const mobileCover = player.track.coverUrl ? sizedCoverArtUrl(player.track.coverUrl, 600) : "";
+  const fullCover = player.track.coverUrl ? sizedCoverArtUrl(player.track.coverUrl, 1200) : "";
   const innerWidth = Math.max(1, viewport.width - 360);
   const innerHeight = Math.max(1, viewport.height - 304);
   const playbackHeight = Math.min(innerHeight * .55, Math.max(160, playbackContentHeight));
@@ -102,12 +105,12 @@ export default function FullscreenPlayer() {
     {timedLines.length > 0 && <div className={styles.sizeToggle} role="group" aria-label="Lyrics text size">{(["small", "normal", "large"] as LyricsTextSize[]).map(size => { const Icon = size === "small" ? AArrowDown : size === "large" ? AArrowUp : Type; return <button type="button" className={lyricsTextSize === size ? styles.selectedSize : ""} onClick={() => chooseLyricsTextSize(size)} aria-pressed={lyricsTextSize === size} key={size}><Icon />{size.toUpperCase()}</button>; })}</div>}
     {karaokeAvailable && <div className={styles.modeToggle} role="group" aria-label="Lyrics timing mode"><button className={karaokeMode ? styles.selectedMode : ""} onClick={() => setKaraokeMode(true)} aria-pressed={karaokeMode}><MicVocal />KARAOKE</button><button className={!karaokeMode ? styles.selectedMode : ""} onClick={() => setKaraokeMode(false)} aria-pressed={!karaokeMode}><ListMusic />SYNCED</button></div>}
     <section className={styles.mobilePlayer} aria-label="Mobile now playing">
-      <header className={styles.mobileTrack}><div className={styles.mobileHeaderArt}>{fullCover ? <LoadingImage sizes="128px" src={fullCover} alt="" priority /> : <Disc3 />}</div><div><span>NOW PLAYING</span><h1>{player.track.title}</h1><strong>{player.track.artist || "Unknown artist"}</strong><p>{player.track.album || "Unknown album"}</p></div></header>
+      <header className={styles.mobileTrack}><div className={styles.mobileHeaderArt}>{headerCover ? <LoadingImage sizes="128px" src={headerCover} alt="" priority /> : <Disc3 />}</div><div><span>NOW PLAYING</span><h1>{player.track.title}</h1><strong>{player.track.artist || "Unknown artist"}</strong><p>{player.track.album || "Unknown album"}</p></div></header>
       <section className={styles.mobileStage}>
         {timedLines.length ? <div className={styles.mobileLyricsStage}> 
           {karaokeAvailable && <div className={styles.mobileLyricsMode} role="group" aria-label="Lyrics timing mode"><button className={karaokeMode ? styles.selectedMobileView : ""} onClick={() => setKaraokeMode(true)} aria-label="Karaoke timing"><MicVocal /></button><button className={!karaokeMode ? styles.selectedMobileView : ""} onClick={() => setKaraokeMode(false)} aria-label="Synced lyrics"><ListMusic /></button></div>}
           <div className={`${styles.mobileLyricsLines} ${lyricsSizeClasses[lyricsTextSize]}`}>{(() => { const index = activeLine >= 0 ? activeLine : 0, line = timedLines[index]; return line ? <button dir={isRtlText(line.text) ? "rtl" : "ltr"} className={styles.activeLine} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, true)}</button> : null; })()}</div>
-        </div> : <div className={styles.mobileArtwork}>{fullCover ? <LoadingImage sizes="600px" src={fullCover} alt="" priority /> : <Disc3 />}</div>}
+        </div> : <div className={styles.mobileArtwork}>{mobileCover ? <LoadingImage sizes="600px" src={mobileCover} alt="" priority /> : <Disc3 />}</div>}
       </section>
       <section className={styles.mobileDock}><div className={styles.mobileTimeline}><input aria-label="Seek" type="range" min="0" max={player.duration || 0} step="0.1" value={Math.min(player.currentTime, player.duration || 0)} onChange={event => player.seek(Number(event.target.value))} style={{ "--progress": `${progress}%` } as React.CSSProperties} /><div><time>{stamp(player.currentTime)}</time><time>{stamp(player.duration)}</time></div></div><div className={styles.mobileControls}><button onClick={player.previous} aria-label="Previous track"><SkipBack /></button><button className={styles.mobilePlay} onClick={player.toggle} aria-label={player.playing ? "Pause" : "Play"}>{player.playing ? <Pause /> : <Play />}</button><button onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1} aria-label="Next track"><SkipForward /></button><button onClick={player.toggleMute} aria-label={player.muted ? "Unmute" : "Mute"}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div></section>
     </section>
