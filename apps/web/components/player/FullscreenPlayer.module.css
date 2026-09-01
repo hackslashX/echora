@@ -18,7 +18,7 @@
 .fullscreenMarquee[data-overflowing]>span{animation:fullscreenMarqueeScroll 18s ease-in-out infinite}
 .mobileTrack h1,.mobileTrack p{box-sizing:border-box;width:calc(100% - 28px);max-width:calc(100% - 28px)}
 @keyframes fullscreenMarqueeScroll{0%,15%{transform:translateX(0)}45%,55%{transform:translateX(var(--fullscreen-marquee-offset))}85%,100%{transform:translateX(0)}}
-.fullscreenMarquee:not([data-overflowing])>span{margin-inline:auto}
+@media (max-width:1199px), (max-height:719px){.fullscreenMarquee:not([data-overflowing])>span{margin-inline:auto}}
 .mobileTrack>div:last-child{box-sizing:border-box;width:100%;max-width:100%;min-width:0}
 .fullscreenMarquee[data-overflowing]{-webkit-mask-image:linear-gradient(to right,transparent 0,#000 14px,#000 calc(100% - 14px),transparent 100%);mask-image:linear-gradient(to right,transparent 0,#000 14px,#000 calc(100% - 14px),transparent 100%)}
 @media (max-width:1199px) and (orientation:landscape), (max-height:719px) and (orientation:landscape){
