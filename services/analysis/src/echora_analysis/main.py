@@ -447,6 +447,22 @@ def _lyrics_work_count(external_ids: list[str]) -> int:
     return len(set(lyrics) | set(karaoke))
 
 
+def _user_audio_track_ids(user_id: uuid.UUID) -> list[uuid.UUID]:
+    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT DISTINCT utl.track_id
+               FROM user_track_links utl
+               JOIN embeddings e ON e.track_id=utl.track_id
+               JOIN analysis_runs ar ON ar.id=e.run_id
+               WHERE utl.user_id=%s
+                 AND e.embedding_type='audio-track' AND e.window_index IS NULL
+                 AND ar.model_name=ANY(%s) AND ar.status='complete'
+               ORDER BY utl.track_id""",
+            (user_id, list(SUPPORTED_PROFILE_MODELS)),
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+
 def _run_ingest(
     job_id: str, request: IngestRequest, user_id: uuid.UUID | None = None,
     catalog_ids: list[str] | None = None, include_lyrics: bool = False,
@@ -470,6 +486,18 @@ def _run_ingest(
             _attach_user_library(user_id, str(request.url))
             reconciliation = _reconcile_user_tracks(user_id, str(request.url), catalog_ids or request.track_ids)
         combined = {**asdict(summary), **reconciliation}
+        if user_id is not None:
+            profile_track_ids = _user_audio_track_ids(user_id)
+            profile_summaries = {}
+            for model_name in SUPPORTED_PROFILE_MODELS:
+                profile_summaries[model_name] = build_audio_profiles(
+                    profile_track_ids, progress, model_name=model_name,
+                )
+            combined["audio_profiles"] = {
+                "models": profile_summaries,
+                "profiled": sum(int(value["profiled"]) for value in profile_summaries.values()),
+                "failed": sum(int(value["failed"]) for value in profile_summaries.values()),
+            }
         lyrics_ids = catalog_ids or request.track_ids
         if include_lyrics:
             lyrics_summary = backfill_lyrics(
@@ -484,7 +512,7 @@ def _run_ingest(
             combined.update({f"karaoke_{key}": value for key, value in karaoke_summary.items()})
         with _jobs_lock:
             _jobs[job_id] = {
-                "status": "complete", "phase": "complete", "message": "Audio and lyrics analysis is complete",
+                "status": "complete", "phase": "complete", "message": "Audio, profiles, and lyrics analysis is complete",
                 "completed": len(request.track_ids), "total": len(request.track_ids), "unit": "tracks",
                 "summary": combined,
             }
