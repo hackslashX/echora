@@ -18,7 +18,6 @@ const isRtlText = (text: string) => {
   return false;
 };
 type LyricsLine = { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] };
-type Lyrics = { trackId: string; available: boolean; karaoke?: boolean; lines?: LyricsLine[]; text?: string; language?: string; provenance?: { synced?: boolean; lines?: LyricsLine[] } };
 type LyricsTextSize = "small" | "normal" | "large";
 const lyricsSizeStorageKey = "echora:lyrics-text-size";
 const lyricsSizeClasses: Record<LyricsTextSize, string> = {
@@ -29,7 +28,6 @@ const lyricsSizeClasses: Record<LyricsTextSize, string> = {
 
 export default function FullscreenPlayer() {
   const player = usePlayer();
-  const [lyrics, setLyrics] = useState<Lyrics | null>(null);
   const [karaokeMode, setKaraokeMode] = useState(true);
   const [lyricsTextSize, setLyricsTextSize] = useState<LyricsTextSize>("normal");
   const [playbackTime, setPlaybackTime] = useState(player.currentTime);
@@ -64,13 +62,7 @@ export default function FullscreenPlayer() {
     observer.observe(element); const frame = requestAnimationFrame(update);
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
   }, [player.track]);
-  useEffect(() => {
-    const controller = new AbortController();
-    const trackId = player.track?.id;
-    if (trackId) fetch(`/analysis/library/tracks/${trackId}/lyrics`, { signal: controller.signal }).then(response => response.ok ? response.json() : null).then(value => value && setLyrics({ ...value, trackId })).catch(() => {});
-    return () => controller.abort();
-  }, [player.track]);
-  const currentLyrics = lyrics?.trackId === player.track?.id ? lyrics : null;
+  const currentLyrics = player.lyrics?.trackId === player.track?.id ? player.lyrics : null;
   const karaokeAvailable = Boolean(currentLyrics?.karaoke && currentLyrics.lines?.length);
   const karaokeLines = currentLyrics?.lines || [];
   const timedLines = ((karaokeMode && karaokeAvailable ? karaokeLines : currentLyrics?.provenance?.lines) || []).filter(line => Number.isFinite(line.start_ms));
@@ -88,6 +80,7 @@ export default function FullscreenPlayer() {
   const artworkWeight = playbackHeight / innerWidth;
   const spacerWeight = Math.min(.08, Math.max(.045, 72 / innerWidth), (1 - artworkWeight) * .2);
   const columns = [artworkWeight, spacerWeight, 1 - artworkWeight - spacerWeight];
+  const mobileLyricsLayout = timedLines.length > 0 || player.lyricsLoading;
   function karaokeLine(line: LyricsLine, active: boolean) {
     if (!active || !karaokeMode || !currentLyrics?.karaoke || !line.syllables?.length) return line.text || "...";
     const now = playbackTime * 1000;
@@ -98,7 +91,7 @@ export default function FullscreenPlayer() {
   }
   function chooseLyricsTextSize(size: LyricsTextSize) { localStorage.setItem(lyricsSizeStorageKey, size); setLyricsTextSize(size); }
   function close() { if (closing) return; document.body.classList.add("echora-fullscreen-player-closing"); setClosing(true); window.setTimeout(() => player.setExpanded(false), 520); }
-  return <main className={`${styles.player} ${timedLines.length > 0 ? styles.hasMobileLyrics : ""} ${closing ? styles.closing : ""}`}   role="dialog" aria-modal="true" aria-label="Now playing">
+  return <main className={`${styles.player} ${mobileLyricsLayout ? styles.hasMobileLyrics : ""} ${closing ? styles.closing : ""}`}   role="dialog" aria-modal="true" aria-label="Now playing">
     <div className={styles.vignette} />
     <section className={styles.unsupported}><strong>THIS VIEW NEEDS MORE ROOM</strong><p>Resize the window to at least 900 pixels wide or open Echora on a larger screen.</p></section>
     <button className={styles.close} onClick={close} aria-label="Close full screen player"><X /></button>
@@ -110,7 +103,7 @@ export default function FullscreenPlayer() {
         {timedLines.length ? <div className={styles.mobileLyricsStage}> 
           {karaokeAvailable && <div className={styles.mobileLyricsMode} role="group" aria-label="Lyrics timing mode"><button className={karaokeMode ? styles.selectedMobileView : ""} onClick={() => setKaraokeMode(true)} aria-label="Karaoke timing"><MicVocal /></button><button className={!karaokeMode ? styles.selectedMobileView : ""} onClick={() => setKaraokeMode(false)} aria-label="Synced lyrics"><ListMusic /></button></div>}
           <div className={`${styles.mobileLyricsLines} ${lyricsSizeClasses[lyricsTextSize]}`}>{(() => { const index = activeLine >= 0 ? activeLine : 0, line = timedLines[index]; return line ? <button dir={isRtlText(line.text) ? "rtl" : "ltr"} className={styles.activeLine} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, true)}</button> : null; })()}</div>
-        </div> : <div className={styles.mobileArtwork}>{mobileCover ? <LoadingImage sizes="600px" src={mobileCover} alt="" priority /> : <Disc3 />}</div>}
+        </div> : player.lyricsLoading ? <div className={styles.mobileLyricsPlaceholder} /> : <div className={styles.mobileArtwork}>{mobileCover ? <LoadingImage sizes="600px" src={mobileCover} alt="" priority /> : <Disc3 />}</div>}
       </section>
       <section className={styles.mobileDock}><div className={styles.mobileTimeline}><input aria-label="Seek" type="range" min="0" max={player.duration || 0} step="0.1" value={Math.min(player.currentTime, player.duration || 0)} onChange={event => player.seek(Number(event.target.value))} style={{ "--progress": `${progress}%` } as React.CSSProperties} /><div><time>{stamp(player.currentTime)}</time><time>{stamp(player.duration)}</time></div></div><div className={styles.mobileControls}><button onClick={player.previous} aria-label="Previous track"><SkipBack /></button><button className={styles.mobilePlay} onClick={player.toggle} aria-label={player.playing ? "Pause" : "Play"}>{player.playing ? <Pause /> : <Play />}</button><button onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1} aria-label="Next track"><SkipForward /></button><button onClick={player.toggleMute} aria-label={player.muted ? "Unmute" : "Mute"}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div></section>
     </section>
