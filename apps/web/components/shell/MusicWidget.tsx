@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Disc3, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX } from "lucide-react";
 import { sizedPlayerCoverArtUrl } from "../media/coverArt";
 import LoadingImage from "../media/LoadingImage";
@@ -14,7 +14,24 @@ const stamp = (seconds: number) => {
 };
 
 function Marquee({ children, className }: { children: ReactNode; className: string }) {
-  return <span className={className}><span>{children}</span><span aria-hidden="true">{children}</span></span>;
+  const ref = useRef<HTMLSpanElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    const parent = el?.parentElement;
+    const inner = el?.firstElementChild;
+    if (!el || !parent || !(inner instanceof HTMLElement)) return;
+    const update = () => setOverflowing(inner.offsetWidth > parent.clientWidth + 1);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(parent);
+    observer.observe(inner);
+    if (document.fonts?.ready) document.fonts.ready.then(update).catch(() => {});
+    return () => observer.disconnect();
+  }, [children]);
+
+  return <span ref={ref} className={className} data-overflowing={overflowing || undefined}><span>{children}</span>{overflowing && <span aria-hidden="true">{children}</span>}</span>;
 }
 
 export default function MusicWidget() {
