@@ -412,7 +412,7 @@ def _create_profile_run(
                 Jsonb(config), Jsonb(environment),
             ),
         )
-        return cursor.fetchone()[0]
+        return cursor.fetchone()["id"]
 
 
 def _store_profile(
@@ -523,9 +523,19 @@ def build_audio_profiles(
                     JOIN analysis_runs ar ON ar.id=e.run_id
                     JOIN tracks t ON t.id=e.track_id
                     WHERE e.embedding_type='audio-track' AND e.window_index IS NULL
-                      AND ar.model_name=%s AND ar.status='complete'{restriction}
+                      AND ar.model_name=%s AND ar.status='complete'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM track_audio_profiles tap
+                        JOIN analysis_runs profile_run ON profile_run.id=tap.profile_run_id
+                        WHERE tap.track_id=e.track_id
+                          AND tap.source_run_id=e.run_id
+                          AND tap.model_name=%s
+                          AND profile_run.kind='audio_profile'
+                          AND profile_run.model_revision=%s
+                          AND profile_run.status='complete'
+                      ){restriction}
                     ORDER BY e.track_id, ar.created_at DESC""",
-                [model_name, *arguments],
+                [model_name, model_name, AUDIO_PROFILE_REVISION, *arguments],
             )
             tracks = cursor.fetchall()
         summary["total"] = len(tracks)
