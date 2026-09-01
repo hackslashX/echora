@@ -28,6 +28,7 @@ dependencies = [
   "pyphen==0.17.2",
   "pypinyin==0.55.0",
   "pyyaml==6.0.3",
+  "redis==7.1.0",
   "scikit-learn==1.9.0",
   "soundfile==0.13.1",
   "sentence-transformers==6.0.0",

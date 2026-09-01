@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { Disc3, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX } from "lucide-react";
-import { sizedCoverArtUrl } from "../media/coverArt";
+import { sizedPlayerCoverArtUrl } from "../media/coverArt";
 import LoadingImage from "../media/LoadingImage";
 import { audioQualityLabel } from "../player/audioQuality";
 import { usePlayer } from "../player/PlayerProvider";
@@ -21,7 +21,7 @@ export default function MusicWidget() {
   const { track, audioQuality, playing, buffering, currentTime, duration, buffered, muted, queue, queueIndex, previous, next, toggle, seek, toggleMute, setExpanded } = usePlayer();
   return <section className={styles.widget} aria-label="Music player">
     <div className={styles.mobileSeek}><input type="range" min="0" max={duration || 0} step="0.1" value={Math.min(currentTime, duration || 0)} onChange={event => seek(Number(event.target.value))} disabled={!track || !duration} aria-label="Seek" style={{ "--progress": `${duration ? Math.min(100, currentTime / duration * 100) : 0}%` } as React.CSSProperties} /></div>
-    <button className={styles.art} type="button" onClick={() => track && setExpanded(true)} disabled={!track} aria-label="Open full screen player">{track?.coverUrl ? <LoadingImage sizes="54px" src={sizedCoverArtUrl(track.coverUrl, 108)} alt="" /> : <Disc3 />}</button>
+    <button className={styles.art} type="button" onClick={() => track && setExpanded(true)} disabled={!track} aria-label="Open full screen player">{track?.coverUrl ? <LoadingImage sizes="54px" src={sizedPlayerCoverArtUrl(track.coverUrl, 108)} alt="" /> : <Disc3 />}</button>
     <button className={styles.skip} type="button" onClick={previous} disabled={!track} aria-label="Previous track"><SkipBack /></button>
     <button className={styles.play} type="button" onClick={toggle} disabled={!track} aria-label={playing ? "Pause" : "Play"}>{playing ? <Pause /> : <Play />}</button>
     <button className={styles.skip} type="button" onClick={next} disabled={queueIndex < 0 || queueIndex >= queue.length - 1} aria-label="Next track"><SkipForward /></button>
