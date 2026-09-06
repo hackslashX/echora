@@ -23,14 +23,24 @@ class NavidromeTrack:
     raw: dict[str, object]
 
 
+_media_http_client = httpx.Client(
+    timeout=httpx.Timeout(30, read=300),
+    follow_redirects=True,
+    limits=httpx.Limits(max_connections=100, max_keepalive_connections=30, keepalive_expiry=30),
+)
+
+
 class NavidromeClient:
     """Small Subsonic client. Credentials are only sent from the analysis service."""
 
-    def __init__(self, base_url: str, username: str, password: str) -> None:
+    def __init__(
+        self, base_url: str, username: str, password: str, *, http_client: httpx.Client | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/") + "/"
         self.username = username
         self.password = password
-        self.client = httpx.Client(timeout=httpx.Timeout(30, read=300), follow_redirects=True)
+        self._owns_client = http_client is None
+        self.client = http_client or httpx.Client(timeout=httpx.Timeout(30, read=300), follow_redirects=True)
 
     def _auth(self) -> dict[str, str]:
         salt = secrets.token_hex(8)
@@ -232,10 +242,16 @@ class NavidromeClient:
         return response.content
 
     def close(self) -> None:
-        self.client.close()
+        if self._owns_client:
+            self.client.close()
 
     def __enter__(self) -> "NavidromeClient":
         return self
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+
+def media_navidrome_client(base_url: str, username: str, password: str) -> NavidromeClient:
+    """Return a Navidrome client backed by the process-wide media connection pool."""
+    return NavidromeClient(base_url, username, password, http_client=_media_http_client)

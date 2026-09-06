@@ -54,7 +54,7 @@ from .melody_config import MELODY_CONTOUR_REVISION
 from .media_cache import cache_key, media_cache
 from .lyrics_analysis import shared_lyrics_model
 from .lyrics_pipeline import backfill_lyrics
-from .navidrome import NavidromeClient
+from .navidrome import NavidromeClient, media_navidrome_client
 from .voice_pipeline import backfill_voice
 from .processing_plan import plan_karaoke, plan_lyrics
 from .recordings import store_and_match_fingerprint
@@ -1320,15 +1320,15 @@ def stream_track(
     cached = cache.get(key) if cache else None
     range_header = request.headers.get("range")
     starts_at_zero = not range_header or range_header in {"bytes=0-", "bytes=0"}
-    if cached is None and starts_at_zero:
-        client = NavidromeClient(*credentials)
+    if cached is None:
+        client = media_navidrome_client(*credentials)
         try:
             upstream = client.open_transcode_stream(song_id, bit_rate, range_header)
         except Exception as error:
             client.close()
             raise HTTPException(status_code=502, detail="Could not open this track") from error
         content_type = upstream.headers.get("content-type", "audio/mpeg")
-        writer = cache.stream_writer(key, content_type) if cache else None
+        writer = cache.stream_writer(key, content_type) if cache and starts_at_zero else None
         def stream_and_cache():
             completed = False
             try:
@@ -1354,16 +1354,7 @@ def stream_track(
             stream_and_cache(), status_code=upstream.status_code, media_type=content_type,
             headers={**forwarded, "Cache-Control": "private, max-age=3600" if cache else "no-store"},
         )
-    if cached is None:
-        try:
-            with NavidromeClient(*credentials) as client:
-                content, content_type = client.transcode(song_id, bit_rate)
-        except Exception as error:
-            raise HTTPException(status_code=502, detail="Could not open this track") from error
-        if cache:
-            cache.set(key, content, content_type)
-    else:
-        content, content_type = cached.content, cached.content_type
+    content, content_type = cached.content, cached.content_type
     total = len(content)
     headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600"}
     if range_header and range_header.startswith("bytes="):
@@ -1397,13 +1388,13 @@ def cover_art(
     if credentials is None:
         raise HTTPException(status_code=404, detail="Connection not found")
     bounded_size = min(max(size, 64), 1600)
-    cache = media_cache() if request.query_params.get("cache") == "player" else None
+    cache = media_cache()
     key = cache_key("cover", user["id"], connection_id, cover_id, bounded_size)
     cached = cache.get(key) if cache else None
     if cached:
         return Response(content=cached.content, media_type=cached.content_type, headers={"Cache-Control": "private, max-age=3600"})
     try:
-        with NavidromeClient(*credentials) as client:
+        with media_navidrome_client(*credentials) as client:
             content, content_type = client.cover_art(cover_id, bounded_size)
     except Exception as error:
         raise HTTPException(status_code=404, detail="Artwork unavailable") from error
