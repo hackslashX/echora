@@ -11,6 +11,8 @@
 
 import { useEffect, useRef } from "react";
 import { BackdropPreset, PlaybackPreferences, readPlaybackPreferences } from "../player/playbackPreferences";
+import RootVisualizer from "../player/RootVisualizer";
+import RetroTrainVisualizer from "../player/RetroTrainVisualizer";
 import styles from "./Backdrop.module.css";
 import { readCompactLayoutPreference } from "./layoutPreference";
 
@@ -535,13 +537,15 @@ export default function Backdrop() {
         for (let layer = 0; layer < 3; layer++) {
           for (let channel = 0; channel < 3; channel++) waveColors[layer][channel] += (colors[layer][channel] - waveColors[layer][channel]) * .035;
         }
-        const sceneActive = preferences.wavesEnabled && preferences.backdropPreset !== "waves";
+        const rootsActive = preferences.wavesEnabled && preferences.backdropPreset === "roots";
+        const trainActive = preferences.wavesEnabled && preferences.backdropPreset === "retrotrain";
+        const sceneActive = preferences.wavesEnabled && preferences.backdropPreset !== "waves" && !rootsActive && !trainActive;
         sceneCanvas.style.opacity = sceneActive ? "1" : "0";
-        canvas.style.opacity = sceneActive || (preferences.backdropPreset === "waves" && !preferences.wavesEnabled) ? "0" : "1";
+        canvas.style.opacity = sceneActive || rootsActive || trainActive || (preferences.backdropPreset === "waves" && !preferences.wavesEnabled) ? "0" : "1";
         if (sceneActive && scene) {
           const sceneReactive: Reactivity = { ...reactive, bass: reactive.bass * preferences.bassReactivity, mid: reactive.mid * preferences.vocalReactivity, treble: reactive.treble * preferences.trebleReactivity };
           presetScene(scene, preferences.backdropPreset, sceneCanvas.width, sceneCanvas.height, elapsed, now / 1000, frameDelta, sceneReactive, [...baseColor] as Color, [[...waveColors[0]], [...waveColors[1]], [...waveColors[2]]], envelope, waveHistory, tunnelState, curtainState);
-        } else if (baseline && splineSettings && particleSettings) {
+        } else if (!rootsActive && baseline && splineSettings && particleSettings) {
           splineSettings.opacity = baseline.spline.opacity * opacityScale;
           splineSettings.layerAmplitudes[0] = preferences.wavesEnabled && preferences.backdropPreset === "waves" ? baseline.spline.layerAmplitudes[0] + reactive.bass * 1.65 * preferences.bassReactivity : 0;
           splineSettings.layerAmplitudes[1] = preferences.wavesEnabled && preferences.backdropPreset === "waves" ? baseline.spline.layerAmplitudes[1] + reactive.mid * 1.3 * preferences.vocalReactivity : 0;
@@ -565,5 +569,5 @@ export default function Backdrop() {
     return () => { cancelled = true; cancelAnimationFrame(animation); removeResize(); window.removeEventListener("echora:audio-reactivity", receiveAudio); window.removeEventListener("echora:backdrop-mode", receiveMode); window.removeEventListener("echora:track-palette", receivePalette); window.removeEventListener("echora:audio-waveform", receiveWaveform); window.removeEventListener("echora:track-change", resetTunnel); window.removeEventListener("echora:playback-preferences", receivePreferences); };
   }, []);
 
-  return <div className={styles.backdrop} aria-hidden="true"><canvas ref={glRef} /><canvas ref={sceneRef} className={styles.scene} /></div>;
+  return <div className={styles.backdrop} aria-hidden="true"><canvas ref={glRef} /><canvas ref={sceneRef} className={styles.scene} /><RootVisualizer /><RetroTrainVisualizer /></div>;
 }

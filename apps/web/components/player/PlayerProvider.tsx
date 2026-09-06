@@ -119,6 +119,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const lyricsRequestsRef = useRef(new Set<string>());
   const queueIndexRef = useRef(-1);
   const activateQueueIndexRef = useRef<(index: number) => void>(() => {});
+  const nextRef = useRef<() => void>(() => {});
+  const previousRef = useRef<() => void>(() => {});
   const [track, setTrack] = useState<PlayerTrack | null>(null);
   const [audioQuality, setAudioQuality] = useState<AudioQuality | null>(null);
   const [lyrics, setLyrics] = useState<PlayerLyrics | null>(null);
@@ -142,17 +144,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       publishMediaPosition(player, canonical);
     };
     const progress = () => setBuffered(player.buffered.length ? player.buffered.end(player.buffered.length - 1) : 0);
-    const ended = () => { publishPalette(null); if (queueIndexRef.current >= 0 && queueIndexRef.current < queueRef.current.length - 1) activateQueueIndexRef.current(queueIndexRef.current + 1); else setPlaying(false); };
-    const paused = () => { setPlaying(false); publishPalette(null); if (hasMediaSession()) navigator.mediaSession.playbackState = "paused"; };
+    const ended = () => { window.dispatchEvent(new CustomEvent("echora:playback-state", { detail: false })); publishPalette(null); if (queueIndexRef.current >= 0 && queueIndexRef.current < queueRef.current.length - 1) activateQueueIndexRef.current(queueIndexRef.current + 1); else setPlaying(false); };
+    const paused = () => { window.dispatchEvent(new CustomEvent("echora:playback-state", { detail: false })); setPlaying(false); publishPalette(null); if (hasMediaSession()) navigator.mediaSession.playbackState = "paused"; };
     const waiting = () => setBuffering(true);
     const ready = () => setBuffering(false);
-    const started = () => { setPlaying(true); setBuffering(false); publishPalette(paletteRef.current); if (hasMediaSession()) navigator.mediaSession.playbackState = "playing"; publishMediaPosition(player, trackRef.current?.durationSeconds); };
+    const started = () => { window.dispatchEvent(new CustomEvent("echora:playback-state", { detail: true })); setPlaying(true); setBuffering(false); publishPalette(paletteRef.current); if (hasMediaSession()) navigator.mediaSession.playbackState = "playing"; publishMediaPosition(player, trackRef.current?.durationSeconds); };
     const setAction = (action: MediaSessionAction, handler: MediaSessionActionHandler | null) => { try { navigator.mediaSession.setActionHandler(action, handler); } catch {} };
     if (hasMediaSession()) {
       setAction("play", () => { startAnalysis(); player.play().catch(() => setPlaying(false)); });
       setAction("pause", () => player.pause());
-      setAction("previoustrack", previous);
-      setAction("nexttrack", next);
+      setAction("previoustrack", () => previousRef.current());
+      setAction("nexttrack", () => nextRef.current());
       setAction("seekbackward", details => seek(Math.max(0, player.currentTime - (details.seekOffset || 10))));
       setAction("seekforward", details => seek(player.currentTime + (details.seekOffset || 10)));
       setAction("seekto", details => { if (typeof details.seekTime === "number") seek(details.seekTime); });
@@ -194,6 +196,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       lastAnalysis = now;
       node.getByteFrequencyData(frequencies);
       node.getByteTimeDomainData(waveform);
+      window.dispatchEvent(new CustomEvent("echora:audio-spectrum", { detail: new Uint8Array(frequencies) }));
       window.dispatchEvent(new CustomEvent("echora:audio-waveform", { detail: waveform }));
       const binHz = context.sampleRate / node.fftSize;
       const bass = average(Math.floor(35 / binHz), Math.ceil(180 / binHz));
@@ -271,6 +274,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (player.currentTime > 4 || queueIndexRef.current <= 0) { seek(0); return; }
     activateQueueIndex(queueIndexRef.current - 1);
   }
+  nextRef.current = next;
+  previousRef.current = previous;
   function clearQueue() { queueRef.current = track ? [track] : []; queueIndexRef.current = track ? 0 : -1; setQueue(queueRef.current); setQueueIndex(queueIndexRef.current); }
   function toggle() { const player = audio.current; if (!player || !track) return; startAnalysis(); if (player.paused) player.play(); else player.pause(); }
   function seek(seconds: number) { const player = audio.current; if (!player || !Number.isFinite(seconds)) return; player.currentTime = seconds; setCurrentTime(seconds); publishMediaPosition(player, trackRef.current?.durationSeconds); }
