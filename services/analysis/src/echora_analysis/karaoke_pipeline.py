@@ -487,7 +487,9 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
         lines = build_lines_from_alignment_document(alignment_document)
         if not lines:
             lines = parse_ass_karaoke(ass)
-        lines = apply_adaptive_line_padding(lines)
+        # Keep the model's token-derived line boundaries. The former display
+        # padding expanded every line into nearby silence, which moved otherwise
+        # correct starts and ends away from the timed-lyrics reference.
         if not lines:
             raise RuntimeError("FA-Kara produced no aligned lyric lines")
     return {"ass": ass, "lrc": lrc, "lines": lines, "alignment_document": alignment_document,
