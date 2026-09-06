@@ -8,6 +8,7 @@ import { usePlayer, type PlayerTrack } from "../player/PlayerProvider";
 import AppShell from "../shell/AppShell";
 import CopyrightFooter from "../shell/CopyrightFooter";
 import { trackTemplate } from "../shell/gridGeometry";
+import MobilePivots from "../shell/MobilePivots";
 import styles from "./CurateLibrary.module.css";
 import Alert from "../ui/Alert";
 import TagInput, { type Tag } from "./TagInput";
@@ -149,7 +150,7 @@ export default function CurateLibrary() {
   const columns = [0.35, 0.04, 0.61];
   return <AppShell title="Curate" footer={<CopyrightFooter />} breadcrumb flush fullPage grid={{ columns, rows: [1] }}>
     <main className={styles.page} style={{ gridTemplateColumns: trackTemplate(columns, 180), gridTemplateRows: trackTemplate([1], 152) }}>
-      <nav className={styles.mobilePivots} aria-label="Curation sections"><button className={mobilePane === "recipe" ? styles.activePivot : ""} onClick={() => setMobilePane("recipe")}>recipe</button><button className={mobilePane === "playlists" ? styles.activePivot : ""} onClick={() => setMobilePane("playlists")}>playlists <b>{curations.length}</b></button></nav>
+      <MobilePivots label="Curation sections" active={mobilePane} onChange={setMobilePane} items={[{ key: "recipe", label: "recipe" }, { key: "playlists", label: "playlists", count: curations.length }]} />
       <section className={`${styles.recipe} ${mobilePane === "recipe" ? styles.mobileActive : ""}`}>
         <header><h1>Build playlists</h1><p>Combine any curation signals you want. Empty aspects do not affect the score.</p></header>
         <section className={styles.commonSettings} aria-label="Playlist settings">

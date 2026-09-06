@@ -8,12 +8,16 @@ import { usePlayer } from "../player/PlayerProvider";
 import AppShell from "../shell/AppShell";
 import CopyrightFooter from "../shell/CopyrightFooter";
 import { trackTemplate } from "../shell/gridGeometry";
+import MobilePivots from "../shell/MobilePivots";
 import HumSearchButton from "./HumSearchButton";
 import styles from "./BrowseLibrary.module.css";
 
 type Track = { id: string; title: string; artist?: string; album?: string; duration_seconds: number; source_id?: string; cover_art?: string; similarity?: number; matched_at_seconds?: number; matched_source?: string };
 type Facet = { name: string; tracks: number };
-const duration = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.round(seconds % 60)).padStart(2, "0")}`;
+const duration = (seconds: number) => {
+  const rounded = Math.max(0, Math.round(seconds));
+  return `${Math.floor(rounded / 60)}:${String(rounded % 60).padStart(2, "0")}`;
+};
 
 export default function BrowseLibrary() {
   const player = usePlayer();
@@ -92,7 +96,7 @@ export default function BrowseLibrary() {
   const rows = [1];
   return <AppShell title="Browse" footer={<CopyrightFooter />} grid={{ columns, rows }} flush fullPage breadcrumb>
     <section className={styles.layout} style={{ gridTemplateColumns: trackTemplate(columns, 180), gridTemplateRows: trackTemplate(rows, 152) }}>
-      <nav className={styles.mobilePivots} aria-label="Browse sections"><button className={mobilePane === "tracks" ? styles.activePivot : ""} onClick={() => setMobilePane("tracks")}>tracks <b>{total}</b></button><button className={mobilePane === "filters" ? styles.activePivot : ""} onClick={() => setMobilePane("filters")}>filters</button></nav>
+      <MobilePivots label="Browse sections" active={mobilePane} onChange={setMobilePane} items={[{ key: "tracks", label: "tracks", count: total }, { key: "filters", label: "filters" }]} />
       <aside className={`${styles.filters} ${mobilePane === "filters" ? styles.mobileActive : ""}`}>
         <h1>Filters</h1>
         <section className={styles.filterGroup}><span>Artists</span><input value={artistQuery} onChange={event => setArtistQuery(event.target.value)} placeholder="Search artists" /><div><button type="button" className={!artist ? styles.selected : ""} onClick={() => { setArtist(""); setAlbum(""); resetResults(); }}>All artists</button>{artists.map(item => <button type="button" className={artist === item.name ? styles.selected : ""} onClick={() => { setArtist(item.name); setAlbum(""); resetResults(); }} key={item.name}>{item.name}<b>{item.tracks}</b></button>)}</div></section>
