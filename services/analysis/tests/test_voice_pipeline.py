@@ -30,3 +30,31 @@ def test_instrumental_audio_does_not_get_decisive_gender_score() -> None:
 def test_classifier_output_shapes_are_validated() -> None:
     with pytest.raises(ValueError, match="Unexpected classifier output shapes"):
         _aggregate_outputs(np.ones((2, 2)), np.ones((3, 2)))
+
+
+def test_vocal_activity_keeps_patch_timestamps_and_reports_uncovered_tail():
+    from types import SimpleNamespace
+    from echora_analysis.voice_pipeline import VoiceGenderModel
+
+    model = VoiceGenderModel.__new__(VoiceGenderModel)
+    model._mel_patches = lambda _: np.zeros((2, 128, 96), dtype=np.float32)
+    model._embedder = SimpleNamespace(
+        get_inputs=lambda: [SimpleNamespace(name="input")],
+        run=lambda *_: [np.zeros((2, 1280), dtype=np.float32)],
+    )
+    model._gender = SimpleNamespace(
+        get_inputs=lambda: [SimpleNamespace(name="input")],
+        run=lambda *_: [np.asarray([[.8, .2], [.2, .8]], dtype=np.float32)],
+    )
+    model._voice = SimpleNamespace(
+        get_inputs=lambda: [SimpleNamespace(name="input")],
+        run=lambda *_: [np.asarray([[.9, .1], [.1, .9]], dtype=np.float32)],
+    )
+    scores, activity = model.classify_with_activity(np.ones(5 * 16000, dtype=np.float32))
+    assert sum(scores.values()) == pytest.approx(1)
+    assert activity["windows"][0]["start_seconds"] == 0
+    assert activity["windows"][1]["start_seconds"] == pytest.approx(2.048)
+    assert activity["windows"][1]["end_seconds"] == pytest.approx(4.112)
+    assert activity["windows"][1]["vocal_activation"] == pytest.approx(.9)
+    assert activity["unanalyzed_tail_seconds"] == pytest.approx(.888)
+    assert activity["confidence_calibrated"] is False

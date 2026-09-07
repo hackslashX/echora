@@ -16,6 +16,8 @@ from .language_detection import detect_distribution
 from .models import release_model
 from .navidrome import NavidromeClient
 from .processing_plan import plan_lyrics
+from .representations import configure_representations, embedding_config
+from .analysis_attempts import start_attempt, record_track, finish_attempt
 
 
 def _vector_literal(vector) -> str:
@@ -23,11 +25,7 @@ def _vector_literal(vector) -> str:
 
 
 def _create_run(connection: psycopg.Connection, model: LyricsEmbeddingModel) -> uuid.UUID:
-    config = {
-        "model": model.name, "revision": model.revision, "chunk_tokens": model.chunk_tokens,
-        "overlap_tokens": model.overlap_tokens, "aggregation": "normalized_mean",
-        "pooling": "bge-m3 dense", "maximum_tokens": 8192,
-    }
+    config = embedding_config(model.name, model.revision)
     config_hash = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     environment = {"python": platform.python_version(), "torch": torch.__version__, "cuda": torch.version.cuda}
     with connection.cursor() as cursor:
@@ -36,7 +34,7 @@ def _create_run(connection: psycopg.Connection, model: LyricsEmbeddingModel) -> 
                  (kind, model_name, model_revision, config_hash, config, environment, device, precision, status, started_at)
                VALUES ('lyrics_embedding',%s,%s,%s,%s,%s,%s,'float32','running',now())
                ON CONFLICT (kind, model_name, model_revision, config_hash)
-               DO UPDATE SET status='running', started_at=now(), finished_at=NULL RETURNING id""",
+               DO UPDATE SET id=analysis_runs.id RETURNING id""",
             (model.name, model.revision, config_hash, Jsonb(config), Jsonb(environment), str(model.device)),
         )
         return cursor.fetchone()[0]
@@ -94,6 +92,7 @@ def backfill_lyrics(
     report = progress or (lambda _: None)
     summary = {"total": 0, "available": 0, "missing": 0, "unavailable": 0, "embedded": 0, "failed": 0}
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection, NavidromeClient(url, username, password) as client:
+        configure_representations(connection)
         planned = plan_lyrics(connection, external_ids).lyrics_external_ids
         if not planned:
             report({"phase": "planning", "message": "Lyrics analysis already current",
@@ -136,19 +135,25 @@ def backfill_lyrics(
             os.environ.get("LYRICS_REVISION", "5617a9f61b028005a4858fdac845db406aefb181"), device,
         )
         run_id = _create_run(connection, model)
+        attempt_id = start_attempt(connection, run_id, len(embeddable))
         connection.commit()
         for index, (track_id, title, lyrics) in enumerate(embeddable):
             try:
                 embedded = model.embed(str(lyrics["text"]))
                 _store_embeddings(connection, track_id, run_id, embedded)
+                record_track(connection, attempt_id, str(track_id), track_id)
                 summary["embedded"] += 1
                 connection.commit()
             except Exception:
                 connection.rollback()
                 summary["failed"] += 1
+                record_track(connection, attempt_id, str(track_id), track_id,
+                             error="Lyrics embedding failed; see service logs")
+                connection.commit()
             report({"phase": "lyrics", "message": f"Embedding lyrics for {title}",
                     "completed": index + 1, "total": len(embeddable), "unit": "tracks",
                     "summary": summary})
+        finish_attempt(connection, attempt_id)
         with connection.cursor() as cursor:
             cursor.execute("UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id=%s", (run_id,))
         connection.commit()

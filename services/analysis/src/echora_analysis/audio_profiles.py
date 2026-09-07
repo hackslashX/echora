@@ -405,7 +405,7 @@ def _create_profile_run(
                   device, precision, status, started_at)
                VALUES ('audio_profile',%s,%s,%s,%s,%s,'cpu','float32','running',now())
                ON CONFLICT (kind, model_name, model_revision, config_hash)
-               DO UPDATE SET status='running', started_at=now(), finished_at=NULL
+               DO UPDATE SET id=analysis_runs.id
                RETURNING id""",
             (
                 model_name, AUDIO_PROFILE_REVISION, config_hash,
@@ -502,12 +502,15 @@ def build_audio_profiles(
     parameters: AudioProfileParameters = DEFAULT_PARAMETERS,
     model_name: str = "muq_mulan",
 ) -> dict[str, object]:
+    from .representations import configure_representations
+
     report = progress or (lambda _: None)
     summary: dict[str, object] = {
         "model": model_name, "total": 0, "profiled": 0,
         "failed": 0, "profile_run_id": None,
     }
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection:
+        configure_representations(connection)
         profile_run_id = _create_profile_run(connection, model_name, parameters)
         summary["profile_run_id"] = str(profile_run_id)
         connection.commit()
@@ -519,11 +522,11 @@ def build_audio_profiles(
                           e.track_id, e.run_id AS source_run_id, t.duration_seconds,
                           ar.config->>'window_seconds' AS window_seconds,
                           ar.config->>'stride_seconds' AS stride_seconds
-                    FROM embeddings e
+                    FROM current_embeddings e
                     JOIN analysis_runs ar ON ar.id=e.run_id
                     JOIN tracks t ON t.id=e.track_id
                     WHERE e.embedding_type='audio-track' AND e.window_index IS NULL
-                      AND ar.model_name=%s AND ar.status='complete'
+                      AND ar.model_name=%s
                       AND NOT EXISTS (
                         SELECT 1 FROM track_audio_profiles tap
                         JOIN analysis_runs profile_run ON profile_run.id=tap.profile_run_id
@@ -531,11 +534,10 @@ def build_audio_profiles(
                           AND tap.source_run_id=e.run_id
                           AND tap.model_name=%s
                           AND profile_run.kind='audio_profile'
-                          AND profile_run.model_revision=%s
-                          AND profile_run.status='complete'
+                          AND profile_run.id=%s
                       ){restriction}
                     ORDER BY e.track_id, ar.created_at DESC""",
-                [model_name, model_name, AUDIO_PROFILE_REVISION, *arguments],
+                [model_name, model_name, profile_run_id, *arguments],
             )
             tracks = cursor.fetchall()
         summary["total"] = len(tracks)

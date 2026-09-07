@@ -35,6 +35,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import RedirectResponse, StreamingResponse
 
 from .artists import fit_artist_profile, representative_indices, soft_chamfer_similarity, weighted_center
+from .audio_descriptors import DESCRIPTOR_REVISION
 from .audio_profiles import (
     AUDIO_PROFILE_REVISION,
     SUPPORTED_PROFILE_MODELS,
@@ -58,6 +59,7 @@ from .navidrome import NavidromeClient, media_navidrome_client
 from .voice_pipeline import backfill_voice
 from .processing_plan import plan_karaoke, plan_lyrics
 from .recordings import store_and_match_fingerprint
+from .representations import configure_representations
 
 app = FastAPI(title="Echora analysis", version="0.3.0")
 app.add_middleware(
@@ -449,11 +451,11 @@ def _user_audio_track_ids(user_id: uuid.UUID) -> list[uuid.UUID]:
         cursor.execute(
             """SELECT DISTINCT utl.track_id
                FROM user_track_links utl
-               JOIN embeddings e ON e.track_id=utl.track_id
+               JOIN current_embeddings e ON e.track_id=utl.track_id
                JOIN analysis_runs ar ON ar.id=e.run_id
                WHERE utl.user_id=%s
                  AND e.embedding_type='audio-track' AND e.window_index IS NULL
-                 AND ar.model_name=ANY(%s) AND ar.status='complete'
+                 AND ar.model_name=ANY(%s)
                ORDER BY utl.track_id""",
             (user_id, list(SUPPORTED_PROFILE_MODELS)),
         )
@@ -589,6 +591,10 @@ def _recover_interrupted_curations() -> None:
 def start_background_services() -> None:
     global _scheduler_started
     _enforce_secure_cookie_policy()
+    with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
+        configure_representations(connection)
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE analysis_attempts SET status='interrupted', finished_at=now() WHERE status='running'")
     _recover_interrupted_curations()
     if not _scheduler_started:
         _scheduler_started = True
@@ -1159,7 +1165,7 @@ def lyrics_status(echora_session: str | None = Cookie(default=None)) -> dict[str
                       count(*) FILTER (WHERE l.availability_status='unavailable') AS unavailable,
                       count(*) FILTER (WHERE l.availability_status='instrumental') AS instrumental,
                       count(*) FILTER (WHERE EXISTS (
-                        SELECT 1 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+                        SELECT 1 FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                         WHERE e.track_id=t.id AND e.embedding_type='lyrics' AND e.window_index IS NULL
                           AND ar.model_name='bge_m3'
                       )) AS embedded
@@ -1247,6 +1253,37 @@ def track_recording_group(
         )
         evidence = cursor.fetchall()
     return {"group": {**group, "members": members, "evidence": evidence}, "fingerprinted": True}
+
+
+@app.get("/library/tracks/{track_id}/audio-descriptors")
+def track_audio_descriptors(
+    track_id: uuid.UUID, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        cursor.execute(
+            """SELECT revision, status, descriptors, created_at FROM track_audio_descriptors
+               WHERE track_id=%s AND revision=%s""", (track_id, DESCRIPTOR_REVISION),
+        )
+        descriptors = cursor.fetchone()
+        cursor.execute(
+            """SELECT activity.activity, activity.run_id
+               FROM track_vocal_activity activity
+               JOIN current_analysis_runs ar ON ar.id=activity.run_id
+               WHERE activity.track_id=%s AND ar.kind='voice_classification'
+               ORDER BY activity.created_at DESC LIMIT 1""", (track_id,),
+        )
+        vocal = cursor.fetchone()
+    return {
+        "track_id": str(track_id),
+        "status": descriptors["status"] if descriptors else "pending",
+        "descriptors": descriptors,
+        "vocal_activity": vocal,
+        "used_in_curation": False,
+    }
 
 
 @app.get("/library/tracks/{track_id}/audio-quality")
@@ -1517,7 +1554,7 @@ def library_tracks(
             text(f"""
             SELECT t.id, t.title, t.artist, t.album, t.year, t.duration_seconds,
                    t.genres, t.ingested_at,
-                   (SELECT count(DISTINCT e.run_id) FROM embeddings e
+                   (SELECT count(DISTINCT e.run_id) FROM current_embeddings e
                     WHERE e.track_id=t.id AND e.embedding_type='audio-track') AS embedding_runs,
                    source.external_id AS source_id, source.album_id, source.cover_art
             FROM tracks t
@@ -1546,7 +1583,7 @@ def _lyrics_concept_corpus(user_id: uuid.UUID) -> tuple[list[dict[str, object]],
         cursor.execute(
             """SELECT DISTINCT ON (e.track_id) t.id, t.title, t.artist, t.album,
                       e.embedding::text AS embedding, ar.id AS run_id
-               FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id JOIN tracks t ON t.id=e.track_id
+               FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id JOIN tracks t ON t.id=e.track_id
                WHERE e.embedding_type='lyrics' AND e.window_index IS NULL AND ar.model_name='bge_m3'
                  AND EXISTS (SELECT 1 FROM user_track_links utl
                              WHERE utl.track_id=t.id AND utl.user_id=%s)
@@ -1567,7 +1604,7 @@ def _semantic_concept_corpus(user_id: uuid.UUID) -> tuple[list[dict[str, object]
             """
             SELECT DISTINCT ON (e.track_id) t.id, t.title, t.artist, t.album,
                    e.embedding::text AS embedding, ar.id AS run_id
-            FROM embeddings e
+            FROM current_embeddings e
             JOIN analysis_runs ar ON ar.id=e.run_id
             JOIN tracks t ON t.id=e.track_id
             WHERE e.embedding_type='audio-track' AND ar.model_name='muq_mulan'
@@ -1747,13 +1784,16 @@ def _curation_corpus(
             """WITH selected_embeddings AS (
                  SELECT DISTINCT ON (e.track_id) e.track_id, e.embedding::text AS embedding,
                         e.run_id
-                 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+                 FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                  WHERE e.embedding_type='audio-track' AND e.window_index IS NULL
-                   AND ar.model_name='muq_mulan' AND ar.status='complete'
+                   AND ar.model_name='muq_mulan'
                  ORDER BY e.track_id, ar.created_at DESC
                )
                SELECT DISTINCT ON (t.id) t.id, t.title, t.artist, t.album, t.duration_seconds,
                       selected_embeddings.embedding, lyrics_embedding.embedding AS lyrics_embedding,
+                      selected_embeddings.run_id AS muq_run_id,
+                      acoustic_embedding.run_id AS mert_run_id,
+                      lyrics_embedding.run_id AS lyrics_run_id,
                       voice_embedding.embedding AS voice_embedding,
                       acoustic_embedding.embedding AS acoustic_embedding,
                       muq_profile.id AS muq_profile_id, mert_profile.id AS mert_profile_id,
@@ -1769,35 +1809,35 @@ def _curation_corpus(
                LEFT JOIN recording_group_members member ON member.track_id=t.id
                LEFT JOIN LATERAL (
                  SELECT e.embedding::text AS embedding, e.run_id
-                 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+                 FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                  WHERE e.track_id=t.id AND e.embedding_type='audio-track'
-                   AND e.window_index IS NULL AND ar.model_name='mert' AND ar.status='complete'
+                   AND e.window_index IS NULL AND ar.model_name='mert'
                  ORDER BY ar.created_at DESC LIMIT 1
                ) acoustic_embedding ON true
                LEFT JOIN LATERAL (
-                 SELECT tap.id FROM track_audio_profiles tap
+                 SELECT tap.id FROM current_audio_profiles tap
                  JOIN analysis_runs profile_run ON profile_run.id=tap.profile_run_id
                  WHERE tap.track_id=t.id AND tap.source_run_id=selected_embeddings.run_id
-                   AND tap.model_name='muq_mulan' AND profile_run.status='complete'
+                   AND tap.model_name='muq_mulan'
                  ORDER BY tap.created_at DESC LIMIT 1
                ) muq_profile ON true
                LEFT JOIN LATERAL (
-                 SELECT tap.id FROM track_audio_profiles tap
+                 SELECT tap.id FROM current_audio_profiles tap
                  JOIN analysis_runs profile_run ON profile_run.id=tap.profile_run_id
                  WHERE tap.track_id=t.id AND tap.source_run_id=acoustic_embedding.run_id
-                   AND tap.model_name='mert' AND profile_run.status='complete'
+                   AND tap.model_name='mert'
                  ORDER BY tap.created_at DESC LIMIT 1
                ) mert_profile ON true
                LEFT JOIN LATERAL (
-                 SELECT e.embedding::text AS embedding
-                 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+                 SELECT e.embedding::text AS embedding, e.run_id
+                 FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                  WHERE e.track_id=t.id AND e.embedding_type='lyrics' AND e.window_index IS NULL
                    AND ar.model_name='bge_m3'
                  ORDER BY ar.created_at DESC LIMIT 1
                ) lyrics_embedding ON true
                LEFT JOIN LATERAL (
                  SELECT e.embedding::text AS embedding
-                 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+                 FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                  WHERE e.track_id=t.id AND e.embedding_type='voice-gender' AND ar.model_name='mtg-jamendo-voice-gender-v2'
                  ORDER BY ar.created_at DESC LIMIT 1
                ) voice_embedding ON true
@@ -1853,6 +1893,14 @@ def _curation_corpus(
                 np.stack([np.fromstring(str(row["embedding"]).strip("[]"), sep=",") for row in members]),
                 np.asarray([row["duration_weight"] for row in members], dtype=np.float32),
             )
+    for row in rows:
+        row["representation_runs"] = {
+            model: str(run_id) for model, run_id in (
+                ("muq_mulan", row.pop("muq_run_id")),
+                ("mert", row.pop("mert_run_id")),
+                ("bge_m3", row.pop("lyrics_run_id")),
+            ) if run_id is not None
+        }
     semantic_modes = [modes_by_profile.get(row.pop("muq_profile_id")) for row in rows]
     acoustic_modes = [modes_by_profile.get(row.pop("mert_profile_id")) for row in rows]
     return (
@@ -2041,6 +2089,17 @@ def _preview_curation(
         }
     return {
         "tracks": tracks, "references": references, "corpus_size": len(rows),
+        "selection": {
+            "requested": request.track_limit, "selected": len(tracks),
+            "shortfall": max(0, request.track_limit - len(tracks)),
+            "below_threshold_filling": False, "match_basis": "library_relative",
+            "confidence_calibrated": False,
+        },
+        "representation_runs": {
+            model: sorted({row["representation_runs"][model] for row in rows
+                           if model in row["representation_runs"]})
+            for model in ("muq_mulan", "mert", "bge_m3")
+        },
         "curation_type": request.curation_type,
         "model": "muq_mulan+mert+bge_m3", "weights": weights,
         "signal_weights": signal_weights,
@@ -2098,6 +2157,8 @@ def _refresh_curation(curation_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, o
         if credentials is None:
             raise RuntimeError("Navidrome connection is unavailable")
         source_ids = [str(track["source_id"]) for track in result["tracks"]]
+        if not source_ids:
+            raise ValueError("No tracks meet this recipe's requirements. Existing playlist was not changed.")
         with NavidromeClient(*credentials) as client:
             playlist_id = client.replace_playlist(
                 str(curation["name"]), source_ids, curation.get("navidrome_playlist_id"),
@@ -2124,6 +2185,8 @@ def _refresh_curation(curation_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, o
                 "weights": result.get("weights"), "lyrics_coverage": result.get("lyrics_coverage"),
                 "signal_weights": result.get("signal_weights"),
                 "scoring_revision": result.get("scoring_revision"),
+                "selection": result.get("selection"),
+                "representation_runs": result.get("representation_runs"),
                 "example_component_weights": result.get("example_component_weights"),
                 "audio_profile_coverage": result.get("audio_profile_coverage"),
                 "familiarity": result.get("familiarity"), "shuffle_seed": result.get("shuffle_seed"),
@@ -2368,23 +2431,23 @@ def audio_profile_status(echora_session: str | None = Cookie(default=None)) -> d
             cursor.execute(
                 """WITH latest_source AS (
                  SELECT DISTINCT ON (e.track_id) e.track_id, e.run_id
-                 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+                 FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                  WHERE e.embedding_type='audio-track' AND e.window_index IS NULL
-                   AND ar.model_name=%s AND ar.status='complete'
+                   AND ar.model_name=%s
                    AND EXISTS (SELECT 1 FROM user_track_links utl
                                WHERE utl.user_id=%s AND utl.track_id=e.track_id)
                  ORDER BY e.track_id, ar.created_at DESC
                )
                SELECT count(*) AS total,
                       count(*) FILTER (WHERE EXISTS (
-                        SELECT 1 FROM track_audio_profiles tap
+                        SELECT 1 FROM current_audio_profiles tap
                         JOIN analysis_runs profile_run ON profile_run.id=tap.profile_run_id
                         WHERE tap.track_id=latest_source.track_id
                           AND tap.source_run_id=latest_source.run_id
                           AND tap.model_name=%s
                           AND profile_run.kind='audio_profile'
                           AND profile_run.model_revision=%s
-                          AND profile_run.status='complete'
+
                       )) AS current
                FROM latest_source""",
                 (model_name, user["id"], model_name, AUDIO_PROFILE_REVISION),
@@ -2409,9 +2472,9 @@ def start_audio_profile_rebuild(
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT DISTINCT e.track_id, ar.model_name
-               FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+               FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                WHERE e.embedding_type='audio-track' AND e.window_index IS NULL
-                 AND ar.model_name=ANY(%s) AND ar.status='complete'
+                 AND ar.model_name=ANY(%s)
                  AND EXISTS (SELECT 1 FROM user_track_links utl
                              WHERE utl.user_id=%s AND utl.track_id=e.track_id)
                ORDER BY e.track_id, ar.model_name""",
@@ -2456,10 +2519,10 @@ def track_audio_profile(
                       profile_run.config AS profile_config, profile_run.created_at AS profile_created_at,
                       source_run.model_revision AS source_model_revision,
                       source_run.config AS source_config
-               FROM track_audio_profiles tap
+               FROM current_audio_profiles tap
                JOIN analysis_runs profile_run ON profile_run.id=tap.profile_run_id
                JOIN analysis_runs source_run ON source_run.id=tap.source_run_id
-               WHERE tap.track_id=%s AND tap.model_name=%s AND profile_run.status='complete'
+               WHERE tap.track_id=%s AND tap.model_name=%s
                  AND EXISTS (SELECT 1 FROM user_track_links utl
                              WHERE utl.user_id=%s AND utl.track_id=tap.track_id)
                ORDER BY profile_run.created_at DESC, tap.created_at DESC LIMIT 1""",
@@ -2535,13 +2598,13 @@ def library_map(
                 WITH semantic AS (
                   SELECT DISTINCT ON (e.track_id) e.track_id, e.embedding::text AS embedding,
                          ar.id AS run_id, ar.model_revision, ar.created_at
-                  FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+                  FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                   WHERE e.embedding_type='audio-track' AND ar.model_name='muq_mulan'
                   ORDER BY e.track_id, ar.created_at DESC
                 ), acoustic AS (
                   SELECT DISTINCT ON (e.track_id) e.track_id, e.embedding::text AS embedding,
                          ar.id AS run_id, ar.model_revision, ar.created_at
-                  FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+                  FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                   WHERE e.embedding_type='audio-track' AND ar.model_name='mert'
                   ORDER BY e.track_id, ar.created_at DESC
                 )
@@ -2570,7 +2633,7 @@ def library_map(
                 WITH selected_embeddings AS (
                   SELECT DISTINCT ON (e.track_id) e.track_id, e.embedding::text AS embedding,
                          ar.id AS run_id, ar.model_revision, ar.created_at AS run_created_at
-                  FROM embeddings e JOIN analysis_runs ar ON ar.id = e.run_id
+                  FROM current_embeddings e JOIN analysis_runs ar ON ar.id = e.run_id
                   WHERE e.embedding_type = %s AND ar.model_name = %s AND e.window_index IS NULL
                   ORDER BY e.track_id, ar.created_at DESC
                 )
@@ -2768,7 +2831,7 @@ def _artist_embedding_corpus(model: str) -> tuple[list[dict[str, object]], np.nd
         cursor.execute(
             """SELECT DISTINCT ON (e.track_id) t.id, t.title, t.artist, t.album,
                       e.embedding::text AS embedding, ar.id AS run_id
-               FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id JOIN tracks t ON t.id=e.track_id
+               FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id JOIN tracks t ON t.id=e.track_id
                WHERE e.embedding_type='audio-track' AND ar.model_name=%s AND t.artist IS NOT NULL
                ORDER BY e.track_id, ar.created_at DESC""",
             (model,),
@@ -2877,12 +2940,12 @@ def preview_journey(
             """
             WITH semantic AS (
               SELECT DISTINCT ON (e.track_id) e.track_id, e.embedding::text AS embedding
-              FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+              FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
               WHERE e.embedding_type='audio-track' AND ar.model_name='muq_mulan'
               ORDER BY e.track_id, ar.created_at DESC
             ), acoustic AS (
               SELECT DISTINCT ON (e.track_id) e.track_id, e.embedding::text AS embedding
-              FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+              FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
               WHERE e.embedding_type='audio-track' AND ar.model_name='mert'
               ORDER BY e.track_id, ar.created_at DESC
             )

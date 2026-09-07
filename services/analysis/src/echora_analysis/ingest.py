@@ -15,10 +15,13 @@ from psycopg.types.json import Jsonb
 import torch
 
 from .audio import decode_audio, full_coverage_window_ranges
+from .audio_descriptors import store_audio_descriptors
 from .hum_search import create_sync_run, release_separator, store_track_contours
 from .models import AudioEmbeddingModel, MertModel, MuQMuLanModel, release_model
 from .navidrome import NavidromeClient, NavidromeTrack
 from .processing_plan import plan_audio
+from .representations import configure_representations, embedding_config
+from .analysis_attempts import start_attempt, record_track, finish_attempt
 from .recordings import store_and_match_fingerprint
 
 CONTENT_NAMESPACE = uuid.UUID("0c300f5d-99d1-48b8-b12a-a52b9556be86")
@@ -39,6 +42,7 @@ class IngestSummary:
     melody_indexed: int = 0
     melody_contours: int = 0
     recording_matches: int = 0
+    described_audio: int = 0
     failed: int = 0
 
 
@@ -52,18 +56,7 @@ def _config_hash(value: dict[str, object]) -> str:
 
 
 def _create_run(connection: psycopg.Connection, model: AudioEmbeddingModel) -> uuid.UUID:
-    detailed = model.name in {"muq_mulan", "mert"}
-    config = {
-        "model": model.name,
-        "revision": model.revision,
-        "sample_rate": model.sample_rate,
-        "coverage": "full-track" if detailed else "sampled",
-        "windows": None if detailed else [0.15, 0.5, 0.85],
-        "window_seconds": model.window_seconds,
-        "stride_seconds": 5 if detailed else None,
-        "aggregation": "normalized_mean",
-        "store_window_embeddings": True,
-    }
+    config = embedding_config(model.name, model.revision)
     environment = {
         "python": platform.python_version(),
         "torch": torch.__version__,
@@ -78,7 +71,7 @@ def _create_run(connection: psycopg.Connection, model: AudioEmbeddingModel) -> u
                device, precision, status, started_at)
             VALUES ('audio_embedding', %s, %s, %s, %s, %s, %s, 'float32', 'running', now())
             ON CONFLICT (kind, model_name, model_revision, config_hash)
-            DO UPDATE SET status = 'running', started_at = now(), finished_at = NULL
+            DO UPDATE SET id = analysis_runs.id
             RETURNING id
             """,
             (model.name, model.revision, _config_hash(config), Jsonb(config), Jsonb(environment), str(model.device)),
@@ -209,6 +202,7 @@ def ingest_navidrome(
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection, NavidromeClient(
         url, username, password
     ) as navidrome:
+        configure_representations(connection)
         library_id = _library(connection, url)
         songs = navidrome.tracks(song_ids)
         summary.discovered = len(songs)
@@ -218,7 +212,8 @@ def ingest_navidrome(
                 "total": len(plan.download_external_ids), "unit": "tracks",
                 "plan": {"muq": len(plan.muq_external_ids), "mert": len(plan.mert_external_ids),
                          "fingerprint": len(plan.fingerprint_external_ids),
-                         "melody": len(plan.melody_external_ids)}})
+                         "melody": len(plan.melody_external_ids),
+                         "descriptors": len(plan.descriptor_external_ids)}})
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         downloaded_ids: set[str] = set()
@@ -243,8 +238,9 @@ def ingest_navidrome(
             phase: str, label: str, external_ids: frozenset[str], model: AudioEmbeddingModel,
         ) -> None:
             run_id = _create_run(connection, model)
-            connection.commit()
             selected = [song for song in songs if song.id in external_ids]
+            attempt_id = start_attempt(connection, run_id, len(selected))
+            connection.commit()
             for index, song in enumerate(selected):
                 report({
                     "phase": phase, "message": f"{label} {song.title}",
@@ -260,6 +256,7 @@ def ingest_navidrome(
                     ranges = [(item[1], item[2]) for item in ranged_windows]
                     del waveform, audio
                     _store_embedding(connection, track_id, run_id, model, windows, ranges)
+                    record_track(connection, attempt_id, song.id, track_id)
                     if phase == "muq":
                         summary.embedded_muq += 1
                     else:
@@ -269,11 +266,15 @@ def ingest_navidrome(
                     connection.rollback()
                     summary.failed += 1
                     logger.exception("Failed %s phase for Navidrome song %s", phase, song.id)
+                    # Do not persist provider exception messages, which may contain credentials.
+                    record_track(connection, attempt_id, song.id, error="Audio embedding failed; see service logs")
+                    connection.commit()
                 report({
                     "phase": phase, "message": f"{label} {song.title}",
                     "completed": index + 1, "total": len(selected), "unit": "tracks",
                     "summary": summary.__dict__,
                 })
+            finish_attempt(connection, attempt_id)
             with connection.cursor() as cursor:
                 cursor.execute(
                     "UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id=%s",
@@ -363,6 +364,25 @@ def ingest_navidrome(
                 "completed": index + 1, "total": len(fingerprint_songs), "unit": "tracks",
                 "summary": summary.__dict__,
             })
+
+        descriptor_songs = [song for song in songs if song.id in plan.descriptor_external_ids]
+        for index, song in enumerate(descriptor_songs):
+            try:
+                audio, track_id = audio_track(song)
+                descriptors = store_audio_descriptors(connection, track_id, audio)
+                del audio
+                if descriptors.get("failed_components"):
+                    summary.failed += 1
+                else:
+                    summary.described_audio += 1
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                summary.failed += 1
+                logger.exception("Could not analyze sound descriptors for Navidrome song %s", song.id)
+            report({"phase": "audio_descriptors", "message": f"Measuring sound for {song.title}",
+                    "completed": index + 1, "total": len(descriptor_songs), "unit": "tracks",
+                    "summary": summary.__dict__})
 
         summary.already_linked = len(songs) - len(plan.download_external_ids)
         report({"phase": "finalizing", "message": "Analysis phases complete",

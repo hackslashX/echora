@@ -18,6 +18,7 @@ from psycopg.types.json import Jsonb
 
 from .audio import decode_audio
 from .navidrome import NavidromeClient
+from .representations import voice_config, configure_representations
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,10 @@ class VoiceGenderModel:
         return stacked.reshape(-1, _PATCH_FRAMES, stacked.shape[-1])
 
     def classify(self, waveform: np.ndarray) -> dict[str, float]:
+        values, _ = self.classify_with_activity(waveform)
+        return values
+
+    def classify_with_activity(self, waveform: np.ndarray) -> tuple[dict[str, float], dict[str, object]]:
         if waveform.size == 0:
             raise ValueError("Decoded audio is empty")
         patches = self._mel_patches(waveform)
@@ -124,7 +129,21 @@ class VoiceGenderModel:
         # Preserve vocal presence in gender evidence. Renormalizing female and
         # male independently lets tiny, arbitrary activations from an
         # instrumental patch look decisive.
-        return _aggregate_outputs(gender, voice)
+        values = _aggregate_outputs(gender, voice)
+        duration = waveform.size / 16_000
+        windows = [
+            {"start_seconds": index * _PATCH_FRAMES * 256 / 16_000,
+             "end_seconds": min(duration, (index * _PATCH_FRAMES * 256 + 127 * 256 + 512) / 16_000),
+             "vocal_activation": float(np.clip(row[1], 0, 1))}
+            for index, row in enumerate(voice)
+        ]
+        activity = {
+            "duration_seconds": duration, "windows": windows,
+            "unanalyzed_tail_seconds": max(0.0, duration - windows[-1]["end_seconds"]) if windows else duration,
+            "confidence_calibrated": False,
+            "method": "discogs-effnet_voice_instrumental",
+        }
+        return values, activity
 
 
 def shared_voice_model() -> VoiceGenderModel:
@@ -140,18 +159,7 @@ def _vector_literal(vector) -> str:
 
 
 def _create_run(connection: psycopg.Connection) -> uuid.UUID:
-    config = {
-        "model": VOICE_MODEL_NAME,
-        "embedding": "discogs-effnet-bsdynamic-1",
-        "labels": list(VoiceGenderModel.labels),
-        "aggregation": "mean_joint_activation",
-        "preprocessing": "essentia-tensorflow-input-musicnn",
-        "model_sha256": {
-            _EMBEDDING_MODEL_FILE: "a280825b334797cf677939db8cd5762c0392aedd0ca6415dbc1cd083f045e43c",
-            _GENDER_MODEL_FILE: "e3e865d4bf36d4817f32ddab9452b2729f9e33a4d068d1c44ea44972a7999e91",
-            _VOICE_INSTRUMENTAL_MODEL_FILE: "20155e4c439714b0c45c08644b73c8e12d9dccb173bd4ab9934bf1e5aee837ca",
-        },
-    }
+    config = voice_config()
     config_hash = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     environment = {"python": platform.python_version(), "torch": torch.__version__, "device": "cpu"}
     with connection.cursor() as cursor:
@@ -160,7 +168,7 @@ def _create_run(connection: psycopg.Connection) -> uuid.UUID:
                  (kind, model_name, model_revision, config_hash, config, environment, device, precision, status, started_at)
                VALUES ('voice_classification', %s, 'joint-v2', %s, %s, %s, 'cpu', 'float32', 'running', now())
                ON CONFLICT (kind, model_name, model_revision, config_hash)
-               DO UPDATE SET status='running', started_at=now(), finished_at=NULL RETURNING id""",
+               DO UPDATE SET id=analysis_runs.id RETURNING id""",
             (VOICE_MODEL_NAME, config_hash, Jsonb(config), Jsonb(environment)),
         )
         return cursor.fetchone()[0]
@@ -196,18 +204,23 @@ def backfill_voice(
     report = progress or (lambda _: None)
     summary = {"total": 0, "classified": 0, "failed": 0}
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection, NavidromeClient(url, username, password) as client:
+        configure_representations(connection)
+        run_id = _create_run(connection)
         with connection.cursor() as cursor:
             cursor.execute(
                 """SELECT DISTINCT ON (ts.track_id) ts.track_id, ts.external_id, t.title
                    FROM track_sources ts JOIN tracks t ON t.id=ts.track_id
+                   JOIN libraries library ON library.id=ts.library_id
                    WHERE ts.source_type='subsonic'
+                     AND lower(rtrim(library.root_path, '/'))=lower(rtrim(%s, '/'))
                      AND NOT EXISTS (
-                       SELECT 1 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
-                       WHERE e.track_id=ts.track_id AND e.embedding_type=%s AND ar.model_name=%s
+                       SELECT 1 FROM embeddings e
+                       JOIN track_vocal_activity activity ON activity.track_id=e.track_id AND activity.run_id=e.run_id
+                       WHERE e.track_id=ts.track_id AND e.embedding_type=%s AND e.run_id=%s
                      )
                    ORDER BY ts.track_id, ts.id
                    LIMIT %s""",
-                (VOICE_EMBEDDING_TYPE, VOICE_MODEL_NAME, limit),
+                (url, VOICE_EMBEDDING_TYPE, run_id, limit),
             )
             tracks = cursor.fetchall()
         if not tracks:
@@ -217,13 +230,19 @@ def backfill_voice(
         summary["total"] = len(tracks)
         report({"phase": "models", "message": "Loading voice classifier", "completed": 0, "total": 1, "unit": "models"})
         model = shared_voice_model()
-        run_id = _create_run(connection)
         connection.commit()
         for index, (track_id, external_id, title) in enumerate(tracks):
             try:
                 waveform = _fetch_stream(client, str(external_id))
-                values = model.classify(waveform)
+                values, activity = model.classify_with_activity(waveform)
                 _store_activation(connection, track_id, run_id, values)
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """INSERT INTO track_vocal_activity (track_id, run_id, activity)
+                           VALUES (%s,%s,%s) ON CONFLICT (track_id, run_id)
+                           DO UPDATE SET activity=EXCLUDED.activity, created_at=now()""",
+                        (track_id, run_id, Jsonb(activity)),
+                    )
                 summary["classified"] += 1
                 connection.commit()
             except Exception:
