@@ -2,7 +2,7 @@
 
 Audio profiles are derived artifacts built independently from stored MuQ-MuLan and MERT window
 embeddings. They do not run either model again and do not currently change Galaxy placement or
-clustering. Curation scoring revision 3 consumes them when they are available.
+clustering. Curation scoring revisions 3 and 4 consume them when they are available.
 
 Each profile records its source model, `audio_embedding` run, and `audio_profile` algorithm run. A
 new source run or profile revision produces a distinct artifact, so results remain attributable to
@@ -62,7 +62,9 @@ the derived modes conservatively and falls back per track when a current profile
 and mode penalties should still be tuned against representative short songs, long-form music, live
 recordings, and stylistically heterogeneous tracks before increasing their ranking weight.
 
-## Curation scoring revision 3
+## Curation scoring revisions 3 and 4
+
+Revision 4 preserves the component weights below. It fixes tied percentile ranks and removes below-threshold playlist filling. See [ranking and representation contracts](analysis-correctness.md).
 
 Sound tags remain MuQ-MuLan text-to-audio comparisons. When a current MuQ profile is available,
 the tag score is 75% global and 25% duration-weighted modes. MERT is never compared to text.

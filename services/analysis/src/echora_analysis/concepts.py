@@ -114,12 +114,18 @@ def embed_texts(texts: list[str]) -> np.ndarray:
 def empirical_percentiles(scores: np.ndarray, available: np.ndarray | None = None) -> np.ndarray:
     values = np.asarray(scores, dtype=np.float32)
     mask = np.ones(len(values), dtype=bool) if available is None else np.asarray(available, dtype=bool)
+    mask = mask & np.isfinite(values)
     percentiles = np.full(len(values), 0.5, dtype=np.float32)
     indices = np.flatnonzero(mask)
-    if not len(indices):
+    if len(indices) < 2:
         return percentiles
     order = indices[np.argsort(values[indices], kind="stable")]
-    percentiles[order] = np.linspace(0.0, 1.0, len(order), dtype=np.float32) if len(order) > 1 else 1.0
+    # Average the ranks of exact ties. A constant corpus has no ranking evidence,
+    # and must remain neutral regardless of track IDs or database row order.
+    starts = np.r_[0, np.flatnonzero(np.diff(values[order])) + 1]
+    ends = np.r_[starts[1:], len(order)]
+    ranks = (starts + ends - 1) / (2.0 * (len(order) - 1))
+    percentiles[order] = np.repeat(ranks, ends - starts)
     return percentiles
 
 

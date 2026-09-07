@@ -13,7 +13,7 @@ from .concepts import combine_concept_percentiles, empirical_percentiles
 # promotion and the discovery pool both draw from inside this pool; anything
 # below it only appears when the pool cannot fill the playlist.
 MATCH_PERCENTILE = 0.75
-CURATION_SCORING_REVISION = 3
+CURATION_SCORING_REVISION = 4
 EXAMPLE_COMPONENT_WEIGHTS = {
     "muq_global": 0.50,
     "muq_modes": 0.20,
@@ -177,6 +177,7 @@ def rank_curation(
     acoustic_modes: list[ModeProfile | None] | None = None,
     context_track_ids: list[str] | None = None,
     eligible_track_ids: set[str] | None = None,
+    minimum_match_percentile: float = MATCH_PERCENTILE,
 ) -> tuple[list[dict[str, object]], dict[str, list[dict[str, str]]]]:
     """Rank a curation corpus across the sound (semantic) and themes (lyrics) channels.
 
@@ -191,10 +192,21 @@ def rank_curation(
     Selection: tracks scoring at or above MATCH_PERCENTILE form the matching
     pool. Listened tracks inside the pool are guaranteed slots (up to the
     familiarity target); remaining slots come from the top-scoring unheard
-    tracks in the pool, then from the best remaining scorers anywhere if the
-    pool runs dry. If no listened track clears the threshold, Last.fm is
+    tracks in the pool, then from remaining familiar matches. The playlist may
+    be shorter than requested. If no listened track clears the threshold, Last.fm is
     ignored and the playlist is all discovery regardless of the slider.
     """
+    if not 0 <= minimum_match_percentile <= 1:
+        raise ValueError("minimum_match_percentile must be between zero and one")
+    # A language-only recipe has no musical requirement. Missing or tied
+    # evidence for a requested musical direction is not a language-only recipe.
+    musical_requirement = any((
+        positive_prompt.strip(), negative_prompt.strip(), positive_track_ids,
+        negative_track_ids, context_track_ids, sound_prompts, themes_prompts,
+        sound_negative_prompts, themes_negative_prompts,
+        lyrics_positive_queries is not None and len(lyrics_positive_queries) > 0,
+        lyrics_negative_queries is not None and len(lyrics_negative_queries) > 0,
+    ))
     structured = any(value is not None for value in (
         sound_prompts, themes_prompts, sound_negative_prompts, themes_negative_prompts,
     ))
@@ -451,18 +463,15 @@ def rank_curation(
     eligible = eligible_track_ids
     # Embedding score filters first; Last.fm only promotes within the high scorers.
     matching_order = [int(index) for index in np.argsort(adjusted, kind="stable")[::-1]
-                      if float(percentiles[index]) >= MATCH_PERCENTILE
+                      if (not musical_requirement or float(percentiles[index]) >= minimum_match_percentile)
                       and (eligible is None or str(rows[index]["id"]) in eligible)]
     familiar_matching = [index for index in matching_order if counts.get(str(rows[index]["id"]), 0) > 0]
-    new_order = [index for index in matching_order if index not in set(familiar_matching)]
+    familiar_set = set(familiar_matching)
+    new_order = [index for index in matching_order if index not in familiar_set]
     # The slider guides how many familiar slots to aim for, but familiar tracks
     # only come from the matching pool. If none of them cleared the threshold,
     # Last.fm is irrelevant and the whole playlist comes from new tracks.
     familiar_target = min(round(track_limit * familiarity_percent / 100), len(familiar_matching)) if listen_counts is not None else 0
-    order_all = [
-        int(index) for index in np.argsort(adjusted, kind="stable")[::-1]
-        if eligible is None or str(rows[index]["id"]) in eligible
-    ]
     selected_indices: list[int] = []
     artist_counts: dict[str, int] = {}
     used_recording_groups: set[str] = set()
@@ -483,20 +492,22 @@ def rank_curation(
             selected_indices.append(index)
 
     take(familiar_matching, familiar_target)
-    familiar_selected = len(selected_indices)
     take(new_order, track_limit)
-    # Matching pool exhausted: fill the rest gradually from the top remaining
-    # scorers so the playlist is never short when the threshold is strict.
-    take(order_all, track_limit)
+    # Relax the familiarity target, never the musical requirement.
+    take(matching_order, track_limit)
     selected: list[dict[str, object]] = []
     for index in selected_indices:
         row = rows[index]
         count = counts.get(str(row["id"]), 0)
-        familiar = count > 0 and index in selected_indices[:familiar_selected]
+        familiar = count > 0
         selected.append({
             **row, "score": float(score[index]), "percentile": float(percentiles[index]),
             "retained": str(row["id"]) in existing,
             "evidence": {
+                "match_basis": "library_relative" if musical_requirement else "no_musical_requirement",
+                "match_confidence": None,
+                "representation_runs": row.get("representation_runs", {}),
+                "minimum_match_percentile": minimum_match_percentile if musical_requirement else None,
                 "semantic_percentile": float(semantic_percentiles[index]),
                 "lyrics_percentile": float(lyrics_percentiles[index]),
                 "lyrics_available": bool(lyrics_available[index]) if lyrics_available is not None else False,
