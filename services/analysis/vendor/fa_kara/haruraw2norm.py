@@ -478,7 +478,7 @@ def is_gurmukhi(char):
     return '\u0a00' <= char <= '\u0a7f'
 
 
-def process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_split=True):
+def _legacy_process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_split=True):
 
     def haruhi_eng_pron_func(result_list):
         # 英语分音节注音、数字注音
@@ -706,6 +706,106 @@ def process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_split=Tru
         result = haruhi_eng_pron_func(result)
 
     return result
+
+def _japanese_words(text):
+    """Janome owns word boundaries/readings; never apportion kanji readings."""
+    result = []
+    for token in tokenizer.tokenize(text):
+        surface = token.surface
+        reading = token.reading
+        if token.part_of_speech.startswith('助詞'):
+            reading = {'は': 'ワ', 'へ': 'エ', 'を': 'ヲ'}.get(surface, reading)
+        if reading == '*':
+            reading = surface
+        pron = ''.join(part['hepburn'] for part in kks.convert(reading)).replace('-', '')
+        result.append({'orig': surface, 'type': 3, 'pron': pron})
+    return result
+
+
+def process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_split=True):
+    """Script-local normalization using the existing acoustic spelling alphabet.
+
+    Auto Han-only runs default to Mandarin (not language detection). Kana in
+    the same contiguous Han/kana run selects Japanese; explicit ja/jaen also
+    selects Japanese for Han-only runs. Foreign scripts cannot steal a line.
+    Auto Latin is spelling/transliteration, not assumed English; only explicit
+    en/jaen/zhen enables CMU for ASCII words. No new syllabification is used.
+    """
+    lang = (lang or 'auto').lower()
+    result = []
+
+    def script(char):
+        if is_kanji(char) or is_kana(char):
+            return 'cjk'
+        if is_hangul(char):
+            return 'ko'
+        if is_arabic_script(char):
+            return 'ur'
+        if is_devanagari(char) or is_gurmukhi(char):
+            return 'indic'
+        if 'LATIN' in unicodedata.name(char, '') or char == "'":
+            return 'latin'
+        if unicodedata.category(char).startswith('M'):
+            return 'mark'
+        if is_number(char):
+            return 'number'
+        return 'other'
+
+    # Annotations are opaque boundaries: never reinterpret an explicit reading.
+    for part in re.split(r'(\{[^{}]*\}|\[[^\[\]]*\])', line):
+        if not part:
+            continue
+        if part.startswith(('{', '[')) and part.endswith(('}', ']')):
+            result.extend(_legacy_process_haruhi_line(part, 'jaen', sokuon_split, hatsuon_split))
+            continue
+        runs = []
+        for char in part:
+            kind = script(char)
+            if kind == 'mark' and runs:
+                kind = runs[-1][0]
+            if runs and runs[-1][0] == kind:
+                runs[-1][1] += char
+            else:
+                runs.append([kind, char])
+        for kind, text in runs:
+            if kind == 'cjk':
+                japanese = lang in ('ja', 'jaen') or any(is_kana(c) for c in text)
+                if japanese:
+                    result.extend(_japanese_words(text))
+                else:
+                    readings = hanzi_to_phonetic(text)
+                    # Do not silently truncate if the library cannot map a run.
+                    if len(readings) != len(text):
+                        result.append({'orig': text, 'type': 0})
+                    else:
+                        result.extend({'orig': c, 'type': 3, 'pron': p}
+                                      for c, p in zip(text, readings))
+            elif kind in ('ko', 'ur', 'indic', 'number'):
+                result.extend(_legacy_process_haruhi_line(text, 'zhen' if kind == 'number' else kind,
+                                                         sokuon_split, hatsuon_split))
+            elif kind == 'latin':
+                if text.isascii() and lang in ('en', 'jaen', 'zhen'):
+                    result.extend(_legacy_process_haruhi_line(text, 'zhen', sokuon_split, hatsuon_split))
+                else:
+                    # Uroman folds accents without deleting their base letters.
+                    # Keep orig byte-for-byte for conservative timed-span mapping.
+                    pron = uroman.romanize_string(text).lower().replace("'", '').replace('-', '').replace(' ', '')
+                    result.append({'orig': text, 'type': 5, 'pron': pron})
+            else:
+                result.append({'orig': text, 'type': 0})
+    # Ruby sokuon may depend on the following run/annotation. Resolve after
+    # segmentation, using the same consonant convention as the legacy path.
+    following = ''
+    for item in reversed(result):
+        ruby = item.get('ruby', '')
+        if item['type'] == 2 and ruby.endswith(('っ', 'ッ')):
+            consonant = following[:1] or 'h'
+            if consonant == 'c':
+                consonant = 't'
+            item['pron'] = ''.join(p['hepburn'] for p in kks.convert(ruby[:-1])).replace('-', '') + consonant
+        following = item.get('pron', '')
+    return result
+
 
 if __name__=='__main__':
     input_string = "{阻|はば}むも[の|n]は{無|な}い {身|み}{勝|かっ}{手|て}に More love, more jump!"

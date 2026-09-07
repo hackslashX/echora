@@ -21,6 +21,54 @@ from utils_basic import (
     func_tail_correct_v250611,
 )
 
+def file_identity(path):
+    import hashlib
+    from pathlib import Path
+    path = Path(path)
+    # Only inference artifacts: never traverse optimizer/trainer checkpoints.
+    patterns = ('*.safetensors', 'pytorch_model*.bin', '*config.json',
+                '*token*.json', 'vocab.json', '*.model', '*.index.json',
+                'special_tokens_map.json', 'added_tokens.json')
+    files = sorted({p for pattern in patterns for p in path.glob(pattern) if p.is_file()}) if path.is_dir() else [path]
+    hashes = {}
+    for file in files:
+        digest = hashlib.sha256()
+        with file.open('rb') as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(chunk)
+        hashes[str(file.relative_to(path)) if path.is_dir() else file.name] = digest.hexdigest()
+    return {'path': str(path.resolve()), 'sha256': hashes}
+
+
+def normalize_source_lines(lines, language, sokuon_split, hatsuon_split):
+    """Split source boundaries before normalization; never normalize a newline."""
+    records, source_texts = [], []
+    for index, line in enumerate(lines):
+        text = line.rstrip('\r\n')
+        source_texts.append(text)
+        items = hn.process_haruhi_line(text, language, sokuon_split, hatsuon_split) if text.strip() else []
+        if text.strip() and not any(item.get('pron') for item in items):
+            raise ValueError(f"Unsupported display line at source index {index}: {text!r}")
+        records.extend(items)
+        records.append({'orig': '\n', 'type': 0, 'pron': ''})
+    return records, source_texts
+
+
+def source_diagnostic_indexes(value, indexes, key=''):
+    """Translate compressed acoustic-line diagnostics into source coordinates."""
+    if isinstance(value, dict):
+        return {k: source_diagnostic_indexes(v, indexes, k) for k, v in value.items()}
+    if isinstance(value, list):
+        if key == 'lines' or key.endswith('_lines') and key != 'interpolated_source_lines':
+            return [indexes[v] for v in value]
+        if key == 'vocal_focus_attempted_runs':
+            return [[indexes[v] for v in run] for run in value]
+        return [source_diagnostic_indexes(v, indexes) for v in value]
+    if key == 'line' and isinstance(value, int):
+        return indexes[value]
+    return value
+
+
 def main(argv=None):
     start_time = time.time()
     script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -96,22 +144,13 @@ def main(argv=None):
         input_audio_path = os.path.normpath(os.path.join(real_io_path, 'i.mp3'))
 
     print('Loading files...')
-    result_list = []
     with open(input_text_path, 'r', encoding='utf-8') as file:
-        if txt_format=='uta':
-            utat_str = ''
-            for line in file:
-                utat_str += line
-            file = lrcfmt.utat_process(utat_str)
-        for line in file:
-            if txt_format=='moe':
-                line = lrcfmt.moeg_process_line(line)
-            if line.strip():
-                result_list.extend(hn.process_haruhi_line(line, lrc_language, sokuon_split, hatsuon_split))
-    if not result_list:
+        lines = lrcfmt.utat_process(file.read()) if txt_format == 'uta' else list(file)
+    if txt_format == 'moe':
+        lines = [lrcfmt.moeg_process_line(line) for line in lines]
+    result_list, source_texts = normalize_source_lines(lines, lrc_language, sokuon_split, hatsuon_split)
+    if not any(item.get('pron') for item in result_list):
         raise ValueError("Lyrics contain no alignable text")
-    if result_list[-1]['orig']!='\n':
-        result_list.append({'orig': '\n', 'type': 0, 'pron': ''})
 
     if tail_correct in (1, 2): # 不建议使用
         result_list = func_tail_correct_v250611(result_list, tail_correct)
@@ -240,13 +279,15 @@ def main(argv=None):
                 'acoustic_token': str(original_item.get('pron', '')),
                 'start_ms': round(float(original_item['alignment_start']) * 1000),
                 'end_ms': round(float(original_item['alignment_end']) * 1000),
+                'acoustic_start_ms': round(float(alignment_results[alignment_index].get('acoustic_start', original_item['alignment_start'])) * 1000),
+                'acoustic_end_ms': round(float(alignment_results[alignment_index].get('acoustic_end', original_item['alignment_end'])) * 1000),
                 'ctc_score': float(original_item['alignment_score']),
             })
         token_offset += len(line_tokens)
         source = source_timeline[line_index] if line_index < len(source_timeline) else {}
         canonical_lines.append({
             'source_index': line_index,
-            'text': str(source.get('text', '')),
+            'text': str(source.get('text', source_texts[line_index])),
             'source_start_ms': source.get('start_ms'),
             'start_ms': token_records[0]['start_ms'] if token_records else None,
             'end_ms': token_records[-1]['end_ms'] if token_records else None,
@@ -254,6 +295,7 @@ def main(argv=None):
         })
     finite_scores = [token['ctc_score'] for line in canonical_lines for token in line['tokens']]
     source_diagnostics = alignment_results[0].get('source_diagnostics', {}) if alignment_results else {}
+    source_diagnostics = source_diagnostic_indexes(source_diagnostics, [i for i, tokens in enumerate(alignment_token_lines) if tokens])
     alignment_document = {
         'schema_version': 1,
         'alignment': {'mode': 'global_ctc_calibrated_source_prior', 'lines': canonical_lines},
@@ -267,6 +309,18 @@ def main(argv=None):
                 index for index, line in enumerate(source_timeline) if line.get('interpolated')
             ],
             **source_diagnostics,
+            'line_count': len(canonical_lines),
+            'acoustic_line_source_indexes': [i for i, tokens in enumerate(alignment_token_lines) if tokens],
+            'normalizer_identity': file_identity(hn.__file__),
+            'source_identity': file_identity(input_text_path),
+            'audio_identity': file_identity(input_audio_path),
+            'checkpoint_identity': file_identity(hf_model_path) if hf_model_path and os.path.exists(hf_model_path) else None,
+            'max_blank_hold_seconds': float(os.environ.get('FA_KARA_MAX_BLANK_HOLD_SECONDS', '0.2')),
+            'model_path': hf_model_path or 'torchaudio.pipelines.MMS_FA',
+            'device': 'cuda' if (align_use_gpu or not hf_model_path) and __import__('torch').cuda.is_available() else 'cpu',
+            'normalization_language': lrc_language,
+            'audio_source': 'demucs_vocals' if args.separate_vocals else 'input_audio',
+            'inference_config': vars(args),
         },
     }
     with open(os.path.join(real_io_path, 'o.alignment.json'), 'w', encoding='utf-8') as f:
