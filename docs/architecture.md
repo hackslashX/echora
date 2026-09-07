@@ -22,6 +22,10 @@ Chromaprint supplies evidence for non-destructive recording groups. A recording 
 
 Echora stores MuQ-MuLan semantic audio, MERT acoustic audio, and BGE-M3 lyrics representations separately. Similarity blends combine normalized scores at query time. Missing lyrics have explicit behavior and never silently change the requested weights.
 
+Readers select an exact model revision, configuration hash, and dimension through the current-representation views. Committed per-track artifacts remain visible while other tracks are processing. Separate attempt records retain audio and lyrics embedding failures. See [ranking and representation contracts](analysis-correctness.md).
+
+Measured loudness, rhythm, key, and energy descriptors remain separate from embeddings and do not affect curation scoring. See [audio descriptors](audio-descriptors.md).
+
 Pinned Hugging Face snapshots live outside the image. Production downloads missing snapshots into a persistent volume before analysis starts. The running service uses offline mode so a repository update cannot change inference without a configured revision change.
 
 Communities are reproducible SNN-Leiden partitions of a fixed corpus. Concepts are overlapping textual associations and remain distinct from communities. Projection coordinates support presentation only and never define similarity.

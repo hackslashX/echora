@@ -7,6 +7,7 @@ from typing import Iterable
 import psycopg
 
 from .melody_config import MELODY_CONTOUR_REVISION
+from .audio_descriptors import DESCRIPTOR_REVISION
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class AudioProcessingPlan:
     mert_external_ids: frozenset[str]
     fingerprint_external_ids: frozenset[str]
     melody_external_ids: frozenset[str]
+    descriptor_external_ids: frozenset[str] = frozenset()
 
     @property
     def needs_muq(self) -> bool:
@@ -43,13 +45,13 @@ class AudioProcessingPlan:
         return bool(self.mert_external_ids)
 
     @property
-    @property
     def needs_melody(self) -> bool:
         return bool(self.melody_external_ids)
 
     @property
     def download_external_ids(self) -> frozenset[str]:
-        return self.muq_external_ids | self.mert_external_ids | self.fingerprint_external_ids | self.melody_external_ids
+        return (self.muq_external_ids | self.mert_external_ids | self.fingerprint_external_ids
+                | self.melody_external_ids | self.descriptor_external_ids)
 
 
 def _id_filter(external_ids: Iterable[str] | None) -> tuple[str, list[object]]:
@@ -68,7 +70,7 @@ def plan_lyrics(connection: psycopg.Connection, external_ids: Iterable[str] | No
                 FROM track_sources ts LEFT JOIN lyrics l ON l.track_id=ts.track_id
                 WHERE ts.source_type='subsonic'{restriction}
                   AND (l.track_id IS NULL OR l.text IS NULL OR NOT EXISTS (
-                    SELECT 1 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+                    SELECT 1 FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                     WHERE e.track_id=ts.track_id AND e.embedding_type='lyrics'
                       AND e.window_index IS NULL AND ar.model_name='bge_m3'
                       AND ar.model_revision=%s
@@ -121,7 +123,7 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
         cursor.execute(
             """SELECT requested.external_id,
                       ts.track_id,
-                      EXISTS (SELECT 1 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+                      EXISTS (SELECT 1 FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                               WHERE e.track_id=ts.track_id AND e.embedding_type='audio-track'
                                 AND e.window_index IS NULL AND ar.model_name='muq_mulan'
                                 AND ar.model_revision=%s
@@ -129,7 +131,7 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
                                 AND ar.config->>'window_seconds'='10'
                                 AND ar.config->>'stride_seconds'='5'
                                 AND ar.config->>'store_window_embeddings'='true') AS has_muq,
-                      EXISTS (SELECT 1 FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+                      EXISTS (SELECT 1 FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                               WHERE e.track_id=ts.track_id AND e.embedding_type='audio-track'
                                 AND e.window_index IS NULL AND ar.model_name='mert'
                                 AND ar.model_revision=%s
@@ -140,11 +142,14 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
                       EXISTS (SELECT 1 FROM track_fingerprints tf WHERE tf.track_id=ts.track_id) AS has_fingerprint,
                       EXISTS (SELECT 1 FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
                               WHERE mc.track_id=ts.track_id AND ar.model_name='melody_contour'
-                                AND ar.model_revision=%s) AS has_melody
+                                AND ar.model_revision=%s) AS has_melody,
+                      EXISTS (SELECT 1 FROM track_audio_descriptors ad
+                              WHERE ad.track_id=ts.track_id AND ad.revision=%s
+                                AND ad.status='complete') AS has_descriptors
                FROM unnest(%s::text[]) requested(external_id)
                LEFT JOIN track_sources ts ON ts.library_id=%s AND ts.source_type='subsonic'
                                          AND ts.external_id=requested.external_id""",
-            (muq_revision, mert_revision, MELODY_CONTOUR_REVISION, ids, library_id),
+            (muq_revision, mert_revision, MELODY_CONTOUR_REVISION, DESCRIPTOR_REVISION, ids, library_id),
         )
         rows = cursor.fetchall()
     return AudioProcessingPlan(
@@ -152,4 +157,5 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
         frozenset(str(row[0]) for row in rows if not row[3]),
         frozenset(str(row[0]) for row in rows if not row[4]),
         frozenset(str(row[0]) for row in rows if hum_enabled and not row[5]),
+        frozenset(str(row[0]) for row in rows if not row[6]),
     )

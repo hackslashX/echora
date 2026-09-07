@@ -62,7 +62,7 @@ def _embedding_similarity(cursor: psycopg.Cursor, left: uuid.UUID, right: uuid.U
         """
         WITH latest AS (
           SELECT DISTINCT ON (e.track_id) e.track_id, e.embedding
-          FROM embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
+          FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
           WHERE e.track_id=ANY(%s) AND e.embedding_type='audio-track' AND ar.model_name=%s
           ORDER BY e.track_id, ar.created_at DESC
         )
