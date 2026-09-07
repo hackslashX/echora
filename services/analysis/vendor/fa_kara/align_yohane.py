@@ -301,12 +301,13 @@ def _collapsed_token_count(groups: list[list[TokenSpan]], frame_shift: float,
 
 def _assign_ctc_blank_holds(
     groups: list[list[TokenSpan]], line_ranges: list[tuple[int, int]],
+    frame_duration: float = 0.02, max_extension_seconds: float = 0.2,
 ) -> list[list[TokenSpan]]:
-    """Hold each acoustic token through trailing CTC blanks until the next token.
-
-    CTC label emissions are brief onset spikes. The blank frames after a spike
-    still belong to the sung syllable for karaoke display purposes.
-    """
+    """Bounded display-only blank extension, not a silence detector."""
+    import math
+    if not math.isfinite(max_extension_seconds) or max_extension_seconds < 0 or not math.isfinite(frame_duration) or frame_duration <= 0:
+        raise ValueError("blank hold duration must be finite and nonnegative")
+    max_frames = int(max_extension_seconds / frame_duration)
     result = [[TokenSpan(span.token, span.start, span.end, span.score) for span in group]
               for group in groups]
     if not line_ranges:
@@ -323,11 +324,23 @@ def _assign_ctc_blank_holds(
         next_start = following[0].start
         if next_start <= current[-1].end:
             continue
-        # Inside a line, intervening blank frames represent the current
-        # syllable's hold. Cross-line silence must remain unhighlighted.
+        # Blanks may also be silence; cap this display heuristic.
         last = current[-1]
-        current[-1] = TokenSpan(last.token, last.start, next_start, last.score)
+        current[-1] = TokenSpan(last.token, last.start, min(next_start, last.end + max_frames), last.score)
     return result
+
+
+def _display_span_results(tokens, spans, ranges, frame_duration):
+    import os
+    limit = float(os.environ.get("FA_KARA_MAX_BLANK_HOLD_SECONDS", "0.2"))
+    display = _assign_ctc_blank_holds(spans, ranges, frame_duration, limit)
+    results = []
+    for token, raw, held in zip(tokens, spans, display, strict=True):
+        item = _span_result(token, held, frame_duration)
+        acoustic = _span_result(token, raw, frame_duration)
+        item.update(acoustic_start=acoustic['original_start'], acoustic_end=acoustic['original_end'])
+        results.append(item)
+    return results
 
 
 def _maximum_internal_gap(groups: list[list[TokenSpan]], frame_shift: float) -> float:
@@ -442,14 +455,10 @@ def align_audio_with_timeline_mms(audio_file_path, token_lines, line_starts_ms, 
     emission, spans, target_sample_rate = model.align(encoded, waveform, sample_rate)
     del target_sample_rate
     frame_shift = (waveform.shape[1] / sample_rate) / emission.shape[1]
-    spans = _assign_ctc_blank_holds(spans, line_ranges)
-    results = [
-        _span_result(token, token_spans, frame_shift * speed)
-        for token, token_spans in zip(acoustic_tokens, spans, strict=True)
-    ]
+    results = _display_span_results(acoustic_tokens, spans, line_ranges, frame_shift * speed)
     diagnostics = {
         "acoustic_aligner": "torchaudio_mms_fa",
-        "ctc_blank_hold_assignment": "preceding_acoustic_token",
+        "ctc_blank_hold_assignment": "bounded_display_extension_not_silence_aware",
         "inference_audio_speed": speed,
         "line_count": len(line_ranges),
         "token_count": len(acoustic_tokens),
@@ -845,12 +854,8 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
 
     if len(spans) != len(acoustic_tokens):
         raise RuntimeError("global CTC alignment returned the wrong token count")
-    spans = _assign_ctc_blank_holds(spans, line_acoustic_ranges)
-    source_diagnostics["ctc_blank_hold_assignment"] = "preceding_acoustic_token"
-    results = [
-        _span_result(token, token_spans, frame_shift * speed)
-        for token, token_spans in zip(acoustic_tokens, spans, strict=True)
-    ]
+    source_diagnostics["ctc_blank_hold_assignment"] = "bounded_display_extension_not_silence_aware"
+    results = _display_span_results(acoustic_tokens, spans, line_acoustic_ranges, frame_shift * speed)
     total_inference_passes = original_inference_passes + recovery_passes
     source_diagnostics["inference_audio_speed"] = speed
     source_diagnostics = _scale_diagnostic_times(source_diagnostics, speed)

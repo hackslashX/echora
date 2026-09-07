@@ -269,7 +269,7 @@ def guard_pathological_lead_ins(
 
 def bound_to_synced_lines(karaoke: list[dict[str, object]], source: list[dict[str, object]]) -> list[dict[str, object]]:
     """Keep each aligned line inside its matching source line window."""
-    timed_source = [line for line in source if str(line.get("text") or "").strip() and isinstance(line.get("start_ms"), (int, float))]
+    timed_source = [line for line in source if isinstance(line.get("start_ms"), (int, float))]
     source_index = 0
     bounded: list[dict[str, object]] = []
     for line in karaoke:
@@ -304,7 +304,7 @@ def _anchored_source_lines(source: list[dict[str, object]]) -> list[dict[str, ob
     """Preserve every lyric line and interpolate timestamps missing in source."""
     lines = [
         {"text": str(line.get("text") or "").strip(), "start_ms": line.get("start_ms")}
-        for line in source if str(line.get("text") or "").strip()
+        for line in source
     ]
     known = [index for index, line in enumerate(lines) if isinstance(line["start_ms"], (int, float))]
     if not known:
@@ -347,6 +347,8 @@ def _validate_alignment_document(document: object) -> dict[str, object]:
         if not isinstance(line, dict) or line.get("source_index") != line_index:
             raise RuntimeError("FA-Kara alignment document has invalid source indexes")
         tokens = line.get("tokens")
+        if tokens == [] and not str(line.get("text") or "").strip():
+            continue
         if not isinstance(tokens, list) or not tokens:
             raise RuntimeError(f"FA-Kara line {line_index} contains no aligned tokens")
         for token in tokens:
@@ -441,7 +443,7 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
         audio_path.write_bytes(audio)
         separate_vocals = os.environ.get("FA_KARA_VOCAL_SEPARATION", "false").lower() == "true"
         timeline = _anchored_source_lines(source_lines or [])
-        input_text = "\n".join(str(line["text"]) for line in timeline) if timeline else lyrics_text.strip()
+        input_text = "\n".join(str(line["text"]) for line in timeline) if timeline else lyrics_text.rstrip("\r\n")
         (work / "i.txt").write_text(input_text + "\n", encoding="utf-8")
         aligner = os.environ.get("FA_KARA_ALIGNER", "yohane").lower()
         if aligner not in {"yohane", "mms"}:
