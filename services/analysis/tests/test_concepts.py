@@ -37,3 +37,20 @@ def test_positive_example_can_define_concept_without_text(monkeypatch):
     raw, _ = concepts.score_concept(tracks, [], positive_examples=tracks[:1])
 
     assert raw[0] > raw[1]
+
+
+def test_percentiles_average_ties_and_are_permutation_invariant():
+    scores = np.asarray([0.1, 0.7, 0.7, 0.9], dtype=np.float32)
+    expected = np.asarray([0, 0.5, 0.5, 1], dtype=np.float32)
+    assert np.allclose(concepts.empirical_percentiles(scores), expected)
+    permutation = np.asarray([2, 0, 3, 1])
+    assert np.allclose(concepts.empirical_percentiles(scores[permutation]), expected[permutation])
+
+
+def test_constant_singleton_and_unavailable_scores_are_neutral():
+    assert concepts.empirical_percentiles(np.ones(4)).tolist() == [0.5] * 4
+    assert concepts.empirical_percentiles(np.asarray([0.9])).tolist() == [0.5]
+    assert concepts.empirical_percentiles(np.asarray([])).size == 0
+    values = np.asarray([0.2, 0.9, np.nan, np.inf])
+    mask = np.asarray([False, True, True, True])
+    assert concepts.empirical_percentiles(values, mask).tolist() == [0.5] * 4

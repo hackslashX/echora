@@ -47,8 +47,8 @@ def test_structured_sound_prompt_never_touches_the_lyrics_channel(fake_text_embe
     top = max(selected, key=lambda row: row["score"])
     assert top["id"] == "guitar-no-lyrics"
 
-    # A structured recipe with only themes has no semantic evidence to lose to,
-    # so the thematic vocal track still ranks even without the sound channel.
+    # One available lyrics vector cannot establish relative relevance. Do not
+    # promote it to a perfect match just because the other track lacks lyrics.
     selected, evidence = rank_curation(
         rows, matrix, "", "", track_limit=2, refresh_mode="fresh",
         lyrics_matrix=lyrics_matrix, lyrics_available=lyrics_available,
@@ -57,8 +57,7 @@ def test_structured_sound_prompt_never_touches_the_lyrics_channel(fake_text_embe
         sound_prompts=[], themes_prompts=["heartbreak and love"],
         sound_weight=50,
     )
-    top = max(selected, key=lambda row: row["score"])
-    assert top["id"] == "on-theme-lyrics"
+    assert selected == []
 
 
 def test_structured_weight_shifts_the_blend(fake_text_embeddings):
@@ -180,9 +179,11 @@ def test_curation_selects_only_one_track_per_recording_group():
         [0.8, 0.2],
     ], dtype=np.float32)
 
+    # Inspect all component scores here; production cutoff is tested separately.
     selected, _ = rank_curation(
         rows, matrix, "", "", track_limit=4, refresh_mode="fresh",
         positive_track_ids=["reference"], shuffle_seed=1,
+        minimum_match_percentile=0,
     )
 
     selected_groups = [row.get("recording_group_id") for row in selected]
@@ -219,10 +220,12 @@ def test_song_examples_use_mert_when_both_tracks_have_it():
     semantic = np.asarray([[1.0, 0.0], [0.8, 0.2], [0.8, 0.2]], dtype=np.float32)
     acoustic = np.asarray([[1.0, 0.0], [0.95, 0.05], [0.0, 1.0]], dtype=np.float32)
 
+    # Inspect all component scores here; production cutoff is tested separately.
     selected, _ = rank_curation(
         rows, semantic, "", "", track_limit=3, refresh_mode="fresh",
         positive_track_ids=["reference"], shuffle_seed=1,
         acoustic_matrix=acoustic, acoustic_available=np.ones(3, dtype=bool),
+        minimum_match_percentile=0,
     )
     by_id = {row["id"]: row for row in selected}
 
@@ -239,11 +242,13 @@ def test_song_examples_fall_back_to_muq_when_the_reference_has_no_mert():
     semantic = np.asarray([[1.0, 0.0], [0.95, 0.05], [0.0, 1.0]], dtype=np.float32)
     acoustic = np.asarray([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
 
+    # Inspect all component scores here; production cutoff is tested separately.
     selected, _ = rank_curation(
         rows, semantic, "", "", track_limit=3, refresh_mode="fresh",
         positive_track_ids=["reference"], shuffle_seed=1,
         acoustic_matrix=acoustic,
         acoustic_available=np.asarray([False, True, True]),
+        minimum_match_percentile=0,
     )
     by_id = {row["id"]: row for row in selected}
 
@@ -278,9 +283,11 @@ def test_free_form_sound_direction_uses_duration_weighted_muq_modes(fake_text_em
         (np.asarray([[0.0, 1.0]], dtype=np.float32), np.asarray([1.0], dtype=np.float32)),
     ]
 
+    # Inspect all component scores here; production cutoff is tested separately.
     selected, _ = rank_curation(
         rows, global_vectors, "pop", "", track_limit=2,
         refresh_mode="fresh", shuffle_seed=1, semantic_modes=modes,
+        minimum_match_percentile=0,
     )
     by_id = {track["id"]: track for track in selected}
 
@@ -299,9 +306,11 @@ def test_manual_and_time_examples_are_independent_active_signals():
         [1.0, 0.0], [0.0, 1.0], [0.7, 0.7], [0.99, 0.1], [0.1, 0.99],
     ], dtype=np.float32)
 
+    # Inspect all component scores here; production cutoff is tested separately.
     selected, _ = rank_curation(
         rows, matrix, "", "", track_limit=5, refresh_mode="fresh",
         positive_track_ids=["manual"], context_track_ids=["time"], shuffle_seed=1,
+        minimum_match_percentile=0,
     )
     by_id = {track["id"]: track for track in selected}
 
@@ -318,12 +327,47 @@ def test_ineligible_reference_can_guide_an_eligible_language_pool():
     ]
     matrix = np.asarray([[1.0, 0.0], [0.95, 0.05], [0.0, 1.0]], dtype=np.float32)
 
+    # Inspect all component scores here; production cutoff is tested separately.
     selected, _ = rank_curation(
         rows, matrix, "", "", track_limit=2, refresh_mode="fresh",
         positive_track_ids=["outside-reference"],
         eligible_track_ids={"eligible-match", "eligible-miss"}, shuffle_seed=1,
+        minimum_match_percentile=0,
     )
 
     assert {track["id"] for track in selected} == {"eligible-match", "eligible-miss"}
     by_id = {track["id"]: track for track in selected}
     assert by_id["eligible-match"]["score"] > by_id["eligible-miss"]["score"]
+
+
+def test_playlist_stays_short_instead_of_filling_below_threshold(fake_text_embeddings):
+    rows = [{"id": str(i), "title": str(i), "artist": str(i)} for i in range(5)]
+    matrix = np.asarray([[1, 0], [.9, .1], [.5, .5], [.1, .9], [0, 1]], dtype=np.float32)
+    selected, _ = rank_curation(
+        rows, matrix, "pop", "", track_limit=5, refresh_mode="stable",
+        existing_track_ids=["4"], shuffle_seed=1,
+    )
+    assert {track["id"] for track in selected} == {"0", "1"}
+    assert all(track["percentile"] >= .75 for track in selected)
+    assert all(track["evidence"]["match_confidence"] is None for track in selected)
+
+
+def test_tied_requested_direction_is_not_a_neutral_language_recipe(fake_text_embeddings):
+    rows = [{"id": str(i), "title": str(i), "artist": str(i)} for i in range(4)]
+    matrix = np.ones((4, 2), dtype=np.float32)
+    selected, _ = rank_curation(rows, matrix, "pop", "", 4, "fresh")
+    assert selected == []
+    neutral, _ = rank_curation(rows, matrix, "", "", 4, "fresh",
+                               eligible_track_ids={"1", "2"})
+    assert {track["id"] for track in neutral} == {"1", "2"}
+
+
+def test_remaining_familiar_matches_are_labeled_as_familiar(fake_text_embeddings):
+    rows = [{"id": str(i), "title": str(i), "artist": str(i)} for i in range(5)]
+    matrix = np.asarray([[1, 0], [.9, .1], [.5, .5], [.1, .9], [0, 1]], dtype=np.float32)
+    selected, _ = rank_curation(
+        rows, matrix, "pop", "", 5, "fresh", familiarity_percent=0,
+        listen_counts={"0": 2, "1": 1},
+    )
+    assert len(selected) == 2
+    assert {track["evidence"]["selection_pool"] for track in selected} == {"familiar"}
