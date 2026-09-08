@@ -136,6 +136,10 @@ def build_lines_from_alignment_document(document: dict[str, object]) -> list[dic
                 continue
             if text:
                 syllables.append({"start_ms": start_ms, "end_ms": end_ms, "text": text})
+            elif syllables:
+                # Acoustic continuation of an indivisible glyph group (or ruby).
+                # Keep its full duration without repeating display characters.
+                syllables[-1]["end_ms"] = max(int(syllables[-1]["end_ms"]), end_ms)
         if not syllables:
             continue
         source_text = str(line_record.get("text") or "")

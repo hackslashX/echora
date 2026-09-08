@@ -287,7 +287,9 @@ def main(argv=None):
         source = source_timeline[line_index] if line_index < len(source_timeline) else {}
         canonical_lines.append({
             'source_index': line_index,
-            'text': str(source.get('text', source_texts[line_index])),
+            'text': re.sub(r'\{([^{}|]*)\|[^{}]*\}|\[([^\[\]|]*)\|[^\[\]]*\]',
+                           lambda match: match.group(1) if match.group(1) is not None else match.group(2),
+                           str(source.get('text', source_texts[line_index]))),
             'source_start_ms': source.get('start_ms'),
             'start_ms': token_records[0]['start_ms'] if token_records else None,
             'end_ms': token_records[-1]['end_ms'] if token_records else None,
