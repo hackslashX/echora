@@ -2,6 +2,7 @@
 
 import { createContext, ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { sizedPlayerCoverArtUrl } from "../media/coverArt";
+import { paletteFromPixels, type TrackPalette } from "./artworkPalette";
 import FullscreenPlayer from "./FullscreenPlayer";
 import { readPlaybackPreferences, streamUrlForQuality } from "./playbackPreferences";
 
@@ -18,7 +19,6 @@ type PlayerState = {
 
 const PlayerContext = createContext<PlayerState | null>(null);
 
-type TrackPalette = { accent: [number, number, number]; background: [number, number, number]; waves: [[number, number, number], [number, number, number], [number, number, number]] };
 const rgb = (color: [number, number, number]) => `rgb(${color.join(" ")})`;
 
 function publishPalette(palette: TrackPalette | null) {
@@ -66,44 +66,7 @@ async function artworkPalette(url: string): Promise<TrackPalette> {
   context.imageSmoothingEnabled = true; context.imageSmoothingQuality = "high";
   context.drawImage(image, 0, 0, size, size);
   const pixels = context.getImageData(0, 0, size, size).data;
-  type Bucket = { count: number; sum: [number, number, number] };
-  const buckets = new Map<string, Bucket>();
-  const average: [number, number, number] = [0, 0, 0];
-  let samples = 0;
-  for (let pixel = 0; pixel < size * size; pixel += 2) {
-    const index = pixel * 4;
-    if (pixels[index + 3] < 180) continue;
-    const color: [number, number, number] = [pixels[index], pixels[index + 1], pixels[index + 2]];
-    const high = Math.max(...color), low = Math.min(...color);
-    if (high < 18 || low > 244) continue;
-    color.forEach((value, channel) => { average[channel] += value; }); samples += 1;
-    const key = color.map(value => Math.floor(value / 24)).join(":");
-    const bucket = buckets.get(key) || { count: 0, sum: [0, 0, 0] };
-    bucket.count += 1; color.forEach((value, channel) => { bucket.sum[channel] += value; }); buckets.set(key, bucket);
-  }
-  if (!samples || !buckets.size) throw new Error("Artwork has no usable colors");
-  const clusters = [...buckets.values()].map(bucket => ({
-    count: bucket.count,
-    color: bucket.sum.map(value => value / bucket.count) as [number, number, number],
-  }));
-  const colorfulness = (color: [number, number, number]) => (Math.max(...color) - Math.min(...color)) / 255;
-  const luminance = (color: [number, number, number]) => (color[0] * .2126 + color[1] * .7152 + color[2] * .0722) / 255;
-  clusters.sort((left, right) => {
-    const score = (cluster: typeof left) => cluster.count * (.3 + colorfulness(cluster.color) * 1.7) * (.65 + Math.min(.65, luminance(cluster.color)));
-    return score(right) - score(left);
-  });
-  const accentSource = clusters[0].color;
-  const readable = (color: [number, number, number]) => {
-    const light = luminance(color);
-    const mix = light < .48 ? Math.min(.52, (.48 - light) * 1.35) : 0;
-    return color.map(value => Math.round(value + (255 - value) * mix)) as [number, number, number];
-  };
-  const accent = readable(accentSource);
-  const background = average.map(value => Math.round(value / samples * .2 + 3)) as [number, number, number];
-  const distance = (left: [number, number, number], right: [number, number, number]) => left.reduce((sum, value, channel) => sum + Math.abs(value - right[channel]), 0);
-  const distinct = clusters.find(cluster => cluster.count >= samples * .008 && distance(cluster.color, accentSource) > 120)?.color || clusters[1]?.color || accentSource;
-  const normalized = (color: [number, number, number]) => color.map(value => Math.min(1, Math.max(.12, value / 255))) as [number, number, number];
-  return { accent, background, waves: [normalized(accentSource), normalized(distinct), normalized(accent)] };
+  return paletteFromPixels(pixels);
 }
 
 export function PlayerProvider({ children }: { children: ReactNode }) {
