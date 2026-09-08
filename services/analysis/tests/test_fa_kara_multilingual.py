@@ -10,8 +10,10 @@ import haruraw2norm as norm
 def test_janome_word_readings_and_particles():
     items = norm.process_haruhi_line('宝石に憧れ私は東京へ行く', 'ja')
     words = {i['orig']: i.get('pron') for i in items}
-    assert words['宝石'] == 'houseki'
-    assert words['憧れ'] == 'akogare'
+    assert ''.join(i.get('pron', '') for i in norm.process_haruhi_line('宝石', 'ja')) == 'houseki'
+    assert ''.join(i.get('pron', '') for i in norm.process_haruhi_line('憧れ', 'ja')) == 'akogare'
+    assert words['宝石'] == 'ho'
+    assert words['憧'] == 'a'
     assert words['は'] == 'wa'
     assert words['へ'] == 'e'
     assert ''.join(i['orig'] for i in items) == '宝石に憧れ私は東京へ行く'
@@ -43,7 +45,8 @@ def test_code_switch_and_unknown_surfaces():
     text = '한宝石に憧れ银行重庆 café नमस्ते مرحبا Ж'
     items = norm.process_haruhi_line(text, 'auto')
     assert ''.join(i['orig'] for i in items) == text
-    assert next(i for i in items if i['orig'] == '宝石')['pron'] == 'houseki'
+    index = next(n for n, i in enumerate(items) if i['orig'] == '宝石')
+    assert ''.join(i['pron'] for i in items[index:index+4]) == 'houseki'
     for surface in ('한', 'café', 'नमस्ते', 'مرحبا'):
         assert next(i for i in items if i['orig'] == surface)['pron']
     assert any('Ж' in i['orig'] and not i.get('pron') for i in items)
@@ -61,4 +64,4 @@ def test_latin_fallback_keeps_accents_and_avoids_cmu():
 def test_han_only_policy_is_run_local():
     chinese = norm.process_haruhi_line('银行', 'auto')
     assert norm.process_haruhi_line('한银行', 'auto')[1:] == chinese
-    assert norm.process_haruhi_line('宝石', 'ja')[0] == dict(orig='宝石', type=3, pron='houseki')
+    assert [i['pron'] for i in norm.process_haruhi_line('宝石', 'ja')] == ['ho', 'u', 'se', 'ki']

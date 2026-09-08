@@ -707,7 +707,7 @@ def _legacy_process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_s
 
     return result
 
-def _japanese_words(text):
+def _japanese_words(text, sokuon_split=False, hatsuon_split=True):
     """Janome owns word boundaries/readings; never apportion kanji readings."""
     result = []
     for token in tokenizer.tokenize(text):
@@ -718,7 +718,34 @@ def _japanese_words(text):
         if reading == '*':
             reading = surface
         pron = ''.join(part['hepburn'] for part in kks.convert(reading)).replace('-', '')
-        result.append({'orig': surface, 'type': 3, 'pron': pron})
+        mora = sylla_split(reading, sokuon_split, hatsuon_split)
+        # Prefix romanization supplies boundaries only when it is an exact
+        # prefix of the contextual label. Gemination/long vowels stay grouped
+        # when splitting would change the trained character stream.
+        cuts = [0]
+        for i in range(1, len(mora)):
+            prefix = ''.join(p['hepburn'] for p in kks.convert(''.join(mora[:i]))).replace('-', '')
+            if pron.startswith(prefix) and len(prefix) > cuts[-1]:
+                cuts.append(len(prefix))
+        cuts.append(len(pron))
+        labels = [pron[a:b] for a, b in zip(cuts, cuts[1:]) if b > a]
+        if not labels:
+            result.append({'orig': surface, 'type': 3, 'pron': pron})
+            continue
+        # Kana suffixes are literal anchors, not guessed isolated kanji readings.
+        suffix = re.search(r'[ぁ-ゖァ-ヺー]+$', surface)
+        display = [surface] + [''] * (len(labels) - 1)
+        if suffix:
+            kana = sylla_split(suffix.group(), sokuon_split, hatsuon_split)
+            kana_labels = [''.join(p['hepburn'] for p in kks.convert(k)).replace('-', '') for k in kana]
+            if kana_labels and labels[-len(kana):] == kana_labels:
+                n = len(labels) - len(kana)
+                if n > 0:
+                    display = [surface[:suffix.start()]] + [''] * (n - 1) + kana
+                elif suffix.start() == 0:
+                    display = kana
+        result.extend({'orig': surf, 'type': 3, 'pron': label}
+                      for surf, label in zip(display, labels))
     return result
 
 
@@ -729,7 +756,8 @@ def process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_split=Tru
     the same contiguous Han/kana run selects Japanese; explicit ja/jaen also
     selects Japanese for Han-only runs. Foreign scripts cannot steal a line.
     Auto Latin is spelling/transliteration, not assumed English; only explicit
-    en/jaen/zhen enables CMU for ASCII words. No new syllabification is used.
+    en/jaen/zhen enables CMU for ASCII words. Unknown ASCII words use
+    spelling boundaries without changing the concatenated acoustic labels.
     """
     lang = (lang or 'auto').lower()
     result = []
@@ -771,7 +799,7 @@ def process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_split=Tru
             if kind == 'cjk':
                 japanese = lang in ('ja', 'jaen') or any(is_kana(c) for c in text)
                 if japanese:
-                    result.extend(_japanese_words(text))
+                    result.extend(_japanese_words(text, sokuon_split, hatsuon_split))
                 else:
                     readings = hanzi_to_phonetic(text)
                     # Do not silently truncate if the library cannot map a run.
@@ -790,7 +818,12 @@ def process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_split=Tru
                     # Uroman folds accents without deleting their base letters.
                     # Keep orig byte-for-byte for conservative timed-span mapping.
                     pron = uroman.romanize_string(text).lower().replace("'", '').replace('-', '').replace(' ', '')
-                    result.append({'orig': text, 'type': 5, 'pron': pron})
+                    parts = eng_dic.inserted(text).split('-') if text.isascii() else [text]
+                    labels = [p.lower().replace("'", '') for p in parts]
+                    if ''.join(labels) == pron and all(labels):
+                        result.extend({'orig': p, 'type': 5, 'pron': label} for p, label in zip(parts, labels))
+                    else:
+                        result.append({'orig': text, 'type': 5, 'pron': pron})
             else:
                 result.append({'orig': text, 'type': 0})
     # Ruby sokuon may depend on the following run/annotation. Resolve after
