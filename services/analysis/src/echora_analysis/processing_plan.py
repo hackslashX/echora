@@ -8,6 +8,7 @@ import psycopg
 
 from .melody_config import MELODY_CONTOUR_REVISION
 from .audio_descriptors import DESCRIPTOR_REVISION
+from .waveforms import WAVEFORM_REVISION
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,8 @@ class AudioProcessingPlan:
     melody_external_ids: frozenset[str]
     descriptor_external_ids: frozenset[str] = frozenset()
 
+    waveform_external_ids: frozenset[str] = frozenset()
+
     @property
     def needs_muq(self) -> bool:
         return bool(self.muq_external_ids)
@@ -51,7 +54,7 @@ class AudioProcessingPlan:
     @property
     def download_external_ids(self) -> frozenset[str]:
         return (self.muq_external_ids | self.mert_external_ids | self.fingerprint_external_ids
-                | self.melody_external_ids | self.descriptor_external_ids)
+                | self.melody_external_ids | self.descriptor_external_ids | self.waveform_external_ids)
 
 
 def _id_filter(external_ids: Iterable[str] | None) -> tuple[str, list[object]]:
@@ -145,11 +148,13 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
                                 AND ar.model_revision=%s) AS has_melody,
                       EXISTS (SELECT 1 FROM track_audio_descriptors ad
                               WHERE ad.track_id=ts.track_id AND ad.revision=%s
-                                AND ad.status='complete') AS has_descriptors
+                                AND ad.status='complete') AS has_descriptors,
+                      EXISTS (SELECT 1 FROM track_waveforms w
+                              WHERE w.track_id=ts.track_id AND w.revision=%s) AS has_waveform
                FROM unnest(%s::text[]) requested(external_id)
                LEFT JOIN track_sources ts ON ts.library_id=%s AND ts.source_type='subsonic'
                                          AND ts.external_id=requested.external_id""",
-            (muq_revision, mert_revision, MELODY_CONTOUR_REVISION, DESCRIPTOR_REVISION, ids, library_id),
+            (muq_revision, mert_revision, MELODY_CONTOUR_REVISION, DESCRIPTOR_REVISION, WAVEFORM_REVISION, ids, library_id),
         )
         rows = cursor.fetchall()
     return AudioProcessingPlan(
@@ -158,4 +163,5 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
         frozenset(str(row[0]) for row in rows if not row[4]),
         frozenset(str(row[0]) for row in rows if hum_enabled and not row[5]),
         frozenset(str(row[0]) for row in rows if not row[6]),
+        frozenset(str(row[0]) for row in rows if not row[7]),
     )

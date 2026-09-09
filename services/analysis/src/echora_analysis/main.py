@@ -36,6 +36,7 @@ from starlette.responses import RedirectResponse, StreamingResponse
 
 from .artists import fit_artist_profile, representative_indices, soft_chamfer_similarity, weighted_center
 from .audio_descriptors import DESCRIPTOR_REVISION
+from .waveforms import WAVEFORM_REVISION
 from .audio_profiles import (
     AUDIO_PROFILE_REVISION,
     SUPPORTED_PROFILE_MODELS,
@@ -1284,6 +1285,21 @@ def track_audio_descriptors(
         "vocal_activity": vocal,
         "used_in_curation": False,
     }
+
+
+@app.get("/library/tracks/{track_id}/waveform")
+def track_waveform(track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        cursor.execute(
+            "SELECT revision, duration_seconds, peaks FROM track_waveforms WHERE track_id=%s AND revision=%s",
+            (track_id, WAVEFORM_REVISION),
+        )
+        waveform = cursor.fetchone()
+    return {"track_id": str(track_id), "status": "complete" if waveform else "pending", "waveform": waveform}
 
 
 @app.get("/library/tracks/{track_id}/audio-quality")
