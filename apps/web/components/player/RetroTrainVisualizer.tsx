@@ -35,6 +35,10 @@ const STATIONS = [
 const css = (c: Color, a = 1) => `rgba(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)},${a})`;
 const seeded = (n: number) => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
 const clamp = (v: number, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, v));
+const punch = (color: Color): Color => {
+  const high = Math.max(...color), low = Math.min(...color), midpoint = (high + low) / 2;
+  return color.map(value => clamp((midpoint + (value - midpoint) * 1.5 - .5) * 1.14 + .5, .04, .96)) as Color;
+};
 const quantize = (energy: number) => energy < .05 ? 0 : Math.min(1, Math.ceil(clamp(energy) * 5) / 5);
 
 type Ctx = CanvasRenderingContext2D;
@@ -177,8 +181,8 @@ export default function RetroTrainVisualizer() {
     const receivePalette = (event: Event) => {
       const detail = (event as CustomEvent<PaletteEvent>).detail;
       if (!detail.palette) return; // Null arrives on pause; keep the last track's colours.
-      const accent = detail.palette.accent.map(value => clamp(value / 255, .12, 1)) as Color;
-      palette = { ...detail.palette, accent };
+      const accent = punch(detail.palette.accent.map(value => clamp(value / 255, .08, 1)) as Color);
+      palette = { ...detail.palette, accent, waves: detail.palette.waves.map(punch) as Palette["waves"] };
     };
 
     // --- Exterior ---------------------------------------------------------------
@@ -197,7 +201,7 @@ export default function RetroTrainVisualizer() {
         const bx = farX + pass * far + b * 30 + seeded(b * 9) * 12;
         if (bx + bw < 0 || bx > w) continue;
         px(ctx, bx, SILL - 12 - bh, bw, bh + 12, "#0a0d19");
-        for (let f = 0; f < bh / 6; f++) if (seeded(b * 31 + f) > .6) px(ctx, bx + 2 + Math.floor(seeded(b + f * 7) * (bw - 3)), SILL - 10 - bh + f * 6, 1, 1, seeded(f * b) > .5 ? "#d9c9a0" : "#9fbfd8");
+        for (let f = 0; f < bh / 6; f++) if (seeded(b * 31 + f) > .6) px(ctx, bx + 2 + Math.floor(seeded(b + f * 7) * (bw - 3)), SILL - 10 - bh + f * 6, 1, 1, seeded(f * b) > .5 ? "#c58e4d" : "#5689b8");
         if (b === 17) { // A tower with a blinking aviation light.
           px(ctx, bx + bw / 2 - 1, SILL - 60 - bh, 2, 48, "#0d1020"); px(ctx, bx + bw / 2 - 3, SILL - 24 - bh, 6, 12, "#0d1020");
           if (Math.floor(clock * 1.2) % 2 === 0) { px(ctx, bx + bw / 2 - 1, SILL - 61 - bh, 2, 2, "#ff4d5a"); glow(ctx, bx + bw / 2, SILL - 60 - bh, 6, 6, [1, .3, .35], .35); }
@@ -218,7 +222,7 @@ export default function RetroTrainVisualizer() {
           const brightness = clamp(.35 + smooth.mid * .55 + (band === 2 ? trebleFlash * .6 : 0) - (seeded(b + Math.floor(clock * 7)) > .96 ? .3 : 0));
           const sw = 5, sh = 14 + Math.floor(seeded(b * 8) * 14), sxx = bx + 3 + Math.floor(seeded(b * 9) * (bw - 9)), syy = SILL - bh + 4;
           px(ctx, sxx - 1, syy - 1, sw + 2, sh + 2, "#05060c"); px(ctx, sxx, syy, sw, sh, css(color, .25 + brightness * .75));
-          for (let g = 0; g < sh / 4 - 1; g++) px(ctx, sxx + 1, syy + 2 + g * 4, 3, 2, `rgba(255,255,255,${brightness * .55})`);
+          for (let g = 0; g < sh / 4 - 1; g++) px(ctx, sxx + 1, syy + 2 + g * 4, 3, 2, css(color, brightness * .82));
           glow(ctx, sxx + sw / 2, syy + sh / 2, 14, sh, color, brightness * .28);
         }
       }
@@ -238,8 +242,8 @@ export default function RetroTrainVisualizer() {
         for (let i = 0; i < stationBays; i++) {
           const columnX = platformX + 22 + i * 64;
           px(ctx, columnX, roofTop + 7, 3, platformTop - roofTop - 7, "#343741");
-          px(ctx, columnX - 18, roofTop + 3, 36, 3, "#eef2f4");
-          glow(ctx, columnX, roofTop + 7, 30, 25, [.85, .92, 1], .12);
+          px(ctx, columnX - 18, roofTop + 3, 36, 3, css(palette.waves[i % 3], .85));
+          glow(ctx, columnX, roofTop + 7, 30, 25, palette.waves[i % 3], .14);
           if (seeded(i * 4 + platformIndex) > .5) {
             const personX = columnX + 24;
             px(ctx, personX, platformTop - 22, 8, 22, "#11131a");
@@ -266,8 +270,8 @@ export default function RetroTrainVisualizer() {
         px(ctx, cx, SILL - 47, 176, 33, "#161a24"); px(ctx, cx, SILL - 47, 176, 1, css(palette.waves[2], .8));
         px(ctx, cx + 5, SILL - 14, 166, 2, "#0b0d12");
         for (const wheel of [26, 138]) { px(ctx, cx + wheel, SILL - 15, 8, 3, "#07080d"); px(ctx, cx + wheel + 2, SILL - 16, 4, 1, "#61646b"); }
-        for (let wnd = 0; wnd < 7; wnd++) px(ctx, cx + 8 + wnd * 24, SILL - 43, 18, 12, "#fff3cf");
-        glow(ctx, cx + 88, SILL - 37, 100, 18, [1, .93, .75], .08);
+        for (let wnd = 0; wnd < 7; wnd++) px(ctx, cx + 8 + wnd * 24, SILL - 43, 18, 12, wnd % 3 === 0 ? css(palette.waves[2], .72) : "#b8813f");
+        glow(ctx, cx + 88, SILL - 37, 100, 18, palette.waves[2], .09);
       }
       // Rain streaks, angled by speed.
       for (let r = 0; r < 34; r++) {
@@ -434,7 +438,7 @@ export default function RetroTrainVisualizer() {
       ctx.fillRect(-2, 0, width + 4, WINDOW_TOP - 2);
       drawTubes();
       // Ambient lift with overall level so loud passages feel brighter without washing out.
-      ctx.save(); ctx.globalCompositeOperation = "lighter"; ctx.fillStyle = css(palette.waves[0], clamp(smooth.level * .05)); ctx.fillRect(-2, 0, width + 4, HEIGHT); ctx.restore();
+      ctx.save(); ctx.globalCompositeOperation = "lighter"; ctx.fillStyle = css(palette.waves[0], clamp(smooth.level * .035)); ctx.fillRect(-2, 0, width + 4, HEIGHT); ctx.restore();
       // Vignette.
       const vignette = ctx.createRadialGradient(width / 2, HEIGHT * .5, HEIGHT * .3, width / 2, HEIGHT * .5, width * .7);
       vignette.addColorStop(0, "rgba(0,0,0,0)"); vignette.addColorStop(1, "rgba(0,0,0,.55)"); ctx.fillStyle = vignette; ctx.fillRect(-2, -2, width + 4, HEIGHT + 4);
