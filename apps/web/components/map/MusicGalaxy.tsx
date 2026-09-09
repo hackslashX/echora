@@ -66,7 +66,7 @@ export default function MusicGalaxy() {
   const [edges, setEdges] = useState<Edge[]>([]);
   const [clustering, setClustering] = useState<Clustering | null>(null);
   const [showConnections, setShowConnections] = useState(galaxySession.showConnections);
-  const [showConceptLens, setShowConceptLens] = useState(true);
+  const [showConceptLens, setShowConceptLens] = useState(false);
   const [concepts, setConcepts] = useState<Concept[]>([]);
   const [selectedConcepts, setSelectedConcepts] = useState<string[]>(galaxySession.selectedConcepts);
   const [conceptScores, setConceptScores] = useState<Record<string, ConceptScore[]>>(galaxySession.conceptScores);

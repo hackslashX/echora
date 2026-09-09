@@ -27,7 +27,7 @@ export default function AppHeader({ title, displayName = "Echora", initials = "E
   return <header className={styles.header}>
     <div className={styles.brand}>ECHORA<span className={styles.note} aria-hidden="true">♪</span></div>
     <div className={`${styles.location} ${accountOpen ? styles.accountOpen : ""}`}>
-      <button className={styles.profile} type="button" aria-expanded={accountOpen} aria-controls="account-menu" onClick={() => setAccountOpen(true)}>
+      <button className={styles.profile} type="button" aria-expanded={accountOpen} aria-controls="account-menu" aria-label="Account menu" onClick={() => setAccountOpen(value => !value)}>
         <span className={styles.avatar}>{initials}</span><strong>{displayName}</strong>
       </button>
       <div className={styles.menuViewport}>

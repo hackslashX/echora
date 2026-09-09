@@ -450,7 +450,7 @@ def _store_profile(
                 profile.adjacent_change_p95, profile.timestamps_exact, len(profile.modes),
             ),
         )
-        profile_id = cursor.fetchone()[0]
+        profile_id = cursor.fetchone()["id"]
         cursor.execute(
             "DELETE FROM audio_temporal_segments WHERE profile_id=%s",
             (profile_id,),
@@ -485,7 +485,7 @@ def _store_profile(
                     item.representative_window_index,
                 ),
             )
-            mode_id = cursor.fetchone()[0]
+            mode_id = cursor.fetchone()["id"]
             cursor.executemany(
                 """INSERT INTO audio_mode_intervals (mode_id, interval_index, start_seconds, end_seconds)
                    VALUES (%s,%s,%s,%s)""",

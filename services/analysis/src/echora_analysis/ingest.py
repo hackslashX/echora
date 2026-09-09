@@ -16,6 +16,7 @@ import torch
 
 from .audio import decode_audio, full_coverage_window_ranges
 from .audio_descriptors import store_audio_descriptors
+from .waveforms import store_waveform
 from .hum_search import create_sync_run, release_separator, store_track_contours
 from .models import AudioEmbeddingModel, MertModel, MuQMuLanModel, release_model
 from .navidrome import NavidromeClient, NavidromeTrack
@@ -39,6 +40,7 @@ class IngestSummary:
     embedded_muq: int = 0
     embedded_mert: int = 0
     fingerprinted: int = 0
+    waveforms_generated: int = 0
     melody_indexed: int = 0
     melody_contours: int = 0
     recording_matches: int = 0
@@ -213,7 +215,8 @@ def ingest_navidrome(
                 "plan": {"muq": len(plan.muq_external_ids), "mert": len(plan.mert_external_ids),
                          "fingerprint": len(plan.fingerprint_external_ids),
                          "melody": len(plan.melody_external_ids),
-                         "descriptors": len(plan.descriptor_external_ids)}})
+                         "descriptors": len(plan.descriptor_external_ids),
+                         "waveform": len(plan.waveform_external_ids)}})
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         downloaded_ids: set[str] = set()
@@ -281,6 +284,24 @@ def ingest_navidrome(
                     (run_id,),
                 )
             connection.commit()
+
+        waveform_songs = [song for song in songs if song.id in plan.waveform_external_ids]
+        for index, song in enumerate(waveform_songs):
+            report({"phase": "waveform", "message": f"Generating waveform for {song.title}",
+                    "completed": index, "total": len(waveform_songs), "unit": "tracks"})
+            try:
+                audio, track_id = audio_track(song)
+                store_waveform(connection, track_id, audio)
+                del audio
+                connection.commit()
+                summary.waveforms_generated += 1
+            except Exception:
+                connection.rollback()
+                summary.failed += 1
+                logger.exception("Could not generate waveform for Navidrome song %s", song.id)
+            report({"phase": "waveform", "message": f"Generating waveform for {song.title}",
+                    "completed": index + 1, "total": len(waveform_songs), "unit": "tracks",
+                    "summary": summary.__dict__})
 
         loaded = 0
         if plan.needs_muq:
