@@ -160,3 +160,28 @@ def test_planner_retries_partial_descriptors_and_keeps_current_audio(db, visible
     assert plan_audio(db, library, ["song"]).descriptor_external_ids == frozenset({"song"})
     db.execute("UPDATE track_audio_descriptors SET status='complete' WHERE track_id=%s", (track,))
     assert not plan_audio(db, library, ["song"]).descriptor_external_ids
+
+
+def test_waveform_endpoint_visibility_and_pending(visible_track, db):
+    from fastapi import HTTPException
+    from echora_analysis.waveforms import WAVEFORM_REVISION
+    main, _, _, _, track, _ = visible_track
+    assert main.track_waveform(track, "test")["status"] == "pending"
+    with pytest.raises(HTTPException) as error:
+        main.track_waveform(uuid.uuid4(), "test")
+    assert error.value.status_code == 404
+    db.execute("INSERT INTO track_waveforms (track_id, revision, duration_seconds, peaks) VALUES (%s,%s,10,'[0,1]')", (track, WAVEFORM_REVISION))
+    result = main.track_waveform(track, "test")
+    assert result["status"] == "complete"
+    assert result["waveform"]["peaks"] == [0, 1]
+
+
+def test_waveform_planner_skips_current_and_retries_old_revision(db, visible_track):
+    from echora_analysis.processing_plan import plan_audio
+    from echora_analysis.waveforms import WAVEFORM_REVISION
+    _, _, library, _, track, _ = visible_track
+    assert plan_audio(db, library, ["song"]).waveform_external_ids == frozenset({"song"})
+    db.execute("INSERT INTO track_waveforms (track_id, revision, duration_seconds, peaks) VALUES (%s,%s,10,'[0,1]')", (track, WAVEFORM_REVISION))
+    assert not plan_audio(db, library, ["song"]).waveform_external_ids
+    db.execute("UPDATE track_waveforms SET revision='old' WHERE track_id=%s", (track,))
+    assert plan_audio(db, library, ["song"]).waveform_external_ids == frozenset({"song"})
