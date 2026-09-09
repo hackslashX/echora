@@ -172,3 +172,21 @@ def test_impossible_alignment_fails_instead_of_returning_partial_output():
         assert "fewer frames" in str(error)
     else:
         raise AssertionError("expected alignment failure")
+
+
+def test_minimum_frames_counts_repeats_across_group_boundaries():
+    from ctc_segmentation import minimum_ctc_frames
+    assert minimum_ctc_frames([]) == 0
+    assert minimum_ctc_frames([[1, 2], [3]]) == 3
+    assert minimum_ctc_frames([[1, 1], [1, 2]]) == 6
+
+
+def test_repeated_targets_reject_windows_without_room_for_blanks():
+    emission = torch.log_softmax(torch.zeros(2, 3), dim=-1)
+    try:
+        align_with_source_priors(emission, [[1, 1]], blank=0,
+                                 frame_shift_seconds=.02, source_priors=[])
+    except RuntimeError as error:
+        assert "fewer frames" in str(error)
+    else:
+        raise AssertionError("Repeated labels require an intervening blank frame")

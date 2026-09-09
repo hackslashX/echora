@@ -5,25 +5,32 @@ import numpy as np
 
 from .audio import decode_audio_channels
 
-WAVEFORM_REVISION = "1"
+WAVEFORM_REVISION = "2"
 SAMPLE_RATE = 24_000
 PEAK_COUNT = 1024
 
 
 def waveform_peaks(samples: np.ndarray, count: int = PEAK_COUNT) -> list[float]:
-    """Equal-time peak buckets across all channels, including the final sample."""
+    """Equal-time energy envelope with a small transient contribution.
+
+    A peak-only envelope becomes a solid block on limited/mastered recordings.
+    RMS measures sustained energy across both channels without phase cancellation.
+    Keep 10% sample peak for short attacks, then apply a fixed display contrast
+    curve. A truly constant-energy recording remains flat, as it should.
+    """
     if count < 1 or samples.size == 0 or not np.isfinite(samples).all():
         raise ValueError("Waveform requires finite, nonempty samples and a positive bucket count")
-    amplitude = np.abs(samples)
-    if amplitude.ndim > 1:
-        amplitude = amplitude.max(axis=1)
-    # Short clips use fewer buckets rather than repeating or inventing samples.
-    buckets = np.array_split(amplitude, min(count, len(amplitude)))
-    peaks = np.array([block.max() for block in buckets])
-    maximum = float(peaks.max())
+    samples = np.asarray(samples, dtype=np.float64)
+    buckets = np.array_split(samples, min(count, len(samples)))
+    envelope = np.array([
+        .9 * np.sqrt(np.mean(block * block)) + .1 * np.max(np.abs(block))
+        for block in buckets
+    ])
+    maximum = float(envelope.max())
     if maximum > 0:
-        peaks /= maximum
-    return [round(float(value), 4) for value in peaks]
+        envelope = (envelope / maximum) ** 1.5
+    return [round(float(value), 4) for value in envelope]
+
 
 
 def store_waveform(connection, track_id, audio: bytes) -> None:

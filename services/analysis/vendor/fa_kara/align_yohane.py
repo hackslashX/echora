@@ -18,7 +18,7 @@ from torchaudio.pipelines._wav2vec2 import aligner
 from torchaudio.transforms import Fade
 from transformers import Wav2Vec2CTCTokenizer, Wav2Vec2ForCTC, Wav2Vec2Processor
 
-from ctc_segmentation import SourcePrior, align_with_source_priors
+from ctc_segmentation import SourcePrior, align_with_source_priors, minimum_ctc_frames
 
 logger = logging.getLogger(__name__)
 
@@ -766,6 +766,13 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
             segment = focused_waveform[:, int(inference_window_start * sample_rate):int(inference_window_end * sample_rate)]
             local_emission, _, local_shift = aligner_model.infer(segment, sample_rate)
             recovery_passes += aligner_model.last_inference_passes
+            required_frames = minimum_ctc_frames(encoded[context_start:context_end])
+            if local_emission.shape[0] < required_frames:
+                candidate.update(rejected="insufficient_ctc_frames",
+                                 available_frames=int(local_emission.shape[0]),
+                                 required_frames=required_frames)
+                collapsed_candidates.append(candidate)
+                continue
             contextual_spans = align_with_source_priors(
                 local_emission, encoded[context_start:context_end], blank=aligner_model.blank,
                 frame_shift_seconds=local_shift, source_priors=[],
@@ -777,17 +784,20 @@ def align_audio_with_timeline(audio_file_path, token_lines, line_starts_ms, sr=N
                 reference_segment = focused_reference_waveform[:, int(inference_window_start * sample_rate):int(inference_window_end * sample_rate)]
                 reference_emission, _, reference_shift = aligner_model.infer(reference_segment, sample_rate)
                 recovery_passes += aligner_model.last_inference_passes
-                reference_contextual_spans = align_with_source_priors(
-                    reference_emission, encoded[context_start:context_end], blank=aligner_model.blank,
-                    frame_shift_seconds=reference_shift, source_priors=[],
-                )
-                reference_spans = reference_contextual_spans[target_offset:target_offset + acoustic_end - acoustic_start]
-                # The mix can recover masked consonants or endings, but only
-                # replace the stem candidate when its acoustic confidence wins.
-                if _line_span_score(reference_spans) > _line_span_score(local_spans):
-                    local_spans = reference_spans
-                    local_shift = reference_shift
-                    candidate_audio_source = "original_mix"
+                if reference_emission.shape[0] >= required_frames:
+                    reference_contextual_spans = align_with_source_priors(
+                        reference_emission, encoded[context_start:context_end], blank=aligner_model.blank,
+                        frame_shift_seconds=reference_shift, source_priors=[],
+                    )
+                    reference_spans = reference_contextual_spans[target_offset:target_offset + acoustic_end - acoustic_start]
+                    # The mix can recover masked consonants or endings, but only
+                    # replace the stem candidate when its acoustic confidence wins.
+                    if _line_span_score(reference_spans) > _line_span_score(local_spans):
+                        local_spans = reference_spans
+                        local_shift = reference_shift
+                        candidate_audio_source = "original_mix"
+                else:
+                    candidate["reference_rejected"] = "insufficient_ctc_frames"
             if refine_all_lines:
                 candidate["context_tokens"] = {
                     "before": target_offset,

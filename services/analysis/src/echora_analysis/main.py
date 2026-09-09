@@ -37,6 +37,7 @@ from starlette.responses import RedirectResponse, StreamingResponse
 from .artists import fit_artist_profile, representative_indices, soft_chamfer_similarity, weighted_center
 from .audio_descriptors import DESCRIPTOR_REVISION
 from .waveforms import WAVEFORM_REVISION
+from .melody_preview import melody_preview
 from .audio_profiles import (
     AUDIO_PROFILE_REVISION,
     SUPPORTED_PROFILE_MODELS,
@@ -1299,7 +1300,16 @@ def track_waveform(track_id: uuid.UUID, echora_session: str | None = Cookie(defa
             (track_id, WAVEFORM_REVISION),
         )
         waveform = cursor.fetchone()
-    return {"track_id": str(track_id), "status": "complete" if waveform else "pending", "waveform": waveform}
+        cursor.execute(
+            """SELECT mc.source, mc.pitch, mc.voiced, mc.hop_seconds
+               FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
+               WHERE mc.track_id=%s AND ar.status IN ('complete','running')
+               ORDER BY CASE mc.source WHEN 'full-mix' THEN 0 WHEN 'vocals' THEN 1 ELSE 2 END,
+                        ar.created_at DESC LIMIT 1""", (track_id,),
+        )
+        contour = cursor.fetchone()
+    melody = melody_preview(contour["source"], contour["pitch"], contour["voiced"], float(contour["hop_seconds"])) if contour else None
+    return {"track_id": str(track_id), "status": "complete" if waveform else "pending", "waveform": waveform, "melody": melody}
 
 
 @app.get("/library/tracks/{track_id}/audio-quality")
