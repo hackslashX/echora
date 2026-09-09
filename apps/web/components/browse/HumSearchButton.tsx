@@ -82,7 +82,7 @@ export default function HumSearchButton({ onResults, onError }: { onResults: (tr
 
   const building = state === "building" || index.status === "building";
   const label = state === "recording" ? "Stop humming" : state === "searching" ? "Matching" : building ? `Indexing ${index.indexed_tracks || 0}/50` : index.status === "complete" ? "Hum to search" : "Build hum index";
-  return <button type="button" className={`${styles.button} ${state === "recording" ? styles.recording : ""}`} onClick={state === "recording" ? stop : start} disabled={state === "searching" || building} title={label}>
+  return <button type="button" className={`${styles.button} ${state === "recording" ? styles.recording : ""}`} onClick={state === "recording" ? stop : start} disabled={state === "searching" || building} aria-label={label} title={label}>
     {state === "recording" && activeStream ? <AudioVisualizer stream={activeStream} /> : null}
     {state === "recording" ? <Square /> : state === "searching" || building ? <LoaderCircle className={styles.spin} /> : <Mic />}
     <span>{label}</span>

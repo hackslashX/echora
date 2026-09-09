@@ -13,3 +13,6 @@
 .metaMarquee>span:nth-child(2){display:none}
 .metaMarquee[data-overflowing]{display:flex;width:max-content;min-width:100%;gap:2.5rem;animation:titleMarqueeScroll 16s linear infinite}
 .metaMarquee[data-overflowing]>span,.metaMarquee[data-overflowing]>span:nth-child(2){display:block;flex:0 0 auto}
+
+.identity{display:block;min-width:0;width:100%;padding:0;border:0;background:transparent;text-align:left;cursor:pointer;color:inherit}.identity strong,.identity small{display:block}.identity:disabled{cursor:default}.identity:focus-visible{outline:2px solid var(--aqua);outline-offset:2px}
+@media(max-width:1199px),(max-height:719px){.widget .mobileSeek{top:-10px;height:24px}.widget .mobileSeek input{height:24px}.widget .play,.widget .mute{min-height:44px}.widget .art{height:44px}.widget .identity{min-height:44px}.widget{grid-template-columns:44px 44px minmax(0,1fr) 44px;gap:6px}.widget .art,.widget .play,.widget .mute{width:44px}}

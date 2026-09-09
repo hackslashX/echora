@@ -9,9 +9,10 @@ import { readPlaybackPreferences, streamUrlForQuality } from "./playbackPreferen
 export type PlayerTrack = { id: string; title: string; artist?: string; album?: string; durationSeconds?: number; streamUrl: string; coverUrl?: string };
 export type AudioQuality = { codec?: string; content_type?: string; bit_rate_kbps?: number; bit_depth?: number; sample_rate_hz?: number; channels?: number; lossless?: boolean; streamQuality: "original" | "320" | "120" };
 export type PlayerLyrics = { trackId: string; available: boolean; karaoke?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[]; text?: string; language?: string; provenance?: { synced?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[] } };
+export type MelodyPreview = { source: string; points: { time_seconds: number; pitch: number | null }[] };
 type PlayerState = {
   track: PlayerTrack | null; audioQuality: AudioQuality | null; lyrics: PlayerLyrics | null; lyricsLoading: boolean; playing: boolean; buffering: boolean; currentTime: number; duration: number; buffered: number; muted: boolean; expanded: boolean;
-  waveform: number[] | null;
+  waveform: number[] | null; melody: MelodyPreview | null;
   queue: PlayerTrack[]; queueIndex: number;
   play: (track: PlayerTrack) => void; playQueue: (tracks: PlayerTrack[], startIndex?: number) => void;
   next: () => void; previous: () => void; clearQueue: () => void;
@@ -86,8 +87,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const nextRef = useRef<() => void>(() => {});
   const previousRef = useRef<() => void>(() => {});
   const [track, setTrack] = useState<PlayerTrack | null>(null);
-  const [waveformData, setWaveformData] = useState<{ trackId: string; peaks: number[] } | null>(null);
+  const [waveformData, setWaveformData] = useState<{ trackId: string; peaks: number[] | null; melody: MelodyPreview | null } | null>(null);
   const waveform = waveformData?.trackId === track?.id ? waveformData?.peaks ?? null : null;
+  const melody = waveformData?.trackId === track?.id ? waveformData?.melody ?? null : null;
   useEffect(() => {
     if (!track?.id) return;
     const trackId = track.id;
@@ -96,9 +98,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       .then(response => response.ok ? response.json() : null)
       .then(body => {
         const peaks = body?.waveform?.peaks;
-        if (!controller.signal.aborted && Array.isArray(peaks) && peaks.length > 0 && peaks.length <= 1024 && peaks.every(value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1)) {
-          setWaveformData({ trackId, peaks });
-        }
+        const validPeaks = Array.isArray(peaks) && peaks.length > 0 && peaks.length <= 1024 && peaks.every(value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1);
+        const melody = body?.melody;
+        const validMelody = melody && typeof melody.source === "string" && Array.isArray(melody.points) && melody.points.length <= 1024 && melody.points.every((point: { time_seconds?: unknown; pitch?: unknown }) => typeof point.time_seconds === "number" && Number.isFinite(point.time_seconds) && point.time_seconds >= 0 && (point.pitch === null || typeof point.pitch === "number" && Number.isFinite(point.pitch)));
+        if (!controller.signal.aborted) setWaveformData({ trackId, peaks: validPeaks ? peaks : null, melody: validMelody ? melody : null });
       }).catch(() => {});
     return () => controller.abort();
   }, [track?.id]);
@@ -261,7 +264,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   function seek(seconds: number) { const player = audio.current; if (!player || !Number.isFinite(seconds)) return; player.currentTime = seconds; setCurrentTime(seconds); publishMediaPosition(player, trackRef.current?.durationSeconds); }
   function toggleMute() { const player = audio.current; if (!player) return; player.muted = !player.muted; setMuted(player.muted); }
 
-  return <PlayerContext.Provider value={{ track, waveform, audioQuality, lyrics, lyricsLoading, playing, buffering, currentTime, duration, buffered, muted, expanded, queue, queueIndex, play, playQueue, next, previous, clearQueue, toggle, seek, toggleMute, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
+  return <PlayerContext.Provider value={{ track, waveform, melody, audioQuality, lyrics, lyricsLoading, playing, buffering, currentTime, duration, buffered, muted, expanded, queue, queueIndex, play, playQueue, next, previous, clearQueue, toggle, seek, toggleMute, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
 }
 
 export function usePlayer() {

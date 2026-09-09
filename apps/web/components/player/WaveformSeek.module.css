@@ -11,4 +11,6 @@
 .seek input[type=range]:focus-visible{outline:2px solid var(--aqua);outline-offset:3px}
 .seek input[type=range]:disabled{cursor:default;opacity:.4}
 .seek:hover{color:#a7b5af}
-@media(max-width:1199px),(max-height:719px){.compact{height:12px}}
+@media(max-width:1199px),(max-height:719px){.compact{height:24px}}
+
+.frame{display:block;min-width:0;width:100%}.seek svg.melody{fill:none;stroke:#f4f7f6;stroke-width:1.25;filter:drop-shadow(0 1px 1px #071019)}.melodyToggle{display:block;min-height:32px;padding:4px 0;border:0;background:transparent;color:#bdc9c4;font:12px var(--ui-font);cursor:pointer}.melodyToggle:hover,.melodyToggle[aria-pressed=true]{color:var(--aqua)}.melodyToggle:focus-visible{outline:2px solid var(--aqua);outline-offset:2px}
