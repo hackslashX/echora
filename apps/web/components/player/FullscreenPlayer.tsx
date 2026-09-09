@@ -9,6 +9,7 @@ import { audioQualityLabel } from "./audioQuality";
 import { usePlayer } from "./PlayerProvider";
 import styles from "./FullscreenPlayer.module.css";
 import WaveformSeek from "./WaveformSeek";
+import { useDialogFocus } from "../shell/useDialogFocus";
 
 const stamp = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 
@@ -50,6 +51,8 @@ const lyricsSizeClasses: Record<LyricsTextSize, string> = {
 
 export default function FullscreenPlayer() {
   const player = usePlayer();
+  const dialogRef = useRef<HTMLElement>(null);
+  useDialogFocus(dialogRef, Boolean(player.track), () => close());
   const [karaokeMode, setKaraokeMode] = useState(true);
   const [lyricsTextSize, setLyricsTextSize] = useState<LyricsTextSize>("normal");
   const [playbackTime, setPlaybackTime] = useState(player.currentTime);
@@ -111,7 +114,7 @@ export default function FullscreenPlayer() {
   }
   function chooseLyricsTextSize(size: LyricsTextSize) { localStorage.setItem(lyricsSizeStorageKey, size); setLyricsTextSize(size); }
   function close() { if (closing) return; document.body.classList.add("echora-fullscreen-player-closing"); setClosing(true); window.setTimeout(() => player.setExpanded(false), 520); }
-  return <main className={`${styles.player} ${mobileLyricsLayout ? styles.hasMobileLyrics : ""} ${closing ? styles.closing : ""}`} role="dialog" aria-modal="true" aria-label="Now playing">
+  return <main ref={dialogRef} tabIndex={-1} className={`${styles.player} ${mobileLyricsLayout ? styles.hasMobileLyrics : ""} ${closing ? styles.closing : ""}`} role="dialog" aria-modal="true" aria-label="Now playing">
     <div className={styles.vignette} />
     <section className={styles.unsupported}><strong>THIS VIEW NEEDS MORE ROOM</strong><p>Resize the window to at least 900 pixels wide or open Echora on a larger screen.</p></section>
     <button className={styles.close} onClick={close} aria-label="Close full screen player"><X /></button>
@@ -132,7 +135,7 @@ export default function FullscreenPlayer() {
         <div className={styles.art}>{fullCover ? <LoadingImage sizes="520px" src={fullCover} alt="" priority /> : <Disc3 />}</div>
         <div className={styles.details}><div className={styles.detailsContent} ref={detailsContent}><div className={styles.trackIdentity}><span>NOW PLAYING</span><h1><FullscreenMarquee>{player.track.title}</FullscreenMarquee></h1><strong>{player.track.artist || "Unknown artist"}</strong><p className={styles.metadata}>{player.track.album || "Unknown album"}<span>{audioQualityLabel(player.audioQuality)}</span></p></div>
           <div className={styles.timeline}><WaveformSeek /><div><time>{stamp(player.currentTime)}</time><time>{stamp(player.duration)}</time></div></div>
-          <div className={styles.controls}><button onClick={player.previous}><SkipBack /></button><button className={styles.play} onClick={player.toggle}>{player.playing ? <Pause /> : <Play />}</button><button onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1}><SkipForward /></button><button onClick={player.toggleMute}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div>
+          <div className={styles.controls}><button aria-label="Previous track" onClick={player.previous}><SkipBack /></button><button aria-label={player.playing ? "Pause" : "Play"} className={styles.play} onClick={player.toggle}>{player.playing ? <Pause /> : <Play />}</button><button aria-label="Next track" onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1}><SkipForward /></button><button aria-label={player.muted ? "Unmute" : "Mute"} onClick={player.toggleMute}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div>
         </div></div>
       </section>
       {timedLines.length > 0 && <aside className={`${styles.lyrics} ${styles.mobileLyricsVisible} ${lyricsSizeClasses[lyricsTextSize]}`} key={`${activeLine}-${karaokeMode}`}>
