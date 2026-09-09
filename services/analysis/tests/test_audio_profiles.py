@@ -63,3 +63,18 @@ def test_legacy_range_reconstruction_preserves_exact_final_window() -> None:
     assert infer_window_ranges(4, 23.0, 10.0, 5.0) == [
         (0.0, 10.0), (5.0, 15.0), (10.0, 20.0), (13.0, 23.0),
     ]
+
+
+def test_store_profile_accepts_dictionary_rows_for_profile_and_mode_ids():
+    import uuid
+    from unittest.mock import MagicMock
+    from echora_analysis.audio_profiles import _store_profile
+
+    profile = derive_audio_profile(_windows([[1.0, 0.0]] * 8), 45.0)
+    connection = MagicMock()
+    cursor = connection.cursor.return_value.__enter__.return_value
+    profile_id, mode_id = uuid.uuid4(), uuid.uuid4()
+    cursor.fetchone.side_effect = [{"id": profile_id}, {"id": mode_id}]
+    _store_profile(connection, uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), "muq_mulan", profile)
+    cursor.execute.assert_any_call("DELETE FROM audio_modes WHERE profile_id=%s", (profile_id,))
+    assert cursor.executemany.call_args.args[1][0][0] == mode_id
