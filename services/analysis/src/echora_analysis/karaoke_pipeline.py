@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 FA_KARA_REVISION = "168ca5f01cecaa1290e31c0ce8dc44af8c7451bb"
 KARAOKE_PIPELINE_REVISION = "v1"
-DEFAULT_MODEL_ID = "NextFire/mms-300m-ForcedAligner-karaoke-ja-Latn"
-DEFAULT_MODEL_REVISION = "2ab2b5f46539ee284703c281f286b01d2410ee12"
+DEFAULT_MODEL_ID = "hcX02/echora-mms-300m-multilingual-lyrics-forced-aligner"
+DEFAULT_MODEL_REVISION = "b46485a5d814dc26e3511cece3ccc98ebba2e9d0"
 _DIALOGUE = re.compile(r"^Dialogue: [^,]*,([^,]+),([^,]+),(?:[^,]*,){6}(.*)$")
 _KARAOKE_TAG = re.compile(r"\{\\k(\d+)\}")
 _ASS_TAG = re.compile(r"\{[^}]*\}")

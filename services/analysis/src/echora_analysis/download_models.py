@@ -1,3 +1,4 @@
+import argparse
 import hashlib
 import os
 from pathlib import Path
@@ -5,7 +6,7 @@ import urllib.request
 
 import torch
 from demucs import pretrained
-from huggingface_hub import snapshot_download
+from huggingface_hub import scan_cache_dir, snapshot_download
 
 from .melody_config import MELODY_DEMUCS_MODEL
 
@@ -24,8 +25,20 @@ MODELS = (
     ("xlm-roberta-base", "e73636d4f797dec63c3081bb6ed5c7b0bb3f2089", True),
     ("m-a-p/MERT-v1-95M", "12af15fef9d0ac838c3f475bfbbf26d2060dd4f5", False),
     ("BAAI/bge-m3", "5617a9f61b028005a4858fdac845db406aefb181", False),
-    ("NextFire/mms-300m-ForcedAligner-karaoke-ja-Latn", "2ab2b5f46539ee284703c281f286b01d2410ee12", False),
 )
+
+# The former FA-Kara base snapshot is deliberately managed so the downloader
+# can reclaim it after the serving revision moves to Echora's published model.
+LEGACY_MANAGED_MODELS = {"NextFire/mms-300m-ForcedAligner-karaoke-ja-Latn"}
+
+
+def required_models() -> tuple[tuple[str, str, bool], ...]:
+    """Return immutable model revisions required by the active service config."""
+    fa_model = os.environ.get(
+        "FA_KARA_MODEL_ID", "hcX02/echora-mms-300m-multilingual-lyrics-forced-aligner"
+    )
+    fa_revision = os.environ.get("FA_KARA_REVISION", "b46485a5d814dc26e3511cece3ccc98ebba2e9d0")
+    return (*MODELS, (fa_model, fa_revision, False))
 
 
 def _pin_main_ref(snapshot_path: str) -> None:
@@ -33,6 +46,34 @@ def _pin_main_ref(snapshot_path: str) -> None:
     refs = snapshot.parent.parent / "refs"
     refs.mkdir(parents=True, exist_ok=True)
     (refs / "main").write_text(snapshot.name, encoding="utf-8")
+
+
+def _prune_huggingface_cache(required: tuple[tuple[str, str, bool], ...]) -> None:
+    """Remove superseded managed snapshots without touching referenced blobs.
+
+    ``delete_revisions`` is Hugging Face's cache-aware deletion API. It removes
+    a snapshot and only then removes blobs no remaining snapshot references.
+    Repositories outside Echora's managed model list are left alone.
+    """
+    cache_dir = Path(os.environ.get("HF_HOME", "/models/huggingface")) / "hub"
+    if not cache_dir.is_dir():
+        return
+    keep = {model: revision for model, revision, _ in required}
+    managed = set(keep) | LEGACY_MANAGED_MODELS
+    cache = scan_cache_dir(cache_dir)
+    stale = [
+        revision.commit_hash
+        for repo in cache.repos
+        if repo.repo_id in managed
+        for revision in repo.revisions
+        if keep.get(repo.repo_id) != revision.commit_hash
+    ]
+    if not stale:
+        print("Hugging Face cache contains only required managed snapshots.", flush=True)
+        return
+    strategy = cache.delete_revisions(*stale)
+    strategy.execute()
+    print(f"Pruned {len(stale)} superseded Hugging Face model snapshot(s).", flush=True)
 
 
 def _download_demucs() -> None:
@@ -85,19 +126,26 @@ def _download_essentia() -> None:
         print(f"essentia model {target.name} is available.", flush=True)
 
 
-def main() -> None:
-    for model, revision, needs_main_ref in MODELS:
-        print(f"Downloading {model}@{revision}", flush=True)
-        snapshot = snapshot_download(repo_id=model, revision=revision)
-        if needs_main_ref:
-            # MuQ constructs these dependencies without forwarding a revision.
-            # Point their local `main` refs at the reviewed commits so offline
-            # inference remains pinned.
-            _pin_main_ref(snapshot)
-    _download_demucs()
-    _download_essentia()
-    print("All model snapshots are available.", flush=True)
+def main(*, prune_only: bool = False) -> None:
+    required = required_models()
+    if not prune_only:
+        for model, revision, needs_main_ref in required:
+            print(f"Downloading {model}@{revision}", flush=True)
+            snapshot = snapshot_download(repo_id=model, revision=revision)
+            if needs_main_ref:
+                # MuQ constructs these dependencies without forwarding a revision.
+                # Point their local `main` refs at the reviewed commits so offline
+                # inference remains pinned.
+                _pin_main_ref(snapshot)
+    _prune_huggingface_cache(required)
+    if not prune_only:
+        _download_demucs()
+        _download_essentia()
+        print("All model snapshots are available.", flush=True)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prune-only", action="store_true",
+                        help="Delete superseded managed snapshots without network downloads.")
+    main(prune_only=parser.parse_args().prune_only)

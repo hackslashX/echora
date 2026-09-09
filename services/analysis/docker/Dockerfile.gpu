@@ -26,4 +26,4 @@ ENV PATH="/opt/venv/bin:$PATH" \
     NLTK_DATA="/usr/local/share/nltk_data"
 RUN mkdir -p /models/huggingface && chown -R echora /models
 EXPOSE 8000
-CMD ["sh", "-c", "chown -R echora /models && runuser -u echora -- alembic upgrade head && exec runuser -u echora -- uvicorn echora_analysis.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "chown -R echora /models && runuser -u echora -- python -m echora_analysis.download_models --prune-only && runuser -u echora -- alembic upgrade head && exec runuser -u echora -- uvicorn echora_analysis.main:app --host 0.0.0.0 --port 8000"]
