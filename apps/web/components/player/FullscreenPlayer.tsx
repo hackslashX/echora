@@ -8,6 +8,8 @@ import { trackTemplate } from "../shell/gridGeometry";
 import { audioQualityLabel } from "./audioQuality";
 import { usePlayer } from "./PlayerProvider";
 import styles from "./FullscreenPlayer.module.css";
+import WaveformSeek from "./WaveformSeek";
+import { useDialogFocus } from "../shell/useDialogFocus";
 
 const stamp = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 
@@ -49,6 +51,8 @@ const lyricsSizeClasses: Record<LyricsTextSize, string> = {
 
 export default function FullscreenPlayer() {
   const player = usePlayer();
+  const dialogRef = useRef<HTMLElement>(null);
+  useDialogFocus(dialogRef, Boolean(player.track), () => close());
   const [karaokeMode, setKaraokeMode] = useState(true);
   const [lyricsTextSize, setLyricsTextSize] = useState<LyricsTextSize>("normal");
   const [playbackTime, setPlaybackTime] = useState(player.currentTime);
@@ -89,7 +93,6 @@ export default function FullscreenPlayer() {
   const timedLines = ((karaokeMode && karaokeAvailable ? karaokeLines : currentLyrics?.provenance?.lines) || []).filter(line => Number.isFinite(line.start_ms));
   const activeLine = timedLines.reduce((active, line, index) => Number(line.start_ms) <= playbackTime * 1000 ? index : active, -1);
   if (!player.track) return null;
-  const progress = player.duration ? Math.min(100, player.currentTime / player.duration * 100) : 0;
   const mobileCover = player.track.coverUrl ? sizedPlayerCoverArtUrl(player.track.coverUrl, 800) : "";
   const fullCover = player.track.coverUrl ? sizedPlayerCoverArtUrl(player.track.coverUrl, 1200) : "";
   const innerWidth = Math.max(1, viewport.width - 360);
@@ -111,7 +114,7 @@ export default function FullscreenPlayer() {
   }
   function chooseLyricsTextSize(size: LyricsTextSize) { localStorage.setItem(lyricsSizeStorageKey, size); setLyricsTextSize(size); }
   function close() { if (closing) return; document.body.classList.add("echora-fullscreen-player-closing"); setClosing(true); window.setTimeout(() => player.setExpanded(false), 520); }
-  return <main className={`${styles.player} ${mobileLyricsLayout ? styles.hasMobileLyrics : ""} ${closing ? styles.closing : ""}`} role="dialog" aria-modal="true" aria-label="Now playing">
+  return <main ref={dialogRef} tabIndex={-1} className={`${styles.player} ${mobileLyricsLayout ? styles.hasMobileLyrics : ""} ${closing ? styles.closing : ""}`} role="dialog" aria-modal="true" aria-label="Now playing">
     <div className={styles.vignette} />
     <section className={styles.unsupported}><strong>THIS VIEW NEEDS MORE ROOM</strong><p>Resize the window to at least 900 pixels wide or open Echora on a larger screen.</p></section>
     <button className={styles.close} onClick={close} aria-label="Close full screen player"><X /></button>
@@ -125,14 +128,14 @@ export default function FullscreenPlayer() {
           <div className={`${styles.mobileLyricsLines} ${lyricsSizeClasses[lyricsTextSize]}`}>{(() => { const index = activeLine >= 0 ? activeLine : 0, line = timedLines[index]; return line ? <button dir={isRtlText(line.text) ? "rtl" : "ltr"} className={styles.activeLine} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, true)}</button> : null; })()}</div>
         </div> : player.lyricsLoading ? <div className={styles.mobileLyricsPlaceholder} /> : <div className={styles.mobileArtwork}>{mobileCover ? <LoadingImage sizes="min(100vw, 340px)" src={mobileCover} alt="" priority /> : <Disc3 />}</div>}
       </section>
-      <section className={styles.mobileDock}><div className={styles.mobileTimeline}><input aria-label="Seek" type="range" min="0" max={player.duration || 0} step="0.1" value={Math.min(player.currentTime, player.duration || 0)} onChange={event => player.seek(Number(event.target.value))} style={{ "--progress": `${progress}%` } as React.CSSProperties} /><div><time>{stamp(player.currentTime)}</time><time>{stamp(player.duration)}</time></div></div><div className={styles.mobileControls}><button onClick={player.previous} aria-label="Previous track"><SkipBack /></button><button className={styles.mobilePlay} onClick={player.toggle} aria-label={player.playing ? "Pause" : "Play"}>{player.playing ? <Pause /> : <Play />}</button><button onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1} aria-label="Next track"><SkipForward /></button><button onClick={player.toggleMute} aria-label={player.muted ? "Unmute" : "Mute"}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div></section>
+      <section className={styles.mobileDock}><div className={styles.mobileTimeline}><WaveformSeek /><div><time>{stamp(player.currentTime)}</time><time>{stamp(player.duration)}</time></div></div><div className={styles.mobileControls}><button onClick={player.previous} aria-label="Previous track"><SkipBack /></button><button className={styles.mobilePlay} onClick={player.toggle} aria-label={player.playing ? "Pause" : "Play"}>{player.playing ? <Pause /> : <Play />}</button><button onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1} aria-label="Next track"><SkipForward /></button><button onClick={player.toggleMute} aria-label={player.muted ? "Unmute" : "Mute"}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div></section>
     </section>
     <section className={styles.grid} style={{ gridTemplateColumns: trackTemplate(columns, 180), gridTemplateRows: trackTemplate(rows, 152) }}> 
       <section className={styles.playbackPanel}>
         <div className={styles.art}>{fullCover ? <LoadingImage sizes="520px" src={fullCover} alt="" priority /> : <Disc3 />}</div>
         <div className={styles.details}><div className={styles.detailsContent} ref={detailsContent}><div className={styles.trackIdentity}><span>NOW PLAYING</span><h1><FullscreenMarquee>{player.track.title}</FullscreenMarquee></h1><strong>{player.track.artist || "Unknown artist"}</strong><p className={styles.metadata}>{player.track.album || "Unknown album"}<span>{audioQualityLabel(player.audioQuality)}</span></p></div>
-          <div className={styles.timeline}><input aria-label="Seek" type="range" min="0" max={player.duration || 0} step="0.1" value={Math.min(player.currentTime, player.duration || 0)} onChange={event => player.seek(Number(event.target.value))} style={{ "--progress": `${progress}%` } as React.CSSProperties} /><div><time>{stamp(player.currentTime)}</time><time>{stamp(player.duration)}</time></div></div>
-          <div className={styles.controls}><button onClick={player.previous}><SkipBack /></button><button className={styles.play} onClick={player.toggle}>{player.playing ? <Pause /> : <Play />}</button><button onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1}><SkipForward /></button><button onClick={player.toggleMute}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div>
+          <div className={styles.timeline}><WaveformSeek /><div><time>{stamp(player.currentTime)}</time><time>{stamp(player.duration)}</time></div></div>
+          <div className={styles.controls}><button aria-label="Previous track" onClick={player.previous}><SkipBack /></button><button aria-label={player.playing ? "Pause" : "Play"} className={styles.play} onClick={player.toggle}>{player.playing ? <Pause /> : <Play />}</button><button aria-label="Next track" onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1}><SkipForward /></button><button aria-label={player.muted ? "Unmute" : "Mute"} onClick={player.toggleMute}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div>
         </div></div>
       </section>
       {timedLines.length > 0 && <aside className={`${styles.lyrics} ${styles.mobileLyricsVisible} ${lyricsSizeClasses[lyricsTextSize]}`} key={`${activeLine}-${karaokeMode}`}>

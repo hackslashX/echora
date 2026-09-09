@@ -27,6 +27,12 @@ def _huber(value: float, delta: float) -> float:
     return value - 0.5 * delta
 
 
+def minimum_ctc_frames(token_groups: list[list[int]]) -> int:
+    """CTC needs one frame per token plus blanks between repeated labels."""
+    targets = [token for group in token_groups for token in group]
+    return len(targets) + sum(left == right for left, right in zip(targets, targets[1:]))
+
+
 def align_with_source_priors(
     emission: torch.Tensor,
     token_groups: list[list[int]],
@@ -48,7 +54,7 @@ def align_with_source_priors(
     targets = [token for group in token_groups for token in group]
     if not targets:
         raise ValueError("cannot align an empty token sequence")
-    if emission.shape[0] < len(targets):
+    if emission.shape[0] < minimum_ctc_frames(token_groups):
         raise RuntimeError("CTC emission has fewer frames than target tokens")
     if blank < 0 or blank >= emission.shape[1]:
         raise ValueError("blank token is outside the emission vocabulary")
