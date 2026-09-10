@@ -9,6 +9,7 @@ export type PlaybackPreferences = {
   trebleReactivity: number;
   animationSpeed: "slow" | "normal" | "fast";
   waveFrameRate: "30" | "60" | "uncapped";
+  karaokeHighlightStyle: "syllable" | "lava";
 };
 
 export const defaultPlaybackPreferences: PlaybackPreferences = {
@@ -20,6 +21,7 @@ export const defaultPlaybackPreferences: PlaybackPreferences = {
   trebleReactivity: 1,
   animationSpeed: "normal",
   waveFrameRate: "30",
+  karaokeHighlightStyle: "lava",
 };
 
 const storageKey = "echora:playback-preferences";

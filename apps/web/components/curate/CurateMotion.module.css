@@ -1,0 +1,24 @@
+.scrim {
+  animation: dialog-scrim-in var(--motion-fast) ease-out both;
+}
+
+.dialog {
+  animation: dialog-in var(--motion-medium) var(--motion-enter) both;
+}
+
+@keyframes dialog-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(12px) scale(.985); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scrim,
+  .dialog {
+    animation: none;
+  }
+}

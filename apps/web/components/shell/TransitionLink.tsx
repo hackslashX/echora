@@ -13,7 +13,7 @@ export default function TransitionLink({ href, children, onClick, ...props }: Pr
     event.preventDefault();
     window.dispatchEvent(new Event("echora:navigation-leave"));
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    window.setTimeout(() => router.push(href), reduced ? 0 : 260);
+    window.setTimeout(() => router.push(href), reduced ? 0 : 280);
   }
   return <a href={href} onClick={navigate} {...props}>{children}</a>;
 }
