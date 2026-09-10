@@ -12,6 +12,7 @@
 import { useEffect, useRef } from "react";
 import { BackdropPreset, PlaybackPreferences, readPlaybackPreferences } from "../player/playbackPreferences";
 import RootVisualizer from "../player/RootVisualizer";
+import SignalVisualizer from "../player/SignalVisualizer";
 import RetroTrainVisualizer from "../player/RetroTrainVisualizer";
 import styles from "./Backdrop.module.css";
 import { readCompactLayoutPreference } from "./layoutPreference";
@@ -21,7 +22,6 @@ type Color = [number, number, number];
 type SplineSettings = { flowSpeed: number; bandAmplitude: number; waveHeightScale: number; brightness: number; opacity: number; layerAmplitudes: number[]; layerColors: Color[]; colorR: number; colorG: number; colorB: number };
 type ParticleSettings = { count: number; flowSpeed: number; opacity: number; sizeBase: number; sizeVar: number };
 type Reactivity = { bass: number; mid: number; treble: number; level: number; onset?: boolean; timestamp?: number; bassAttack?: number; midAttack?: number; trebleAttack?: number };
-type TunnelState = { angle: number; offset: number; speed: number; bendX: number; bendY: number; lastOnset: number; intervals: number[]; impulseX: number; impulseY: number; bassFlash: number; trebleFlash: number };
 type XmbWindow = Window & {
   createSplineLayer?: (gl: WebGL2RenderingContext, canvas: HTMLCanvasElement) => RenderLayer;
   createParticlesLayer?: (gl: WebGL2RenderingContext, canvas: HTMLCanvasElement) => RenderLayer;
@@ -47,9 +47,6 @@ function loadScript(file: string) {
   return promise;
 }
 
-const POINTS = 72;
-const TUNNEL_RINGS = 26;
-const RING_SPACING = 1.05;
 const DEFAULT_BASE: Color = [37, 89, 179];
 const DEFAULT_WAVES: [Color, Color, Color] = [[0.48, 0.98, 0.92], [0.76, 0.66, 1], [0.55, 0.8, 1]];
 
@@ -104,7 +101,7 @@ function curtainCellsFor(cols: number, rows: number, elapsed: number, existing: 
   return { cells, cols, rows };
 }
 
-function presetScene(ctx: CanvasRenderingContext2D, preset: BackdropPreset, width: number, height: number, elapsed: number, clock: number, delta: number, reactive: Reactivity, background: Color, waves: [Color, Color, Color], envelope: Float32Array | null, waveHistory: Float32Array[], tunnel: TunnelState, curtainState: { current: CurtainState | null }) {
+function presetScene(ctx: CanvasRenderingContext2D, preset: BackdropPreset, width: number, height: number, elapsed: number, clock: number, delta: number, reactive: Reactivity, background: Color, waves: [Color, Color, Color], curtainState: { current: CurtainState | null }) {
   const mix = (a: Color, b: Color, amount: number): Color => [a[0] + (b[0] - a[0]) * amount, a[1] + (b[1] - a[1]) * amount, a[2] + (b[2] - a[2]) * amount];
   const css = (color: Color, alpha = 1) => `rgba(${color.map(value => Math.round(value * 255)).join(",")},${alpha})`;
   sceneBackground(ctx, background, width, height);
@@ -114,192 +111,7 @@ function presetScene(ctx: CanvasRenderingContext2D, preset: BackdropPreset, widt
   const w = width / dpr;
   const h = height / dpr;
 
-  if (preset === "oscilloscope") {
-    const midline = h * 0.5;
-    const points = envelope ?? new Float32Array(POINTS);
-    const amplitude = h * 0.3 * (0.5 + reactive.level * 1.35);
-    const value = (t: number) => {
-      const folded = t < 0.5 ? t * 2 : (1 - t) * 2;
-      const position = Math.min(POINTS - 1.001, Math.max(0, folded * (POINTS - 1)));
-      const index = Math.floor(position);
-      const fraction = position - index;
-      const smooth = fraction * fraction * (3 - 2 * fraction);
-      return points[index] * (1 - smooth) + points[index + 1] * smooth;
-    };
-    const edge: [number, number][] = [];
-    for (let x = 0; x <= w; x += 3) {
-      const t = x / w;
-      const magnitude = value(t) * amplitude * Math.pow(Math.max(0, Math.sin(Math.PI * Math.min(1, t * 1.06))), 0.6);
-      edge.push([x, midline - magnitude]);
-    }
-    const gradient = ctx.createLinearGradient(0, midline - amplitude, 0, midline + amplitude);
-    gradient.addColorStop(0, css(waves[2], 0.05));
-    gradient.addColorStop(0.5, css(waves[1], 0.3));
-    gradient.addColorStop(1, css(waves[0], 0.05));
-    ctx.beginPath();
-    edge.forEach(([x, y], index) => { if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
-    for (let index = edge.length - 1; index >= 0; index--) {
-      const [x, y] = edge[index];
-      ctx.lineTo(x, midline + (midline - y) * 0.82);
-    }
-    ctx.closePath();
-    ctx.fillStyle = gradient;
-    ctx.fill();
-    ctx.shadowColor = css(waves[1], 0.5);
-    ctx.shadowBlur = 24;
-    ctx.strokeStyle = css(waves[1], 0.85);
-    ctx.lineWidth = 2.2;
-    ctx.beginPath();
-    edge.forEach(([x, y], index) => { if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = css(waves[0], 0.3);
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    edge.forEach(([x, y], index) => { if (index === 0) ctx.moveTo(x, midline + (midline - y) * 0.82); else ctx.lineTo(x, midline + (midline - y) * 0.82); });
-    ctx.stroke();
-  } else if (preset === "void") {
-    const cx = w / 2;
-    const cy = h * 0.5;
-    const focal = h * 0.62;
-    const farZ = TUNNEL_RINGS * RING_SPACING;
-    const bass = reactive.bass;
-    const mid = reactive.mid;
-    const treble = reactive.treble;
-
-    const decayFactor = Math.exp(-delta * 6);
-    tunnel.bassFlash = Math.max((reactive.bassAttack ?? 0) * 1.6, tunnel.bassFlash * decayFactor);
-    tunnel.trebleFlash = Math.max((reactive.trebleAttack ?? 0) * 1.5, tunnel.trebleFlash * decayFactor);
-    if (reactive.onset && reactive.timestamp && reactive.timestamp > tunnel.lastOnset) {
-      if (tunnel.lastOnset >= 0) {
-        let interval = reactive.timestamp - tunnel.lastOnset;
-        if (interval >= 0.25 && interval <= 2) {
-          while (interval < 0.43) interval *= 2;
-          while (interval > 0.86) interval /= 2;
-          tunnel.intervals.push(interval);
-          if (tunnel.intervals.length > 8) tunnel.intervals.shift();
-        }
-      }
-      tunnel.lastOnset = reactive.timestamp;
-      tunnel.impulseX = Math.max(-1.25, Math.min(1.25, tunnel.impulseX + (Math.random() * 2 - 1) * 0.72));
-      tunnel.impulseY = Math.max(-1.25, Math.min(1.25, tunnel.impulseY + (Math.random() * 2 - 1) * 0.58));
-    }
-    if (tunnel.lastOnset >= 0 && clock - tunnel.lastOnset > 2.5) tunnel.intervals.length = 0;
-    const sortedIntervals = [...tunnel.intervals].sort((a, b) => a - b);
-    const tempoInterval = sortedIntervals.length ? sortedIntervals[Math.floor(sortedIntervals.length / 2)] : 0;
-    const bpm = tempoInterval ? 60 / tempoInterval : 0;
-    const tempoSpeed = bpm ? Math.max(0.28, Math.min(1.05, (bpm - 45) / 95)) : 0;
-    const targetSpeed = Math.max(0.16, 0.2 + mid * 1.35 + tempoSpeed * 0.95);
-    tunnel.speed += (targetSpeed - tunnel.speed) * Math.min(1, delta * 1.8);
-    tunnel.angle += tunnel.speed * delta * 0.42;
-    tunnel.offset = (tunnel.offset + tunnel.speed * delta) % RING_SPACING;
-
-    const wanderX = Math.sin(clock * 0.049 + 2.3) * 0.62 + Math.sin(clock * 0.021 + 0.7) * 0.38;
-    const wanderY = Math.sin(clock * 0.037 + 4.1) * 0.58 + Math.sin(clock * 0.017 + 1.9) * 0.42;
-    const decay = Math.exp(-delta * 0.35);
-    tunnel.impulseX *= decay;
-    tunnel.impulseY *= decay;
-    const targetX = Math.max(-1.35, Math.min(1.35, wanderX + tunnel.impulseX)) * w * 0.13 * (0.55 + reactive.level * 0.9);
-    const targetY = Math.max(-1.35, Math.min(1.35, wanderY + tunnel.impulseY)) * h * 0.11 * (0.55 + reactive.level * 0.9);
-    tunnel.bendX += (targetX - tunnel.bendX) * Math.min(1, delta * 0.75);
-    tunnel.bendY += (targetY - tunnel.bendY) * Math.min(1, delta * 0.75);
-
-    const centerline = (reach: number) => {
-      const crossX = -tunnel.bendY * 0.2;
-      const crossY = tunnel.bendX * 0.12;
-      const one = 1 - reach;
-      const x = 3 * one * one * reach * crossX + 3 * one * reach * reach * (tunnel.bendX * 0.58 + crossX) + reach * reach * reach * tunnel.bendX;
-      const y = 3 * one * one * reach * crossY + 3 * one * reach * reach * (tunnel.bendY * 0.58 + crossY) + reach * reach * reach * tunnel.bendY;
-      const dx = 3 * one * one * crossX + 6 * one * reach * (tunnel.bendX * 0.58) + 3 * reach * reach * (tunnel.bendX * 0.42 - crossX);
-      const dy = 3 * one * one * crossY + 6 * one * reach * (tunnel.bendY * 0.58) + 3 * reach * reach * (tunnel.bendY * 0.42 - crossY);
-      return { x: cx + x, y: cy + y, dx, dy };
-    };
-
-    const destination = centerline(1);
-    const depth = ctx.createRadialGradient(destination.x, destination.y, 0, destination.x, destination.y, Math.min(w, h) * 0.75);
-    depth.addColorStop(0, css(mix(waves[1], [0, 0, 0], 0.72), 0.5 + bass * 0.22));
-    depth.addColorStop(0.35, css(mix(waves[0], [0, 0, 0], 0.86), 0.2));
-    depth.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = depth;
-    ctx.fillRect(0, 0, w, h);
-
-    const rings = Array.from({ length: TUNNEL_RINGS }, (_, index) => {
-      let z = index * RING_SPACING + 0.55 - tunnel.offset;
-      if (z < 0.45) z += farZ;
-      return { z, index };
-    }).sort((left, right) => right.z - left.z);
-    type Joint = [number, number];
-    type Strut = { start: Joint; end: Joint; alpha: number; phase: number };
-    const struts: Strut[] = [];
-    let previous: { joints: Joint[]; alpha: number; index: number } | null = null;
-    ctx.globalCompositeOperation = "lighter";
-    for (const ring of rings) {
-      const reach = ring.z / farZ;
-      const path = centerline(reach);
-      const radius = 1.55 * focal / ring.z;
-      const fadeIn = Math.min(1, Math.max(0, (farZ - ring.z) / (RING_SPACING * 2.5)));
-      const fadeOut = Math.min(1, Math.max(0, (ring.z - 0.45) / 0.6));
-      const alpha = Math.min(1, 1.25 / (1 + ring.z * 0.11)) * fadeIn * fadeOut;
-      if (alpha < 0.03 || radius > Math.max(w, h) * 1.6 || radius < 14) { previous = null; continue; }
-      const tangentStrength = Math.min(0.28, Math.hypot(path.dx / w, path.dy / h) * 1.8);
-      const squash = 1 - tangentStrength;
-      const orientation = Math.atan2(path.dy, path.dx) * 0.32;
-      const cosOrientation = Math.cos(orientation);
-      const sinOrientation = Math.sin(orientation);
-      tunnel.angle += treble * delta * 0.35;
-      const rotation = tunnel.angle + ring.z * 0.045;
-      const historyIndex = Math.min(waveHistory.length - 1, Math.max(0, Math.floor((1 - reach) * Math.max(0, waveHistory.length - 1))));
-      const shape = waveHistory[historyIndex] ?? envelope ?? new Float32Array(POINTS);
-      const ringPoint = (angle: number): Joint => {
-        const wrapped = ((angle - rotation) / (Math.PI * 2) % 1 + 1) % 1;
-        const position = wrapped * (POINTS - 1);
-        const low = Math.floor(position);
-        const blend = position - low;
-        const sample = shape[low] * (1 - blend) + shape[Math.min(POINTS - 1, low + 1)] * blend;
-        const bassShape = Math.sin((angle - rotation) * 2 + ring.z * .12) * bass * .032;
-        const modulated = radius * (1 + sample * (.03 + bass * .045) + bassShape) * (1 + bass * .06 + tunnel.bassFlash * .12);
-        const localX = Math.cos(angle) * modulated * squash;
-        const localY = Math.sin(angle) * modulated;
-        return [path.x + localX * cosOrientation - localY * sinOrientation, path.y + localX * sinOrientation + localY * cosOrientation];
-      };
-      const panels = 10;
-      const panelArc = Math.PI * 2 / panels;
-      const gap = 0.16;
-      ctx.lineWidth = Math.max(0.8, radius * 0.016 * (1 + bass * .75));
-      const ringOpacity = Math.min(.9, .32 + alpha * .62 + bass * .16 + mid * .1) * fadeIn * fadeOut;
-      ctx.strokeStyle = css(waves[1], Math.min(.95, ringOpacity + tunnel.bassFlash * .3));
-      for (let panel = 0; panel < panels; panel++) {
-        const start = rotation + panel * panelArc + gap / 2;
-        ctx.beginPath();
-        for (let point = 0; point <= 8; point++) {
-          const projected = ringPoint(start + point / 8 * (panelArc - gap));
-          if (point === 0) ctx.moveTo(projected[0], projected[1]); else ctx.lineTo(projected[0], projected[1]);
-        }
-        ctx.stroke();
-      }
-      const joints = Array.from({ length: panels }, (_, joint) => ringPoint(rotation + joint * panelArc));
-      if (previous) {
-        for (let joint = 0; joint < panels; joint++) struts.push({ start: previous.joints[joint], end: joints[joint], alpha: Math.min(previous.alpha, alpha) * 0.6, phase: previous.index * panels + joint });
-      }
-      if (treble + tunnel.trebleFlash > 0.05 && fadeIn > 0.5) {
-        ctx.fillStyle = css(waves[2], Math.min(0.9, (treble + tunnel.trebleFlash) * 1.3 * alpha));
-        for (const [jx, jy] of joints) { ctx.beginPath(); ctx.arc(jx, jy, Math.max(0.8, radius * 0.012), 0, Math.PI * 2); ctx.fill(); }
-      }
-      previous = { joints, alpha, index: ring.index };
-    }
-    ctx.lineWidth = 1;
-    for (const strut of struts) {
-      const dx = strut.end[0] - strut.start[0];
-      const dy = strut.end[1] - strut.start[1];
-      const length = Math.hypot(dx, dy) || 1;
-      const displacement = Math.max(-12, Math.min(12, Math.sin(clock * 6.5 + strut.phase * 0.73) * (treble * 9 + tunnel.trebleFlash * 26)));
-      const controlX = (strut.start[0] + strut.end[0]) / 2 - dy / length * displacement;
-      const controlY = (strut.start[1] + strut.end[1]) / 2 + dx / length * displacement;
-      ctx.strokeStyle = css(waves[0], strut.alpha);
-      ctx.beginPath(); ctx.moveTo(strut.start[0], strut.start[1]); ctx.quadraticCurveTo(controlX, controlY, strut.end[0], strut.end[1]); ctx.stroke();
-    }
-    ctx.globalCompositeOperation = "source-over";
-  } else if (preset === "curtain") {
+  if (preset === "curtain") {
     const bass = reactive.bass;
     const mid = reactive.mid;
     const treble = reactive.treble;
@@ -408,11 +220,7 @@ export default function Backdrop() {
     const target: Reactivity = { bass: 0, mid: 0, treble: 0, level: 0 };
     let preferences = readPlaybackPreferences();
     let paletteTarget: { background: Color; waves: [Color, Color, Color] } | null = null;
-    let waveform: Uint8Array | null = null;
-    const envelope = new Float32Array(POINTS);
-    const waveHistory: Float32Array[] = [];
     const curtainState: { current: CurtainState | null } = { current: null };
-    const tunnelState: TunnelState = { angle: 0, offset: 0, speed: 0.22, bendX: 0, bendY: 0, lastOnset: -1, intervals: [], impulseX: 0, impulseY: 0, bassFlash: 0, trebleFlash: 0 };
 
     let opacityScale = 1;
     let targetOpacityScale = 1;
@@ -426,40 +234,9 @@ export default function Backdrop() {
       const detail = (event as CustomEvent<{ active: boolean; palette: { background: Color; waves: [Color, Color, Color] } | null }>).detail;
       paletteTarget = detail.active ? detail.palette : null;
     };
-    const receiveWaveform = (event: Event) => {
-      waveform = (event as CustomEvent<Uint8Array>).detail;
-      const signed = new Float32Array(POINTS);
-      for (let point = 0; point < POINTS; point++) {
-        const start = Math.floor(point / POINTS * waveform.length);
-        const end = Math.max(start + 1, Math.floor((point + 1) / POINTS * waveform.length));
-        let sum = 0;
-        for (let index = start; index < end; index++) sum += (waveform[index] - 128) / 128;
-        signed[point] = sum / (end - start);
-      }
-      const smooth = new Float32Array(POINTS);
-      const previous = waveHistory[0];
-      for (let point = 0; point < POINTS; point++) {
-        const spatial = (
-          signed[(point + POINTS - 2) % POINTS] +
-          signed[(point + POINTS - 1) % POINTS] * 2 +
-          signed[point] * 3 +
-          signed[(point + 1) % POINTS] * 2 +
-          signed[(point + 2) % POINTS]
-        ) / 9;
-        smooth[point] = previous ? previous[point] * .7 + spatial * .3 : spatial;
-      }
-      waveHistory.unshift(smooth);
-      if (waveHistory.length > 96) waveHistory.pop();
-    };
-    const resetTunnel = () => {
-      tunnelState.speed = .22; tunnelState.lastOnset = -1; tunnelState.intervals.length = 0; tunnelState.bassFlash = 0; tunnelState.trebleFlash = 0;
-      tunnelState.impulseX = 0; tunnelState.impulseY = 0; waveHistory.length = 0;
-    };
     window.addEventListener("echora:audio-reactivity", receiveAudio);
     window.addEventListener("echora:backdrop-mode", receiveMode);
     window.addEventListener("echora:track-palette", receivePalette);
-    window.addEventListener("echora:audio-waveform", receiveWaveform);
-    window.addEventListener("echora:track-change", resetTunnel);
     window.addEventListener("echora:playback-preferences", receivePreferences);
 
     async function start() {
@@ -517,19 +294,6 @@ export default function Backdrop() {
         reactive.onset = target.onset;
         reactive.timestamp = target.timestamp;
         target.onset = false;
-        for (let point = 0; point < POINTS; point++) {
-          let targetValue: number;
-          if (waveform && waveform.length) {
-            const start = Math.floor((point / POINTS) * (waveform.length - 1));
-            const end = Math.floor(((point + 1) / POINTS) * (waveform.length - 1));
-            let peak = 0;
-            for (let index = start; index <= end; index++) peak = Math.max(peak, Math.abs(waveform[index] - 128));
-            targetValue = Math.min(1, (peak / 128) * 1.5);
-          } else {
-            targetValue = 0.05 + 0.035 * (1 + Math.sin(elapsed * 1.15 + point * 0.45) * Math.sin(elapsed * 0.53 + point * 0.21));
-          }
-          envelope[point] += (targetValue - envelope[point]) * (targetValue > envelope[point] ? 0.5 : 0.12);
-        }
         opacityScale += (targetOpacityScale - opacityScale) * .035;
         const background = paletteTarget?.background ?? DEFAULT_BASE;
         const colors = paletteTarget?.waves ?? DEFAULT_WAVES;
@@ -539,13 +303,14 @@ export default function Backdrop() {
         }
         const rootsActive = preferences.wavesEnabled && preferences.backdropPreset === "roots";
         const trainActive = preferences.wavesEnabled && preferences.backdropPreset === "retrotrain";
-        const sceneActive = preferences.wavesEnabled && preferences.backdropPreset !== "waves" && !rootsActive && !trainActive;
+        const signalActive = preferences.backdropPreset === "oscilloscope" || preferences.backdropPreset === "void";
+        const sceneActive = preferences.wavesEnabled && preferences.backdropPreset !== "waves" && !rootsActive && !trainActive && !signalActive;
         sceneCanvas.style.opacity = sceneActive ? "1" : "0";
-        canvas.style.opacity = sceneActive || rootsActive || trainActive || (preferences.backdropPreset === "waves" && !preferences.wavesEnabled) ? "0" : "1";
+        canvas.style.opacity = sceneActive || rootsActive || trainActive || signalActive || (preferences.backdropPreset === "waves" && !preferences.wavesEnabled) ? "0" : "1";
         if (sceneActive && scene) {
           const sceneReactive: Reactivity = { ...reactive, bass: reactive.bass * preferences.bassReactivity, mid: reactive.mid * preferences.vocalReactivity, treble: reactive.treble * preferences.trebleReactivity };
-          presetScene(scene, preferences.backdropPreset, sceneCanvas.width, sceneCanvas.height, elapsed, now / 1000, frameDelta, sceneReactive, [...baseColor] as Color, [[...waveColors[0]], [...waveColors[1]], [...waveColors[2]]], envelope, waveHistory, tunnelState, curtainState);
-        } else if (!rootsActive && baseline && splineSettings && particleSettings) {
+          presetScene(scene, preferences.backdropPreset, sceneCanvas.width, sceneCanvas.height, elapsed, now / 1000, frameDelta, sceneReactive, [...baseColor] as Color, [[...waveColors[0]], [...waveColors[1]], [...waveColors[2]]], curtainState);
+        } else if (!rootsActive && !trainActive && !signalActive && baseline && splineSettings && particleSettings) {
           splineSettings.opacity = baseline.spline.opacity * opacityScale;
           splineSettings.layerAmplitudes[0] = preferences.wavesEnabled && preferences.backdropPreset === "waves" ? baseline.spline.layerAmplitudes[0] + reactive.bass * 1.65 * preferences.bassReactivity : 0;
           splineSettings.layerAmplitudes[1] = preferences.wavesEnabled && preferences.backdropPreset === "waves" ? baseline.spline.layerAmplitudes[1] + reactive.mid * 1.3 * preferences.vocalReactivity : 0;
@@ -566,8 +331,8 @@ export default function Backdrop() {
     }
 
     start().catch(() => {});
-    return () => { cancelled = true; cancelAnimationFrame(animation); removeResize(); window.removeEventListener("echora:audio-reactivity", receiveAudio); window.removeEventListener("echora:backdrop-mode", receiveMode); window.removeEventListener("echora:track-palette", receivePalette); window.removeEventListener("echora:audio-waveform", receiveWaveform); window.removeEventListener("echora:track-change", resetTunnel); window.removeEventListener("echora:playback-preferences", receivePreferences); };
+    return () => { cancelled = true; cancelAnimationFrame(animation); removeResize(); window.removeEventListener("echora:audio-reactivity", receiveAudio); window.removeEventListener("echora:backdrop-mode", receiveMode); window.removeEventListener("echora:track-palette", receivePalette); window.removeEventListener("echora:playback-preferences", receivePreferences); };
   }, []);
 
-  return <div className={styles.backdrop} aria-hidden="true"><canvas ref={glRef} /><canvas ref={sceneRef} className={styles.scene} /><RootVisualizer /><RetroTrainVisualizer /></div>;
+  return <div className={styles.backdrop} aria-hidden="true"><canvas ref={glRef} /><canvas ref={sceneRef} className={styles.scene} /><RootVisualizer /><SignalVisualizer /><RetroTrainVisualizer /></div>;
 }
