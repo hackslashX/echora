@@ -39,7 +39,7 @@ export default function AppShell({ title, footer, children, flush = false, fullP
 
   useEffect(() => {
     if (transition !== "entering") return;
-    const timer = window.setTimeout(() => setTransition("idle"), 300);
+    const timer = window.setTimeout(() => setTransition("idle"), 280);
     return () => window.clearTimeout(timer);
   }, [transition]);
 

@@ -8,6 +8,7 @@ import { trackTemplate } from "../shell/gridGeometry";
 import { audioQualityLabel } from "./audioQuality";
 import { usePlayer } from "./PlayerProvider";
 import styles from "./FullscreenPlayer.module.css";
+import motionStyles from "./FullscreenMotion.module.css";
 import WaveformSeek from "./WaveformSeek";
 import { useDialogFocus } from "../shell/useDialogFocus";
 
@@ -113,14 +114,14 @@ export default function FullscreenPlayer() {
     })}</span>;
   }
   function chooseLyricsTextSize(size: LyricsTextSize) { localStorage.setItem(lyricsSizeStorageKey, size); setLyricsTextSize(size); }
-  function close() { if (closing) return; document.body.classList.add("echora-fullscreen-player-closing"); setClosing(true); window.setTimeout(() => player.setExpanded(false), 520); }
-  return <main ref={dialogRef} tabIndex={-1} className={`${styles.player} ${mobileLyricsLayout ? styles.hasMobileLyrics : ""} ${closing ? styles.closing : ""}`} role="dialog" aria-modal="true" aria-label="Now playing">
+  function close() { if (closing) return; document.body.classList.add("echora-fullscreen-player-closing"); setClosing(true); const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches; window.setTimeout(() => player.setExpanded(false), reduced ? 0 : 280); }
+  return <main ref={dialogRef} tabIndex={-1} className={`${styles.player} ${motionStyles.surface} ${mobileLyricsLayout ? styles.hasMobileLyrics : ""} ${closing ? `${styles.closing} ${motionStyles.closing}` : ""}`} role="dialog" aria-modal="true" aria-label="Now playing">
     <div className={styles.vignette} />
     <section className={styles.unsupported}><strong>THIS VIEW NEEDS MORE ROOM</strong><p>Resize the window to at least 900 pixels wide or open Echora on a larger screen.</p></section>
-    <button className={styles.close} onClick={close} aria-label="Close full screen player"><X /></button>
+    <button className={`${styles.close} ${motionStyles.content}`} onClick={close} aria-label="Close full screen player"><X /></button>
     {timedLines.length > 0 && <div className={styles.sizeToggle} role="group" aria-label="Lyrics text size">{(["small", "normal", "large"] as LyricsTextSize[]).map(size => { const Icon = size === "small" ? AArrowDown : size === "large" ? AArrowUp : Type; return <button type="button" className={lyricsTextSize === size ? styles.selectedSize : ""} onClick={() => chooseLyricsTextSize(size)} aria-pressed={lyricsTextSize === size} key={size}><Icon />{size.toUpperCase()}</button>; })}</div>}
     {karaokeAvailable && <div className={styles.modeToggle} role="group" aria-label="Lyrics timing mode"><button className={karaokeMode ? styles.selectedMode : ""} onClick={() => setKaraokeMode(true)} aria-pressed={karaokeMode}><MicVocal />KARAOKE</button><button className={!karaokeMode ? styles.selectedMode : ""} onClick={() => setKaraokeMode(false)} aria-pressed={!karaokeMode}><ListMusic />SYNCED</button></div>}
-    <section className={styles.mobilePlayer} aria-label="Mobile now playing">
+    <section className={`${styles.mobilePlayer} ${motionStyles.content}`} aria-label="Mobile now playing">
       <header className={styles.mobileTrack}><div className={styles.mobileHeaderArt}>{mobileCover ? <LoadingImage sizes="260px" src={mobileCover} alt="" priority /> : <Disc3 />}</div><div><span>NOW PLAYING</span><h1><FullscreenMarquee>{player.track.title}</FullscreenMarquee></h1><strong>{player.track.artist || "Unknown artist"}</strong><p><FullscreenMarquee>{player.track.album || "Unknown album"}</FullscreenMarquee></p></div></header>
       <section className={styles.mobileStage}>
         {timedLines.length ? <div className={styles.mobileLyricsStage}> 
@@ -130,7 +131,7 @@ export default function FullscreenPlayer() {
       </section>
       <section className={styles.mobileDock}><div className={styles.mobileTimeline}><WaveformSeek /><div><time>{stamp(player.currentTime)}</time><time>{stamp(player.duration)}</time></div></div><div className={styles.mobileControls}><button onClick={player.previous} aria-label="Previous track"><SkipBack /></button><button className={styles.mobilePlay} onClick={player.toggle} aria-label={player.playing ? "Pause" : "Play"}>{player.playing ? <Pause /> : <Play />}</button><button onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1} aria-label="Next track"><SkipForward /></button><button onClick={player.toggleMute} aria-label={player.muted ? "Unmute" : "Mute"}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div></section>
     </section>
-    <section className={styles.grid} style={{ gridTemplateColumns: trackTemplate(columns, 180), gridTemplateRows: trackTemplate(rows, 152) }}> 
+    <section className={`${styles.grid} ${motionStyles.content}`} style={{ gridTemplateColumns: trackTemplate(columns, 180), gridTemplateRows: trackTemplate(rows, 152) }}>
       <section className={styles.playbackPanel}>
         <div className={styles.art}>{fullCover ? <LoadingImage sizes="520px" src={fullCover} alt="" priority /> : <Disc3 />}</div>
         <div className={styles.details}><div className={styles.detailsContent} ref={detailsContent}><div className={styles.trackIdentity}><span>NOW PLAYING</span><h1><FullscreenMarquee>{player.track.title}</FullscreenMarquee></h1><strong>{player.track.artist || "Unknown artist"}</strong><p className={styles.metadata}>{player.track.album || "Unknown album"}<span>{audioQualityLabel(player.audioQuality)}</span></p></div>
