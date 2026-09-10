@@ -1,0 +1,1 @@
+.glow{position:absolute;inset:0;width:100%;height:100%;z-index:1;pointer-events:none;mix-blend-mode:screen}@media(max-width:1199px),(max-height:719px){.glow{z-index:5}}@media(prefers-reduced-motion:reduce){.glow{display:none}}
