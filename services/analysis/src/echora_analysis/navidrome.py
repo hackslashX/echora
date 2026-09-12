@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import os
 from dataclasses import dataclass
 import hashlib
 import secrets
@@ -30,6 +35,24 @@ _media_http_client = httpx.Client(
 )
 
 
+# Context-local: concurrent workers never share authenticated audio or cancellation.
+_batch_state: ContextVar = ContextVar("navidrome_batch", default=None)
+
+
+@contextmanager
+def batch_audio_cache(check=lambda: None):
+    """Bounded private disk cache; removed even on BaseException cancellation."""
+    with TemporaryDirectory(prefix="echora-audio-") as directory:
+        state = {"directory": Path(directory), "size": 0,
+                 "limit": max(0, int(os.getenv("ECHORA_AUDIO_CACHE_BYTES", str(2 * 1024**3)))),
+                 "check": check}
+        token = _batch_state.set(state)
+        try:
+            yield
+        finally:
+            _batch_state.reset(token)
+
+
 class NavidromeClient:
     """Small Subsonic client. Credentials are only sent from the analysis service."""
 
@@ -51,6 +74,9 @@ class NavidromeClient:
         return urljoin(self.base_url, f"rest/{method}.view")
 
     def _request(self, method: str, **params: object) -> dict[str, object]:
+        state = _batch_state.get()
+        if state:
+            state["check"]()
         response = self.client.get(self._endpoint(method), params={**self._auth(), **params})
         response.raise_for_status()
         payload = response.json()["subsonic-response"]
@@ -82,20 +108,31 @@ class NavidromeClient:
         songs = payload.get("randomSongs", {}).get("song", [])
         return [self._track(song) for song in songs]
 
-    def all_tracks(self, page_size: int = 500, maximum: int = 20000) -> list[NavidromeTrack]:
+    def all_tracks(self, page_size: int = 500, maximum: int | None = None) -> list[NavidromeTrack]:
+        if page_size <= 0 or (maximum is not None and maximum <= 0):
+            raise ValueError("Pagination limits must be positive")
         tracks: list[NavidromeTrack] = []
-        offset = 0
-        while len(tracks) < maximum:
-            payload = self._request(
-                "search3", query="", songCount=min(page_size, maximum - len(tracks)), songOffset=offset,
-                artistCount=0, albumCount=0,
-            )
-            songs = payload.get("searchResult3", {}).get("song", [])
-            tracks.extend(self._track(song) for song in songs)
-            if len(songs) < page_size:
-                break
-            offset += len(songs)
-        return tracks
+        seen: set[str] = set()
+        while True:
+            payload = self._request("search3", query="", songCount=page_size,
+                                    songOffset=len(tracks), artistCount=0, albumCount=0)
+            result = payload.get("searchResult3")
+            if not isinstance(result, dict):
+                raise RuntimeError("Incomplete Navidrome catalog response")
+            songs = result.get("song", [])
+            if not isinstance(songs, list) or len(songs) > page_size:
+                raise RuntimeError("Invalid Navidrome catalog page")
+            if not songs:
+                return tracks
+            page = [self._track(song) for song in songs]
+            ids = {song.id for song in page}
+            if len(ids) != len(page) or ids & seen:
+                raise RuntimeError("Repeating Navidrome catalog pagination")
+            seen.update(ids)
+            tracks.extend(page)
+            if maximum is not None and len(tracks) > maximum:
+                raise RuntimeError("Navidrome catalog exceeds safety limit")
+            # Probe beyond short pages too: servers may silently cap page size.
 
     def tracks(self, song_ids: list[str]) -> list[NavidromeTrack]:
         tracks = []
@@ -234,12 +271,26 @@ class NavidromeClient:
         return response.content, content_type
 
     def audio_bytes(self, song_id: str) -> bytes:
+        state = _batch_state.get()
+        path = None
+        if state:
+            state["check"]()
+            key = hashlib.sha256(repr((self.base_url, self.username, song_id)).encode()).hexdigest()
+            path = state["directory"] / key
+            if path.exists():
+                return path.read_bytes()
         response = self.client.get(
             self._endpoint("stream"),
             params={**self._auth(), "id": song_id, "format": "raw", "estimateContentLength": "true"},
         )
         response.raise_for_status()
-        return response.content
+        audio = response.content
+        if state:
+            state["check"]()
+            if state["size"] + len(audio) <= state["limit"]:
+                path.write_bytes(audio)
+                state["size"] += len(audio)
+        return audio
 
     def close(self) -> None:
         if self._owns_client:

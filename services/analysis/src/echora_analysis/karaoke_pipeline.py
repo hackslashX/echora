@@ -18,7 +18,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from .navidrome import NavidromeClient
-from .processing_plan import plan_karaoke
+from .processing_plan import plan_karaoke, resolve_library_id
 
 logger = logging.getLogger(__name__)
 
@@ -529,11 +529,12 @@ def _backfill_karaoke(
     report = progress or (lambda _: None)
     summary = {"total": 0, "aligned": 0, "failed": 0}
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection, NavidromeClient(url, username, password) as client:
+        library_id = resolve_library_id(connection, url)
         model_revision = _stored_model_revision(
             os.environ.get("FA_KARA_REVISION", DEFAULT_MODEL_REVISION)
         )
         planned = plan_karaoke(
-            connection, KARAOKE_PIPELINE_REVISION, external_ids, model_revision
+            connection, KARAOKE_PIPELINE_REVISION, external_ids, model_revision, library_id=library_id
         ).karaoke_external_ids
         if not planned:
             report({"phase": "planning", "message": "Karaoke alignment already current",
@@ -546,9 +547,9 @@ def _backfill_karaoke(
             cursor.execute(
                 f"""SELECT DISTINCT ON (ts.track_id) ts.track_id, ts.external_id, t.title, l.text, l.language, l.provenance->'lines'
                     FROM track_sources ts JOIN tracks t ON t.id=ts.track_id JOIN lyrics l ON l.track_id=ts.track_id
-                    WHERE ts.source_type='subsonic' AND ts.external_id=ANY(%s)
+                    WHERE ts.source_type='subsonic' AND ts.external_id=ANY(%s) AND ts.library_id=%s
                     ORDER BY ts.track_id, ts.id""",
-                (list(planned),),
+                (list(planned), library_id),
             )
             tracks = cursor.fetchall()
         summary["total"] = len(tracks)

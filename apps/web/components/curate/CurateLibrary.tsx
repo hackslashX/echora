@@ -15,6 +15,7 @@ import { useDialogFocus } from "../shell/useDialogFocus";
 import Alert from "../ui/Alert";
 import TagInput, { type Tag } from "./TagInput";
 import TrackReferencePicker, { type ReferenceTrack } from "./TrackReferencePicker";
+import { useCurationJobs } from "../jobs/useCurationJobs";
 import LanguagePicker from "./LanguagePicker";
 
 type Reference = { kind: "track" | "artist" | "album"; name: string };
@@ -70,6 +71,14 @@ export default function CurateLibrary() {
   const [busyAction, setBusyAction] = useState<"preview" | "save" | "refresh" | "delete" | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Curation | null>(null);
   const [error, setError] = useState("");
+  const [selectedCurationId, setSelectedCurationId] = useState<string | null>(null);
+  const curationJobs = useCurationJobs(connectionId, async signal => {
+    const body = await api<{ curations: Curation[] }>("/library/curations", { signal });
+    if (signal.aborted) return;
+    setCurations(body.curations);
+    const selected = body.curations.find(item => item.id === selectedCurationId);
+    if (selected) setPreview(value => value ? { ...value, tracks: selected.tracks } : value);
+  });
   const busy = busyAction !== null;
 
   function loadCurations() { return api<{ curations: Curation[] }>("/library/curations").then(body => setCurations(body.curations)).catch(reason => setError(reason.message)); }
@@ -95,7 +104,8 @@ export default function CurateLibrary() {
     if (!name.trim()) { setError("Give the curation a name before saving it"); return; }
     setBusyAction("save"); setError("");
     try {
-      await api("/library/curations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...recipe, name, refresh_enabled: refreshEnabled }) });
+      const result = await api<{ job_id?: string }>("/library/curations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...recipe, name, refresh_enabled: refreshEnabled }) });
+      curationJobs.track(result?.job_id);
       await loadCurations();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save the curation"); }
     finally { setBusyAction(null); }
@@ -104,7 +114,7 @@ export default function CurateLibrary() {
   async function refresh(curation: Curation) {
     setBusyAction("refresh"); setError("");
     setCurations(items => items.map(item => item.id === curation.id ? { ...item, status: "refreshing", last_error: undefined } : item));
-    try { await api(`/library/curations/${curation.id}/refresh`, { method: "POST" }); }
+    try { const result = await api<{ job_id: string }>(`/library/curations/${curation.id}/refresh`, { method: "POST" }); curationJobs.track(result.job_id); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Refresh failed"); }
     finally { loadCurations(); setBusyAction(null); }
   }
@@ -120,6 +130,7 @@ export default function CurateLibrary() {
     finally { setBusyAction(null); }
   }
   function openCuration(curation: Curation) {
+    setSelectedCurationId(curation.id);
     setName(curation.name);
     setActiveAspect(curation.curation_type === "examples" ? "examples" : curation.curation_type === "time_of_day" ? "time_of_day" : "language");
     setPositive(curation.positive_prompt); setNegative(curation.negative_prompt);
@@ -141,6 +152,7 @@ export default function CurateLibrary() {
     setTrackLimit(30); setRefreshMode("stable"); setRefreshEnabled(true); setTargetLanguage(""); setLanguageStrictness("primarily"); setError("");
   }
   function closeDetails() {
+    setSelectedCurationId(null);
     if (detailKind === "saved") resetRecipeForm();
     setPreview(null); setDetailKind(null);
   }
@@ -171,7 +183,7 @@ export default function CurateLibrary() {
         </div></details>
         </div>
         <div className={styles.actions}><button onClick={generate} disabled={busy || !hasPositiveEvidence}><WandSparkles />{busyAction === "preview" ? "CURATING" : "PREVIEW"}</button><button onClick={save} disabled={busy || !hasPositiveEvidence}><Save />{busyAction === "save" ? "SAVING" : "SAVE + SYNC"}</button></div>
-        {error && <Alert tone="error" className={styles.actionError}>{error}</Alert>}
+        {(error || curationJobs.error) && <Alert tone="error" className={styles.actionError}>{error || curationJobs.error}</Alert>}
       </section>
       <section className={`${styles.results} ${mobilePane === "playlists" ? styles.mobileActive : ""}`}>
         {preview ? <div className={`${styles.panelView} ${styles.detailView}`}>
@@ -181,7 +193,7 @@ export default function CurateLibrary() {
           {shown.length > 0 && <footer><button onClick={() => playQueue(playerTracks(shown), 0)}><Play /> {detailKind === "saved" ? "PLAY PLAYLIST" : "PLAY PREVIEW"}</button><span>{weightLabel}{preview.familiarity?.active ? ` · ${preview.familiarity.familiar_tracks} familiar / ${preview.familiarity.discovery_tracks} discovery` : ""}</span>{preview.language && <em className={styles.languageNote}>{preview.language.strictness === "only" ? `· ${preview.language.matched_tracks} confident ${preview.language.target.toUpperCase()} match${preview.language.matched_tracks === 1 ? "" : "es"}` : `· ${preview.language.matched_tracks} primary ${preview.language.target.toUpperCase()} · rest closest vibe`}</em>}</footer>}
         </div> : <div className={`${styles.panelView} ${styles.curationView}`}>
           <header><div><h2>Saved curations</h2><p>Your synced playlists and their latest revisions.</p></div><strong>{curations.length}</strong></header>
-          <div className={styles.curationList}>{curations.length ? curations.map(curation => <article key={curation.id} className={styles.curationCard}><button className={styles.curationMain} onClick={() => openCuration(curation)}><span data-status={curation.status} title={curation.status === "ready" ? "Latest playlist revision is synced" : curation.status === "refreshing" ? "A new playlist revision is being generated" : curation.status === "failed" ? "The latest refresh failed" : "Playlist has not been generated yet"}>{curation.status}</span><strong>{curation.name}</strong><small>{curation.tracks.length} tracks · {curation.refresh_enabled ? "refreshes every 24 hours" : "manual refresh"}</small>{curation.last_error && <em>{curation.last_error}</em>}</button><button title="Refresh now" disabled={busy} onClick={() => refresh(curation)}><RefreshCw /></button><button title="Toggle schedule" className={curation.refresh_enabled ? styles.enabled : ""} onClick={() => toggleSchedule(curation)}><Clock3 /></button><button title="Delete curation" className={styles.deleteButton} onClick={() => setDeleteTarget(curation)}><Trash2 /></button></article>) : <div className={styles.emptyCurations}><ListMusic /><strong>No saved curations</strong><p>Choose your playlist criteria, then use Save + Sync to publish it.</p></div>}</div>
+          <div className={styles.curationList}>{curations.length ? curations.map(curation => <article key={curation.id} className={styles.curationCard}><button className={styles.curationMain} onClick={() => openCuration(curation)}><span data-status={curation.status} title={curation.status === "ready" ? "Latest playlist revision is synced" : curation.status === "refreshing" ? "A new playlist revision is being generated" : curation.status === "failed" ? "The latest refresh failed" : "Playlist has not been generated yet"}>{curation.status}</span><strong>{curation.name}</strong><small>{curation.tracks.length} tracks · {curation.refresh_enabled ? "refreshes every 24 hours" : "manual refresh"}</small>{curation.last_error && <em>{curation.last_error}</em>}</button><button title="Refresh now" disabled={busy || curation.status === "refreshing" || curationJobs.jobs.some(job => job.curation_id === curation.id)} onClick={() => refresh(curation)}><RefreshCw /></button><button title="Toggle schedule" className={curation.refresh_enabled ? styles.enabled : ""} onClick={() => toggleSchedule(curation)}><Clock3 /></button><button title="Delete curation" className={styles.deleteButton} onClick={() => setDeleteTarget(curation)}><Trash2 /></button></article>) : <div className={styles.emptyCurations}><ListMusic /><strong>No saved curations</strong><p>Choose your playlist criteria, then use Save + Sync to publish it.</p></div>}</div>
         </div>}
       </section>
       {deleteTarget && <div className={`${styles.deleteScrim} ${motionStyles.scrim}`} role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) setDeleteTarget(null); }}><section ref={deleteDialogRef} tabIndex={-1} className={`${styles.deleteDialog} ${motionStyles.dialog}`} role="dialog" aria-modal="true" aria-labelledby="delete-curation-title"><header><div><span>Delete curation</span><h2 id="delete-curation-title">{deleteTarget.name}</h2></div><button onClick={() => setDeleteTarget(null)} disabled={busy} aria-label="Close delete dialog"><X /></button></header><p>Choose whether the synced playlist should remain in Navidrome.</p><div><button className={styles.keepRemote} onClick={() => removeCuration(false)} disabled={busy}>DELETE FROM ECHORA ONLY<small>Keep the playlist in Navidrome</small></button><button className={styles.deleteEverywhere} onClick={() => removeCuration(true)} disabled={busy}><Trash2 />DELETE BOTH<small>Remove it from Echora and Navidrome</small></button></div></section></div>}

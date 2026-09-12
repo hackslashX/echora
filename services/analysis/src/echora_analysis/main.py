@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
 import os
 import random
 import secrets
-import threading
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -24,7 +21,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from sklearn.metrics import adjusted_rand_score, silhouette_score
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import joinedload
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
@@ -41,26 +38,21 @@ from .melody_preview import melody_preview
 from .audio_profiles import (
     AUDIO_PROFILE_REVISION,
     SUPPORTED_PROFILE_MODELS,
-    build_audio_profiles,
 )
-from .concepts import combine_concept_percentiles, empirical_percentiles, expand_prompts, expand_tag_groups, predefined_concepts, score_concept
+from .concepts import combine_concept_percentiles, empirical_percentiles, expand_tag_groups, predefined_concepts, score_concept
 from .curations import CURATION_SCORING_REVISION, EXAMPLE_COMPONENT_WEIGHTS, rank_curation
 from .db import session_scope
+from . import jobs
 from .db_models import Curation, NavidromeConnection, OidcAllowedEmail, OidcSetting, User, UserPreference, UserSession
-from .hum_search import DEFAULT_CORPUS_SIZE, build_corpus, search_corpus
-from .ingest import ingest_navidrome
+from .hum_search import DEFAULT_CORPUS_SIZE, search_corpus
 from .journeys import normalize_rows as normalize_journey_rows, select_journey, spherical_targets
 from .listening_history import recent_listens, track_listen_counts
 from .language_detection import LANGUAGE_NAMES, PRIMARY_SHARE, language_affinity
-from .karaoke_pipeline import KARAOKE_PIPELINE_REVISION, backfill_karaoke
+from .karaoke_pipeline import KARAOKE_PIPELINE_REVISION
 from .melody_config import MELODY_CONTOUR_REVISION
 from .media_cache import cache_key, media_cache
 from .lyrics_analysis import shared_lyrics_model
-from .lyrics_pipeline import backfill_lyrics
 from .navidrome import NavidromeClient, media_navidrome_client
-from .voice_pipeline import backfill_voice
-from .processing_plan import plan_karaoke, plan_lyrics
-from .recordings import store_and_match_fingerprint
 from .representations import configure_representations
 
 app = FastAPI(title="Echora analysis", version="0.3.0")
@@ -77,11 +69,6 @@ if _oidc_issuer and os.environ.get("OIDC_CLIENT_ID") and os.environ.get("OIDC_CL
         server_metadata_url=f"{_oidc_issuer}/.well-known/openid-configuration",
         client_kwargs={"scope": os.environ.get("OIDC_SCOPES", "openid profile email")},
     )
-_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="echora-ingest")
-_profile_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="echora-audio-profile")
-_jobs: dict[str, dict[str, object]] = {}
-_jobs_lock = threading.Lock()
-_scheduler_started = False
 _SESSION_HOURS = 2
 logger = logging.getLogger(__name__)
 _COMMUNITY_SNAPSHOT_REVISION = 1
@@ -299,155 +286,6 @@ def _load_connection(connection_id: str, user_id: uuid.UUID | None = None) -> tu
     return url, username, password
 
 
-def _run_lyrics_backfill(
-    job_id: str, credentials: tuple[str, str, str], external_ids: list[str] | None = None,
-    only_missing: bool = False, base_summary: dict[str, int] | None = None,
-) -> None:
-    def progress(update: dict[str, object]) -> None:
-        with _jobs_lock:
-            _jobs[job_id] = {**_jobs[job_id], **update, "status": "running"}
-    try:
-        summary = backfill_lyrics(
-            *credentials, progress=progress, external_ids=external_ids, only_missing=only_missing,
-        )
-        karaoke_summary = backfill_karaoke(*credentials, progress=progress, external_ids=external_ids)
-        voice_summary = backfill_voice(*credentials, progress=progress)
-        combined = {**(base_summary or {}),
-                    **{f"lyrics_{key}": value for key, value in summary.items()},
-                    **{f"karaoke_{key}": value for key, value in karaoke_summary.items()},
-                    **{f"voice_{key}": value for key, value in voice_summary.items()}}
-        with _jobs_lock:
-            _jobs[job_id] = {"status": "complete", "phase": "complete", "message": "Audio, lyrics, and voice analysis is complete",
-                             "completed": summary["total"], "total": summary["total"], "unit": "tracks", "summary": combined}
-    except Exception as error:
-        logger.exception("Lyrics backfill failed")
-        with _jobs_lock:
-            _jobs[job_id] = {"status": "failed", "phase": "failed", "error": str(error)}
-
-
-def _run_voice_backfill(job_id: str, credentials: tuple[str, str, str]) -> None:
-    def progress(update: dict[str, object]) -> None:
-        with _jobs_lock:
-            _jobs[job_id] = {**_jobs[job_id], **update, "status": "running"}
-    try:
-        summary = backfill_voice(*credentials, progress=progress)
-        with _jobs_lock:
-            _jobs[job_id] = {"status": "complete", "phase": "complete",
-                             "message": "Voice classification is complete",
-                             "completed": summary["total"], "total": summary["total"],
-                             "unit": "tracks", "summary": summary}
-    except Exception as error:
-        logger.exception("Voice backfill failed")
-        with _jobs_lock:
-            _jobs[job_id] = {"status": "failed", "phase": "failed", "error": str(error)}
-
-
-def _run_audio_profiles(job_id: str, track_ids: list[uuid.UUID]) -> None:
-    def progress(update: dict[str, object]) -> None:
-        with _jobs_lock:
-            _jobs[job_id] = {**_jobs[job_id], **update, "status": "running"}
-    try:
-        with _jobs_lock:
-            job_total = int(_jobs[job_id].get("total", 0))
-        completed_offset = 0
-        model_summaries: dict[str, dict[str, object]] = {}
-        for model_name in SUPPORTED_PROFILE_MODELS:
-            offset = completed_offset
-
-            def model_progress(update: dict[str, object], offset: int = offset) -> None:
-                progress({
-                    **update,
-                    "completed": offset + int(update.get("completed", 0)),
-                    "total": job_total,
-                    "unit": "representations",
-                })
-
-            model_summary = build_audio_profiles(
-                track_ids, model_progress, model_name=model_name,
-            )
-            model_summaries[model_name] = model_summary
-            completed_offset += int(model_summary["total"])
-        summary = {
-            "models": model_summaries,
-            "total": sum(int(value["total"]) for value in model_summaries.values()),
-            "profiled": sum(int(value["profiled"]) for value in model_summaries.values()),
-            "failed": sum(int(value["failed"]) for value in model_summaries.values()),
-        }
-        with _jobs_lock:
-            _jobs[job_id] = {
-                **_jobs[job_id], "status": "complete", "phase": "complete",
-                "message": "Multi-vector audio profiles are complete",
-                "completed": summary["profiled"], "total": summary["total"],
-                "unit": "tracks", "summary": summary,
-            }
-    except Exception as error:
-        logger.exception("Audio-profile derivation failed")
-        with _jobs_lock:
-            _jobs[job_id] = {**_jobs[job_id], "status": "failed", "phase": "failed", "error": str(error)}
-
-
-def _run_karaoke_backfill(job_id: str, credentials: tuple[str, str, str]) -> None:
-    def progress(update: dict[str, object]) -> None:
-        with _jobs_lock:
-            _jobs[job_id] = {**_jobs[job_id], **update, "status": "running"}
-    try:
-        summary = backfill_karaoke(*credentials, progress=progress)
-        with _jobs_lock:
-            _jobs[job_id] = {"status": "complete", "phase": "complete",
-                             "message": "Karaoke lyric alignment is complete",
-                             "completed": summary["total"], "total": summary["total"],
-                             "unit": "tracks", "summary": summary}
-    except Exception as error:
-        logger.exception("FA-Kara backfill failed")
-        with _jobs_lock:
-            _jobs[job_id] = {"status": "failed", "phase": "failed", "error": str(error)}
-
-
-def _run_fingerprint_backfill(job_id: str, credentials: tuple[str, str, str]) -> None:
-    url, username, password = credentials
-    try:
-        with psycopg.connect(os.environ["DATABASE_URL"]) as connection, NavidromeClient(url, username, password) as client:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """SELECT ts.track_id, ts.external_id, t.duration_seconds, t.title
-                       FROM track_sources ts JOIN tracks t ON t.id=ts.track_id
-                       LEFT JOIN track_fingerprints tf ON tf.track_id=t.id
-                       WHERE ts.source_type='subsonic' AND tf.track_id IS NULL ORDER BY t.id"""
-                )
-                tracks = cursor.fetchall()
-            with _jobs_lock:
-                _jobs[job_id] = {"status": "running", "phase": "fingerprinting", "completed": 0, "total": len(tracks)}
-            matched = 0
-            failed = 0
-            for index, (track_id, external_id, duration, title) in enumerate(tracks):
-                try:
-                    audio = client.audio_bytes(external_id)
-                    result = store_and_match_fingerprint(connection, track_id, audio, float(duration))
-                    matched += int(bool(result.get("matched")))
-                    connection.commit()
-                except Exception:
-                    connection.rollback()
-                    failed += 1
-                    logger.exception("Fingerprint backfill failed for %s", track_id)
-                with _jobs_lock:
-                    _jobs[job_id] = {"status": "running", "phase": "fingerprinting", "completed": index + 1,
-                                     "total": len(tracks), "message": f"Fingerprinting {title}",
-                                     "matched": matched, "failed": failed}
-            with _jobs_lock:
-                _jobs[job_id] = {"status": "complete", "phase": "complete", "completed": len(tracks),
-                                 "total": len(tracks), "matched": matched, "failed": failed}
-    except Exception as error:
-        with _jobs_lock:
-            _jobs[job_id] = {"status": "failed", "phase": "failed", "error": str(error)}
-
-
-def _lyrics_work_count(external_ids: list[str]) -> int:
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
-        lyrics = plan_lyrics(connection, external_ids).lyrics_external_ids
-        karaoke = plan_karaoke(connection, KARAOKE_PIPELINE_REVISION, external_ids).karaoke_external_ids
-    return len(set(lyrics) | set(karaoke))
-
-
 def _user_audio_track_ids(user_id: uuid.UUID) -> list[uuid.UUID]:
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
         cursor.execute(
@@ -462,90 +300,6 @@ def _user_audio_track_ids(user_id: uuid.UUID) -> list[uuid.UUID]:
             (user_id, list(SUPPORTED_PROFILE_MODELS)),
         )
         return [row[0] for row in cursor.fetchall()]
-
-
-def _run_ingest(
-    job_id: str, request: IngestRequest, user_id: uuid.UUID | None = None,
-    catalog_ids: list[str] | None = None, include_lyrics: bool = False,
-) -> None:
-    def progress(update: dict[str, object]) -> None:
-        with _jobs_lock:
-            current = _jobs[job_id]
-            _jobs[job_id] = {**current, **update, "status": "running"}
-
-    with _jobs_lock:
-        _jobs[job_id] = {
-            **_jobs[job_id], "status": "running", "phase": "starting",
-            "completed": 0, "total": len(request.track_ids),
-        }
-    try:
-        summary = ingest_navidrome(
-            *_credentials(request), request.track_ids, progress, model_total=4 if include_lyrics else 2,
-        )
-        reconciliation = {"linked": 0, "unlinked": 0}
-        if user_id is not None:
-            _attach_user_library(user_id, str(request.url))
-            reconciliation = _reconcile_user_tracks(user_id, str(request.url), catalog_ids or request.track_ids)
-        combined = {**asdict(summary), **reconciliation}
-        if user_id is not None:
-            profile_track_ids = _user_audio_track_ids(user_id)
-            profile_summaries = {}
-            for model_name in SUPPORTED_PROFILE_MODELS:
-                profile_summaries[model_name] = build_audio_profiles(
-                    profile_track_ids, progress, model_name=model_name,
-                )
-            combined["audio_profiles"] = {
-                "models": profile_summaries,
-                "profiled": sum(int(value["profiled"]) for value in profile_summaries.values()),
-                "failed": sum(int(value["failed"]) for value in profile_summaries.values()),
-            }
-        lyrics_ids = catalog_ids or request.track_ids
-        if include_lyrics:
-            lyrics_summary = backfill_lyrics(
-                *_credentials(request), progress=progress, external_ids=lyrics_ids, only_missing=True,
-            )
-            combined.update({f"lyrics_{key}": value for key, value in lyrics_summary.items()})
-            # Refresh after lyrics retrieval because newly synced lines can create
-            # karaoke work. Each pipeline plans before loading its model.
-            karaoke_summary = backfill_karaoke(
-                *_credentials(request), progress=progress, external_ids=lyrics_ids,
-            )
-            combined.update({f"karaoke_{key}": value for key, value in karaoke_summary.items()})
-        with _jobs_lock:
-            _jobs[job_id] = {
-                "status": "complete", "phase": "complete", "message": "Audio, profiles, and lyrics analysis is complete",
-                "completed": len(request.track_ids), "total": len(request.track_ids), "unit": "tracks",
-                "summary": combined,
-            }
-    except Exception as error:
-        logger.exception("Ingest failed")
-        with _jobs_lock:
-            _jobs[job_id] = {**_jobs[job_id], "status": "failed", "error": str(error)}
-
-
-def _run_hum_corpus(
-    job_id: str, corpus_id: uuid.UUID, user_id: uuid.UUID,
-    credentials: tuple[str, str, str], track_limit: int,
-) -> None:
-    def progress(update: dict[str, object]) -> None:
-        with _jobs_lock:
-            _jobs[job_id] = {**_jobs[job_id], **update, "status": "running"}
-    try:
-        summary = build_corpus(corpus_id, user_id, credentials, track_limit, progress)
-        with _jobs_lock:
-            _jobs[job_id] = {
-                "status": "complete", "phase": "complete", "completed": summary["tracks"],
-                "total": track_limit, "summary": summary, "corpus_id": str(corpus_id),
-            }
-    except Exception as error:
-        logger.exception("Hum corpus build failed")
-        with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
-            cursor.execute(
-                "UPDATE hum_corpora SET status='failed', error=%s WHERE id=%s",
-                (str(error), corpus_id),
-            )
-        with _jobs_lock:
-            _jobs[job_id] = {"status": "failed", "phase": "failed", "error": str(error)}
 
 
 def require_user(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
@@ -572,35 +326,12 @@ def _session_user(token: str | None) -> dict[str, object]:
         }
 
 
-def _recover_interrupted_curations() -> None:
-    """Mark refreshes owned by a previous process as failed.
-
-    A refresh cannot survive an analysis-service restart. Leaving the durable
-    row in `refreshing` makes the UI imply work is still running when no worker
-    owns it, so fail it explicitly and let the user or scheduler retry.
-    """
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
-        cursor.execute(
-            """UPDATE curations
-               SET status='failed',
-                   last_error='Refresh interrupted by analysis service restart',
-                   updated_at=now()
-               WHERE status='refreshing'"""
-        )
-
-
 @app.on_event("startup")
 def start_background_services() -> None:
-    global _scheduler_started
+    # Worker claims, not API restarts, determine whether execution is interrupted.
     _enforce_secure_cookie_policy()
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
         configure_representations(connection)
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE analysis_attempts SET status='interrupted', finished_at=now() WHERE status='running'")
-    _recover_interrupted_curations()
-    if not _scheduler_started:
-        _scheduler_started = True
-        threading.Thread(target=_curation_scheduler, name="echora-curations", daemon=True).start()
 
 
 def _enforce_secure_cookie_policy() -> None:
@@ -1075,85 +806,30 @@ def navidrome_sync_status(connection_id: str, echora_session: str | None = Cooki
     }
 
 
+def _enqueue_connection_job(kind: str, connection_id: str, user: dict[str, object],
+                            payload: dict[str, object] | None = None) -> dict[str, object]:
+    # Validate ownership without putting decrypted credentials into job payloads.
+    if _load_connection(connection_id, user["id"]) is None:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    return jobs.enqueue(
+        kind, "analysis", user["id"], connection_id=connection_id,
+        payload=payload or {}, dedupe_key=f"{kind}:{user['id']}:{connection_id}",
+    )
+
+
 @app.post("/navidrome/connections/{connection_id}/sync", status_code=202)
 def start_navidrome_sync(
     connection_id: str, request: SyncRequest, echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
-    user = _session_user(echora_session)
-    credentials = _load_connection(connection_id, user["id"])
-    if credentials is None:
-        raise HTTPException(status_code=404, detail="Connection not found")
-    with _jobs_lock:
-        for active_job_id, active_job in _jobs.items():
-            if (
-                active_job.get("_job_type") == "navidrome_sync"
-                and active_job.get("_connection_id") == connection_id
-                and active_job.get("_user_id") == str(user["id"])
-                and active_job.get("status") in {"queued", "running"}
-            ):
-                return {
-                    "job_id": active_job_id, "status": active_job["status"],
-                    "total": int(active_job.get("total", 0)), "existing": True,
-                }
-        job_id = str(uuid.uuid4())
-        _jobs[job_id] = {
-            "status": "queued", "phase": "scanning", "completed": 0, "total": 0,
-            "unit": "tracks", "_job_type": "navidrome_sync",
-            "_connection_id": connection_id, "_user_id": str(user["id"]),
-        }
-    try:
-        with NavidromeClient(*credentials) as client:
-            tracks = client.all_tracks()
-    except Exception as error:
-        with _jobs_lock:
-            _jobs[job_id] = {**_jobs[job_id], "status": "failed", "phase": "failed", "error": str(error)}
-        raise HTTPException(status_code=502, detail="Could not scan the Navidrome library") from error
-    catalog_ids = [track.id for track in tracks]
-    _attach_user_library(user["id"], credentials[0])
-    reconciliation = _reconcile_user_tracks(user["id"], credentials[0], catalog_ids)
-    # The ingestion planner selects missing representations per track. Keep the
-    # full catalog here so a sync can backfill newly added analysis phases.
-    if not tracks:
-        lyrics_total = _lyrics_work_count(catalog_ids)
-        if lyrics_total:
-            with _jobs_lock:
-                _jobs[job_id] = {**_jobs[job_id], "phase": "queued", "total": lyrics_total}
-            _executor.submit(_run_lyrics_backfill, job_id, credentials, catalog_ids, True, reconciliation)
-            return {"job_id": job_id, "status": "queued", "total": lyrics_total, "unlinked": reconciliation["unlinked"]}
-        with _jobs_lock:
-            _jobs[job_id] = {
-                **_jobs[job_id], "status": "complete", "phase": "complete",
-                "message": "Library links, audio, and lyrics are synchronized", "summary": reconciliation,
-            }
-        return {
-            "status": "complete", "message": "Library links, audio, and lyrics are synchronized", "total": 0,
-            "summary": reconciliation,
-        }
-    ingest_request = IngestRequest(url=credentials[0], username=credentials[1], password=credentials[2], track_ids=[track.id for track in tracks])
-    with _jobs_lock:
-        _jobs[job_id] = {**_jobs[job_id], "phase": "queued", "total": len(tracks)}
-    _executor.submit(_run_ingest, job_id, ingest_request, user["id"], catalog_ids, True)
-    return {"job_id": job_id, "status": "queued", "total": len(tracks), "unlinked": reconciliation["unlinked"]}
+    # Both legacy modes repair missing/outdated artifacts; neither forces recomputation.
+    return _enqueue_connection_job("navidrome_sync", connection_id, _session_user(echora_session))
 
 
 @app.post("/navidrome/connections/{connection_id}/recordings/backfill", status_code=202, dependencies=[Depends(require_user)])
 def start_recording_backfill(
     connection_id: str, echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
-    user = _session_user(echora_session)
-    credentials = _load_connection(connection_id, user["id"])
-    if credentials is None:
-        raise HTTPException(status_code=404, detail="Connection not found")
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT count(*) FROM tracks t LEFT JOIN track_fingerprints f ON f.track_id=t.id WHERE f.track_id IS NULL")
-        total = int(cursor.fetchone()[0])
-    if total == 0:
-        return {"status": "complete", "total": 0, "message": "All tracks have recording fingerprints"}
-    job_id = str(uuid.uuid4())
-    with _jobs_lock:
-        _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": total}
-    _executor.submit(_run_fingerprint_backfill, job_id, credentials)
-    return {"job_id": job_id, "status": "queued", "total": total}
+    return _enqueue_connection_job("recordings_backfill", connection_id, _session_user(echora_session))
 
 
 @app.get("/library/lyrics/status", dependencies=[Depends(require_user)])
@@ -1180,45 +856,21 @@ def lyrics_status(echora_session: str | None = Cookie(default=None)) -> dict[str
 def start_lyrics_backfill(
     connection_id: str, echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
-    user = _session_user(echora_session)
-    credentials = _load_connection(connection_id, user["id"])
-    if credentials is None:
-        raise HTTPException(status_code=404, detail="Connection not found")
-    job_id = str(uuid.uuid4())
-    with _jobs_lock:
-        _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": 0}
-    _executor.submit(_run_lyrics_backfill, job_id, credentials)
-    return {"job_id": job_id, "status": "queued"}
+    return _enqueue_connection_job("lyrics_backfill", connection_id, _session_user(echora_session))
 
 
 @app.post("/navidrome/connections/{connection_id}/voice/backfill", status_code=202, dependencies=[Depends(require_user)])
 def start_voice_backfill(
     connection_id: str, echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
-    user = _session_user(echora_session)
-    credentials = _load_connection(connection_id, user["id"])
-    if credentials is None:
-        raise HTTPException(status_code=404, detail="Connection not found")
-    job_id = str(uuid.uuid4())
-    with _jobs_lock:
-        _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": 0}
-    _executor.submit(_run_voice_backfill, job_id, credentials)
-    return {"job_id": job_id, "status": "queued"}
+    return _enqueue_connection_job("voice_backfill", connection_id, _session_user(echora_session))
 
 
 @app.post("/navidrome/connections/{connection_id}/lyrics/karaoke/backfill", status_code=202, dependencies=[Depends(require_user)])
 def start_karaoke_backfill(
     connection_id: str, echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
-    user = _session_user(echora_session)
-    credentials = _load_connection(connection_id, user["id"])
-    if credentials is None:
-        raise HTTPException(status_code=404, detail="Connection not found")
-    job_id = str(uuid.uuid4())
-    with _jobs_lock:
-        _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": 0}
-    _executor.submit(_run_karaoke_backfill, job_id, credentials)
-    return {"job_id": job_id, "status": "queued"}
+    return _enqueue_connection_job("karaoke_backfill", connection_id, _session_user(echora_session))
 
 
 @app.get("/library/tracks/{track_id}/recording-group", dependencies=[Depends(require_user)])
@@ -1469,13 +1121,16 @@ def cover_art(
 @app.post("/ingest/navidrome", status_code=202, dependencies=[Depends(require_user)])
 def start_navidrome_ingest(
     request: IngestRequest, echora_session: str | None = Cookie(default=None),
-) -> dict[str, str]:
-    _session_user(echora_session)
-    job_id = str(uuid.uuid4())
-    with _jobs_lock:
-        _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": len(request.track_ids)}
-    _executor.submit(_run_ingest, job_id, request)
-    return {"job_id": job_id, "status": "queued"}
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    connection_id = _save_connection(_credentials(request), user["id"])
+    track_ids = sorted(set(request.track_ids))
+    selection = hashlib.sha256("\n".join(track_ids).encode()).hexdigest()
+    return jobs.enqueue(
+        "import", "analysis", user["id"], connection_id=connection_id,
+        payload={"track_ids": track_ids},
+        dedupe_key=f"import:{user['id']}:{connection_id}:{selection}",
+    )
 
 
 @app.get("/library/hum/index", dependencies=[Depends(require_user)])
@@ -1504,16 +1159,10 @@ def start_hum_index(
     credentials = _load_connection(str(connection_id), user["id"]) if connection_id else None
     if credentials is None:
         raise HTTPException(status_code=409, detail="Connect Navidrome before building a hum index")
-    corpus_id, job_id = uuid.uuid4(), str(uuid.uuid4())
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
-        cursor.execute(
-            "INSERT INTO hum_corpora (id, user_id, status, track_limit) VALUES (%s,%s,'building',%s)",
-            (corpus_id, user["id"], track_limit),
-        )
-    with _jobs_lock:
-        _jobs[job_id] = {"status": "queued", "phase": "queued", "completed": 0, "total": track_limit}
-    _executor.submit(_run_hum_corpus, job_id, corpus_id, user["id"], credentials, track_limit)
-    return {"job_id": job_id, "corpus_id": str(corpus_id), "status": "queued"}
+    return jobs.enqueue(
+        "hum_corpus", "analysis", user["id"], connection_id=connection_id,
+        payload={"track_limit": track_limit}, dedupe_key=f"hum_corpus:{user['id']}",
+    )
 
 
 @app.post("/library/hum/search", dependencies=[Depends(require_user)])
@@ -2149,99 +1798,9 @@ def _preview_curation(
 
 
 def _refresh_curation(curation_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, object]:
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT * FROM curations WHERE id=%s AND user_id=%s", (curation_id, user_id))
-        curation = cursor.fetchone()
-        if curation is None:
-            raise HTTPException(status_code=404, detail="Curation not found")
-        cursor.execute(
-            """SELECT crt.track_id FROM curation_revision_tracks crt
-               JOIN curation_revisions cr ON cr.id=crt.revision_id
-               WHERE cr.curation_id=%s ORDER BY cr.revision_number DESC, crt.position""",
-            (curation_id,),
-        )
-        existing = [row["track_id"] for row in cursor.fetchall()[: int(curation["track_limit"])]]
-        cursor.execute("UPDATE curations SET status='refreshing', last_error=NULL, updated_at=now() WHERE id=%s", (curation_id,))
-    request = CurationPreviewRequest(
-        curation_type=curation["curation_type"], positive_prompt=curation["positive_prompt"], negative_prompt=curation["negative_prompt"],
-        sound_prompts=curation.get("sound_prompts") or [],
-        themes_prompts=curation.get("themes_prompts") or [],
-        sound_negative_prompts=curation.get("sound_negative_prompts") or [],
-        themes_negative_prompts=curation.get("themes_negative_prompts") or [],
-        sound_weight=int(curation.get("sound_weight") or 50),
-        positive_track_ids=curation["positive_track_ids"], negative_track_ids=curation["negative_track_ids"],
-        familiarity_percent=curation["familiarity_percent"], period_start=curation["period_start"],
-        period_end=curation["period_end"], lookback_days=curation["lookback_days"],
-        time_of_day_enabled=bool(curation.get("time_of_day_enabled")),
-        track_limit=curation["track_limit"], refresh_mode=curation["refresh_mode"],
-        target_language=str(curation.get("target_language") or ""), language_strictness=str(curation.get("language_strictness") or "primarily"),
-        existing_track_ids=existing,
-    )
-    try:
-        result = _preview_curation(user_id, curation["navidrome_connection_id"], request)
-        credentials = _load_connection(str(curation["navidrome_connection_id"]))
-        if credentials is None:
-            raise RuntimeError("Navidrome connection is unavailable")
-        source_ids = [str(track["source_id"]) for track in result["tracks"]]
-        if not source_ids:
-            raise ValueError("No tracks meet this recipe's requirements. Existing playlist was not changed.")
-        with NavidromeClient(*credentials) as client:
-            playlist_id = client.replace_playlist(
-                str(curation["name"]), source_ids, curation.get("navidrome_playlist_id"),
-            )
-        with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
-            cursor.execute("SELECT coalesce(max(revision_number), 0) + 1 AS value FROM curation_revisions WHERE curation_id=%s", (curation_id,))
-            revision_number = int(cursor.fetchone()["value"])
-            recipe = {
-                "curation_type": request.curation_type,
-                "positive_prompt": request.positive_prompt, "negative_prompt": request.negative_prompt,
-                "sound_prompts": request.sound_prompts, "themes_prompts": request.themes_prompts,
-                "sound_negative_prompts": request.sound_negative_prompts,
-                "themes_negative_prompts": request.themes_negative_prompts,
-                "sound_weight": request.sound_weight,
-                "positive_track_ids": [str(value) for value in request.positive_track_ids],
-                "negative_track_ids": [str(value) for value in request.negative_track_ids],
-                "familiarity_percent": request.familiarity_percent,
-                "period_start": request.period_start, "period_end": request.period_end,
-                "time_of_day_enabled": request.time_of_day_enabled,
-                "lookback_days": request.lookback_days,
-                "track_limit": request.track_limit, "refresh_mode": request.refresh_mode,
-                "target_language": request.target_language, "language_strictness": request.language_strictness,
-                "references": result["references"], "model": result["model"],
-                "weights": result.get("weights"), "lyrics_coverage": result.get("lyrics_coverage"),
-                "signal_weights": result.get("signal_weights"),
-                "scoring_revision": result.get("scoring_revision"),
-                "selection": result.get("selection"),
-                "representation_runs": result.get("representation_runs"),
-                "example_component_weights": result.get("example_component_weights"),
-                "audio_profile_coverage": result.get("audio_profile_coverage"),
-                "familiarity": result.get("familiarity"), "shuffle_seed": result.get("shuffle_seed"),
-            }
-            cursor.execute(
-                """INSERT INTO curation_revisions (curation_id, revision_number, recipe)
-                   VALUES (%s,%s,%s) RETURNING id""",
-                (curation_id, revision_number, Jsonb(recipe)),
-            )
-            revision_id = cursor.fetchone()["id"]
-            for position, track in enumerate(result["tracks"]):
-                cursor.execute(
-                    """INSERT INTO curation_revision_tracks
-                       (revision_id, position, track_id, score, evidence, source_id)
-                       VALUES (%s,%s,%s,%s,%s,%s)""",
-                    (revision_id, position, track["id"], track["score"],
-                     Jsonb({"percentile": track["percentile"], "retained": track["retained"], **track.get("evidence", {})}), track["source_id"]),
-                )
-            cursor.execute(
-                """UPDATE curations SET navidrome_playlist_id=%s, status='ready', last_error=NULL,
-                   last_refreshed_at=now(), next_refresh_at=CASE WHEN refresh_enabled THEN now() + make_interval(hours => refresh_interval_hours) END,
-                   updated_at=now() WHERE id=%s""",
-                (playlist_id, curation_id),
-            )
-        return {**result, "id": str(curation_id), "playlist_id": playlist_id, "revision_number": revision_number}
-    except Exception as error:
-        with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
-            cursor.execute("UPDATE curations SET status='failed', last_error=%s, updated_at=now() WHERE id=%s", (str(error), curation_id))
-        raise
+    from . import curation_jobs
+
+    return curation_jobs.enqueue(curation_id, user_id)
 
 
 @app.post("/library/curations/preview")
@@ -2316,7 +1875,8 @@ def create_curation(request: CurationCreateRequest, echora_session: str | None =
         session.add(curation)
         session.flush()
         curation_id = curation.id
-    return _refresh_curation(curation_id, user["id"])
+    queued = _refresh_curation(curation_id, user["id"])
+    return {**request.model_dump(mode="json"), "id": str(curation_id), "tracks": [], **queued}
 
 
 @app.patch("/library/curations/{curation_id}")
@@ -2326,24 +1886,26 @@ def update_curation(
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     values = request.model_dump(exclude_none=True)
-    if not values:
-        return {"id": str(curation_id)}
-    with session_scope() as session:
-        curation = session.scalar(select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"]))
-        if curation is None:
-            raise HTTPException(status_code=404, detail="Curation not found")
-        for key, value in values.items():
-            setattr(curation, key, value)
-        if "refresh_enabled" in values:
-            curation.next_refresh_at = (
-                datetime.now(timezone.utc) + timedelta(hours=curation.refresh_interval_hours)
-                if values["refresh_enabled"] else None
-            )
-        curation.updated_at = datetime.now(timezone.utc)
-    return {"id": str(curation_id), **values}
+    from . import curation_jobs
+
+    with curation_jobs.locked(curation_id) as lock_connection:
+        with session_scope() as session:
+            curation = session.scalar(select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"]))
+            if curation is None:
+                raise HTTPException(status_code=404, detail="Curation not found")
+            curation_jobs.assert_mutable(lock_connection, curation_id)
+            for key, value in values.items():
+                setattr(curation, key, value)
+            if "refresh_enabled" in values:
+                curation.next_refresh_at = (
+                    datetime.now(timezone.utc) + timedelta(hours=curation.refresh_interval_hours)
+                    if values["refresh_enabled"] else None
+                )
+            curation.updated_at = datetime.now(timezone.utc)
+        return {"id": str(curation_id), **values}
 
 
-@app.post("/library/curations/{curation_id}/refresh")
+@app.post("/library/curations/{curation_id}/refresh", status_code=202)
 def refresh_curation(curation_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
     return _refresh_curation(curation_id, user["id"])
@@ -2355,46 +1917,36 @@ def delete_curation(
     echora_session: str | None = Cookie(default=None),
 ) -> Response:
     user = _session_user(echora_session)
-    with session_scope() as session:
-        curation = session.scalar(select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"]))
-        if curation is None:
-            raise HTTPException(status_code=404, detail="Curation not found")
-        connection_id, playlist_id = curation.navidrome_connection_id, curation.navidrome_playlist_id
+    from . import curation_jobs
 
-    # Delete remotely first so a Navidrome failure does not leave an orphaned
-    # playlist after Echora has already forgotten its ID.
-    if delete_navidrome and playlist_id:
-        credentials = _load_connection(str(connection_id))
-        if credentials is None:
-            raise HTTPException(status_code=409, detail="Navidrome connection is unavailable; keep the Navidrome playlist or reconnect the server")
-        with NavidromeClient(*credentials) as client:
-            client.delete_playlist(str(playlist_id))
+    with curation_jobs.locked(curation_id) as lock_connection:
+        with session_scope() as session:
+            curation = session.scalar(select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"]))
+            if curation is None:
+                raise HTTPException(status_code=404, detail="Curation not found")
+            curation_jobs.assert_mutable(lock_connection, curation_id, deleting=True, delete_remote=delete_navidrome)
+            connection_id, playlist_id = curation.navidrome_connection_id, curation.navidrome_playlist_id
 
-    with session_scope() as session:
-        curation = session.scalar(select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"]))
-        if curation is not None:
-            session.delete(curation)
-    return Response(status_code=204)
+        # Delete remotely first so a Navidrome failure does not leave an orphaned
+        # playlist after Echora has already forgotten its ID.
+        if delete_navidrome and playlist_id:
+            credentials = _load_connection(str(connection_id))
+            if credentials is None:
+                raise HTTPException(status_code=409, detail="Navidrome connection is unavailable; keep the Navidrome playlist or reconnect the server")
+            with NavidromeClient(*credentials) as client:
+                client.delete_playlist(str(playlist_id))
+
+        with session_scope() as session:
+            curation = session.scalar(select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"]))
+            if curation is not None:
+                session.delete(curation)
+        return Response(status_code=204)
 
 
 def _curation_scheduler() -> None:
-    while True:
-        try:
-            with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
-                cursor.execute(
-                    """SELECT id, user_id FROM curations
-                       WHERE refresh_enabled AND status <> 'refreshing' AND next_refresh_at <= now()
-                       ORDER BY next_refresh_at LIMIT 10"""
-                )
-                due = cursor.fetchall()
-            for item in due:
-                try:
-                    _refresh_curation(item["id"], item["user_id"])
-                except Exception:
-                    logger.exception("Scheduled curation refresh failed for %s", item["id"])
-        except Exception:
-            logger.exception("Curation scheduler failed")
-        threading.Event().wait(60)
+    # Compatibility hook only: scheduled workers now own polling/execution.
+    # Startup may still reference this function while API lifecycle is migrated.
+    return None
 
 
 def _cluster_embeddings(normalized: np.ndarray, similarities: np.ndarray) -> tuple[np.ndarray, dict[str, object]]:
@@ -2508,27 +2060,11 @@ def start_audio_profile_rebuild(
         )
         source_rows = cursor.fetchall()
         track_ids = sorted({row[0] for row in source_rows})
-        representation_total = len(source_rows)
-    with _jobs_lock:
-        for active_job_id, active_job in _jobs.items():
-            if (
-                active_job.get("_job_type") == "audio_profiles"
-                and active_job.get("_user_id") == str(user["id"])
-                and active_job.get("status") in {"queued", "running"}
-            ):
-                return {
-                    "job_id": active_job_id, "status": active_job["status"],
-                    "total": int(active_job.get("total", 0)), "existing": True,
-                }
-        job_id = str(uuid.uuid4())
-        _jobs[job_id] = {
-            "status": "queued", "phase": "queued", "completed": 0,
-            "total": representation_total, "unit": "representations",
-            "_job_type": "audio_profiles",
-            "_user_id": str(user["id"]),
-        }
-    _profile_executor.submit(_run_audio_profiles, job_id, track_ids)
-    return {"job_id": job_id, "status": "queued", "total": representation_total}
+    return jobs.enqueue(
+        "audio_profiles", "analysis", user["id"],
+        payload={"track_ids": [str(track_id) for track_id in track_ids]},
+        dedupe_key=f"audio_profiles:{user['id']}",
+    )
 
 
 @app.get("/library/tracks/{track_id}/audio-profile")
@@ -3054,12 +2590,29 @@ def library_facets(
     return {"artists": artists, "albums": albums}
 
 
-@app.get("/jobs/{job_id}", dependencies=[Depends(require_user)])
-def job(job_id: str, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
-    _session_user(echora_session)
-    with _jobs_lock:
-        value = _jobs.get(job_id)
+@app.get("/jobs")
+def list_user_jobs(
+    connection_id: uuid.UUID | None = None, active_only: bool = False, limit: int = 20,
+    echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    return {"jobs": jobs.list_jobs(user["id"], connection_id=connection_id,
+                                   active_only=active_only, limit=min(max(limit, 1), 100))}
+
+
+@app.get("/jobs/{job_id}")
+def job(job_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
+    value = jobs.get_job(job_id, user["id"])
     if value is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    public = {key: value[key] for key in value if key != "error" and not key.startswith("_")}
-    return {"job_id": job_id, **public}
+    return value
+
+
+@app.post("/jobs/{job_id}/cancel", status_code=202)
+def cancel_job(job_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
+    value = jobs.cancel(job_id, user["id"])
+    if value is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return value
