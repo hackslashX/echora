@@ -9,12 +9,12 @@
   padding: 16px 20px;
   border: 0;
   border-bottom: 1px solid rgb(var(--accent-rgb) / .24);
-  background: #142226;
+  background: color-mix(in srgb, var(--aqua) 12%, #080e14);
 }
 .header .copy { flex: 1; min-width: 0; }
 .header .title, .header .count {
   margin: 0;
-  color: #f2f6f4;
+  color: color-mix(in srgb, var(--aqua) 8%, #f5f7f6);
   font: 500 28px/1.25 "Space Grotesk", sans-serif;
   letter-spacing: -1px;
 }
@@ -29,7 +29,7 @@
   display: block;
   max-width: 100%;
   margin: 5px 0 0;
-  color: #b4c1bc;
+  color: color-mix(in srgb, var(--aqua) 12%, #bcc4c1);
   font: 400 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: normal;
 }
@@ -48,13 +48,13 @@
   margin: 0;
   padding: 0 10px;
   border: 1px solid var(--glass-stroke);
-  background: #0b171b;
-  color: #d3dfda;
+  background: color-mix(in srgb, var(--aqua) 6%, #080e14);
+  color: color-mix(in srgb, var(--aqua) 15%, #e0e5e3);
   font: 500 12px "DM Mono", monospace;
   cursor: pointer;
 }
 .header .leading svg, .header .actions svg { width: 16px; height: 16px; }
-.header button:hover:not(:disabled) { border-color: var(--aqua); color: var(--aqua); }
+.header button:hover:not(:disabled) { border-color: var(--aqua); color: var(--aqua); background: color-mix(in srgb, var(--aqua) 18%, #080e14); }
 .header button:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
 .header button:disabled { opacity: .4; cursor: default; }
 .header.sticky { position: sticky; top: 0; z-index: 2; }
