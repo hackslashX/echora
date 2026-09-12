@@ -67,3 +67,14 @@ def test_sync_rejects_foreign_connection(api, monkeypatch):
     assert client.post(f'/navidrome/connections/{connection_id}/sync', json={}).status_code == 404
     load.assert_called_once_with(str(connection_id), user_id)
     enqueue.assert_not_called()
+
+
+def test_batch_endpoint_enforces_parent_ownership(api, monkeypatch):
+    main, client, owner = api
+    identifier = uuid4()
+    listing = Mock(return_value=None)
+    monkeypatch.setattr(main.jobs, 'list_batches', listing)
+    assert client.get(f'/jobs/{identifier}/batches?limit=10&offset=20').status_code == 404
+    listing.assert_called_once_with(identifier, owner, limit=10, offset=20)
+    listing.return_value = {'batches': [], 'total': 0}
+    assert client.get(f'/jobs/{identifier}/batches').json() == {'batches': [], 'total': 0}

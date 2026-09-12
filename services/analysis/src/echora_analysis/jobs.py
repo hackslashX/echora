@@ -111,6 +111,27 @@ def get_job(job_id, user_id):
         return _public(row) if row else None
 
 
+def list_batches(job_id, user_id, limit=25, offset=0):
+    """Return public child snapshots only after verifying parent ownership."""
+    with _db() as db:
+        parent = db.execute('SELECT id FROM jobs WHERE id=%s AND user_id=%s',
+                            (_uuid(job_id), _uuid(user_id))).fetchone()
+        if parent is None:
+            return None
+        total = db.execute('SELECT count(*) AS n FROM jobs WHERE parent_id=%s AND user_id=%s',
+                           (_uuid(job_id), _uuid(user_id))).fetchone()['n']
+        rows = db.execute('''SELECT * FROM (
+            SELECT *, row_number() OVER (ORDER BY created_at,id) AS batch_number
+            FROM jobs WHERE parent_id=%s AND user_id=%s) numbered
+            ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+                     batch_number LIMIT %s OFFSET %s''',
+                          (_uuid(job_id), _uuid(user_id), max(1, min(int(limit), 100)),
+                           max(0, int(offset)))).fetchall()
+        return {'batches': [{**_public(row), 'batch_number': row['batch_number'],
+                             'track_count': len(row['payload'].get('track_ids', []))}
+                            for row in rows], 'total': total}
+
+
 def list_jobs(user_id, connection_id=None, active_only=False, limit=20):
     clauses, args = ['user_id=%s', 'parent_id IS NULL'], [_uuid(user_id)]
     if connection_id is not None:

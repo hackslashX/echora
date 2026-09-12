@@ -236,6 +236,9 @@ def backfill_voice(
         try:
             connection.commit()
             for index, (track_id, external_id, title) in enumerate(tracks):
+                report({"phase": "voice", "message": f"Classifying vocals for {title}",
+                        "completed": index, "total": len(tracks), "unit": "tracks",
+                        "track": {"id": str(external_id), "title": title}})
                 try:
                     waveform = _fetch_stream(client, str(external_id))
                     values, activity = model.classify_with_activity(waveform)

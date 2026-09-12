@@ -2,7 +2,7 @@
 
 ## Processes
 
-The API submits jobs and exposes owner-scoped `GET /jobs` and `GET /jobs/{id}`. Jobs cannot be cancelled through the UI or public API. The API does not scan catalogs or execute background pipelines. The sync page discovers active work for its connection without browser-stored job IDs.
+The API submits jobs and exposes owner-scoped `GET /jobs` and `GET /jobs/{id}`. Jobs cannot be cancelled through the UI or public API. The API does not scan catalogs or execute background pipelines. The sync page discovers active work for its connection without browser-stored job IDs. `GET /jobs/{id}/batches` returns owner-scoped, paginated child snapshots. The batch list polls every 1.5 seconds while the parent is active and shows each batch's status, reported stage, song message, and stage-local progress. Active batches appear first; batch numbers remain stable when status changes.
 
 Two worker types share PostgreSQL:
 

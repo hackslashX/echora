@@ -291,3 +291,25 @@ def test_cancelled_batches_finish_parent_without_counting_as_success(database):
     assert final['completed'] == 1 and final['total'] == 2
     assert final['progress']['finished'] == 2
     assert final['summary']['cancelled'] == 1
+
+
+def test_batch_listing_is_owned_paginated_and_active_first(database):
+    owner, stranger = uuid4(), uuid4()
+    parent = jobs.enqueue('navidrome_sync', 'analysis', owner)
+    claim = jobs.claim('analysis', 'worker')
+    jobs.expand(parent['id'], claim['token'], [{'track_ids': ['a', 'b']}, {'track_ids': ['c']}])
+    child = jobs.claim('analysis', 'worker')
+    jobs.progress(child['id'], child['token'], {'phase': 'voice', 'completed': 1, 'total': 2, 'unit': 'tracks', 'message': 'Classifying vocals for Song'})
+    assert jobs.list_batches(parent['id'], stranger) is None
+    first = jobs.list_batches(parent['id'], owner, limit=1)
+    assert first['total'] == 2 and len(first['batches']) == 1
+    batch = first['batches'][0]
+    assert batch['id'] == str(child['id']) and batch['phase'] == 'voice'
+    assert batch['message'] == 'Classifying vocals for Song'
+    assert batch['track_count'] == len(child['payload']['track_ids'])
+    assert not {'payload', 'token', 'user_id', 'worker_id'} & batch.keys()
+    next_page = jobs.list_batches(parent['id'], owner, limit=1, offset=1)
+    assert next_page['batches'][0]['id'] != batch['id']
+    numbers = {item['id']: item['batch_number'] for item in jobs.list_batches(parent['id'], owner)['batches']}
+    jobs.finish(child['id'], child['token'])
+    assert {item['id']: item['batch_number'] for item in jobs.list_batches(parent['id'], owner)['batches']} == numbers
