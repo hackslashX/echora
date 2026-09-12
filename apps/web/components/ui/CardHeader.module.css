@@ -8,6 +8,7 @@
   min-width: 0;
   padding: 16px 20px;
   border: 0;
+  border-top: 4px solid var(--aqua);
   border-bottom: 1px solid rgb(var(--accent-rgb) / .24);
   background: color-mix(in srgb, var(--aqua) 12%, #080e14);
 }
