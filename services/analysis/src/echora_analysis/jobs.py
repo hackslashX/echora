@@ -36,6 +36,17 @@ def _public(row, existing=False):
             result[key] = str(value)
         elif isinstance(value, datetime):
             result[key] = value.isoformat()
+    # Preserve the legacy snapshot shape while retaining structured progress.
+    snapshot = row.get('progress') or {}
+    result['progress'] = {key: value for key, value in snapshot.items()
+                          if key in {'phase', 'completed', 'total', 'message', 'unit', 'track',
+                                     'plan', 'summary', *ACTIVE, *TERMINAL}}
+    for key in ('phase', 'completed', 'total', 'message', 'unit', 'track'):
+        if key in snapshot:
+            result[key] = snapshot[key]
+    result.setdefault('phase', row['status'])
+    result.setdefault('completed', 0)
+    result.setdefault('total', 0)
     result.update(job_id=result['id'], existing=existing)
     return result
 
@@ -109,9 +120,19 @@ def list_jobs(user_id, connection_id=None, active_only=False, limit=20):
 
 
 def _terminal(db, job_id, status, summary=None, error=None):
-    db.execute('''UPDATE jobs SET status=%s,summary=%s,error=%s,token=NULL,
-        worker_id=NULL,lease_until=NULL,finished_at=now(),updated_at=now()
-        WHERE id=%s''', (status, Jsonb(summary), error, job_id))
+    row = db.execute('''UPDATE jobs SET status=%s,summary=%s,error=%s,token=NULL,
+        worker_id=NULL,lease_until=NULL,finished_at=now(),updated_at=now(),
+        progress=progress || %s
+        WHERE id=%s RETURNING kind,user_id''',
+                     (status, Jsonb(summary), error, Jsonb({'phase': status}), job_id)).fetchone()
+    if row and row['kind'] == 'hum_corpus':
+        # This durable domain projection commits with the parent terminal state,
+        # including empty expansions and lease-expiry failures.
+        db.execute('''UPDATE hum_corpora SET status=%s,error=%s,completed_at=now()
+            WHERE id=%s AND user_id=%s''',
+                   ('complete' if status == 'complete' else 'failed',
+                    None if status == 'complete' else 'Index job did not complete successfully.',
+                    job_id, row['user_id']))
 
 
 def _aggregate(db, parent_id):
@@ -126,8 +147,10 @@ def _aggregate(db, parent_id):
     counts.update({r['status']: r['n'] for r in rows})
     counts['total'] = sum(counts.values())
     counts['completed'] = sum(counts[s] for s in TERMINAL)
+    snapshot = {**counts, 'phase': 'processing', 'unit': 'batches',
+                'message': f"Processed {counts['completed']} of {counts['total']} batches"}
     db.execute('UPDATE jobs SET progress=%s,updated_at=now() WHERE id=%s',
-               (Jsonb(counts), parent_id))
+               (Jsonb(snapshot), parent_id))
     if counts['completed'] == counts['total']:
         status = ('cancelled' if parent['cancel_requested'] else
                   'complete' if counts['complete'] == counts['total'] else
@@ -143,11 +166,12 @@ def cancel(job_id, user_id):
                          (_uuid(job_id), _uuid(user_id))).fetchone()
         if not row:
             return None
-        db.execute('''UPDATE jobs SET cancel_requested=true,updated_at=now(),
-            status=CASE WHEN status='queued' THEN 'cancelled' ELSE status END,
-            finished_at=CASE WHEN status='queued' THEN now() ELSE finished_at END
-            WHERE (id=%s OR parent_id=%s) AND status IN ('queued','running','waiting')''',
-                   (row['id'], row['id']))
+        changed = db.execute('''UPDATE jobs SET cancel_requested=true,updated_at=now()
+            WHERE (id=%s OR parent_id=%s) AND status IN ('queued','running','waiting')
+            RETURNING id,status''', (row['id'], row['id'])).fetchall()
+        for child in changed:
+            if child['status'] == 'queued':
+                _terminal(db, child['id'], 'cancelled')
         _aggregate(db, row['id'])
         _aggregate(db, row['parent_id'])
         return _public(db.execute('SELECT * FROM jobs WHERE id=%s', (row['id'],)).fetchone())

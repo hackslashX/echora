@@ -230,3 +230,37 @@ def test_skip_locked(database):
         db.execute('SELECT * FROM jobs WHERE id=%s FOR UPDATE', (first['id'],))
         claimed = jobs.claim('analysis', 'worker')
         assert claimed['job_id'] == second['id']
+
+
+@pytest.mark.parametrize('outcome', ['empty', 'complete', 'failed', 'cancelled'])
+def test_hum_parent_terminal_projection(database, outcome):
+    owner = uuid4()
+    parent = jobs.enqueue('hum_corpus', 'analysis', owner)
+    with database() as db:
+        db.execute("CREATE TABLE hum_corpora(id uuid PRIMARY KEY,user_id uuid,status text,error text,completed_at timestamptz)")
+        db.execute("INSERT INTO hum_corpora(id,user_id,status) VALUES (%s,%s,'building')", (parent['id'], owner))
+    claim = jobs.claim('analysis', 'worker')
+    if outcome == 'empty':
+        jobs.expand(claim['id'], claim['token'], [])
+    elif outcome == 'cancelled':
+        jobs.cancel(parent['id'], owner)
+        assert not jobs.heartbeat(claim['id'], claim['token'])
+    else:
+        jobs.expand(claim['id'], claim['token'], [{'track_ids': ['a']}])
+        child = jobs.claim('analysis', 'worker')
+        jobs.finish(child['id'], child['token'], status=outcome)
+    with database() as db:
+        row = db.execute('SELECT * FROM hum_corpora WHERE id=%s', (parent['id'],)).fetchone()
+    assert row['status'] == ('complete' if outcome in {'empty', 'complete'} else 'failed')
+    assert row['completed_at'] is not None
+
+
+def test_public_progress_snapshot(database):
+    owner = uuid4()
+    job = jobs.enqueue('import', 'analysis', owner)
+    claim = jobs.claim('analysis', 'worker')
+    jobs.progress(claim['id'], claim['token'], {'phase': 'muq', 'completed': 2, 'total': 3, 'token': 'hidden'})
+    public = jobs.get_job(job['id'], owner)
+    assert public['phase'] == 'muq'
+    assert public['completed'] == 2 and public['total'] == 3
+    assert 'token' not in public

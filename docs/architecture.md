@@ -6,7 +6,7 @@ Echora separates immutable track identity, recording equivalence, model represen
 
 The Next.js web service renders the interface and proxies `/analysis/*` to the Python service. The root `PlayerProvider` keeps playback and queues alive across routes.
 
-The FastAPI analysis service owns OIDC sessions, application APIs, Navidrome synchronization and playback proxying, model inference, lyrics retrieval, clustering, curations, and scheduled work. One analysis replica is required until scheduler claims and playlist publication are safe under concurrency.
+The FastAPI analysis service owns OIDC sessions, application APIs, playback proxying, interactive inference, clustering, and job submission. Background work runs outside the API through PostgreSQL-backed jobs. Analysis workers process sync, import, and backfill batches; scheduled workers enqueue due curations and execute both automatic and manual refreshes. Claims, leases, retries, cancellation, and owner-scoped history are durable. See [worker operations](jobs.md) and [the batch-worker decision](adr/0006-use-durable-jobs-with-batch-analysis-workers.md).
 
 PostgreSQL 17 with pgvector is the canonical store. SQLAlchemy handles ordinary lifecycle queries. Reviewed PostgreSQL SQL remains in analytical paths where pgvector operations, CTEs, bulk reconciliation, or query plans need direct control. Alembic creates the v1 schema and applies every later revision during analysis startup.
 
@@ -36,4 +36,4 @@ A curation is a durable recipe for a fully managed Navidrome playlist. Revisions
 
 ## Deployment
 
-Production runs separate web and analysis deployments behind one ingress. The web service proxies analysis requests internally. PostgreSQL and model snapshots use persistent storage. The model init container has network access; the analysis container does not download model files at runtime.
+Production runs separate web and analysis API deployments behind one ingress, plus analysis and scheduled worker deployments without public ports. The web service proxies analysis requests internally. PostgreSQL and model snapshots use persistent storage. The model init container has network access; the analysis container does not download model files at runtime.
