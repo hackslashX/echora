@@ -1,0 +1,10 @@
+@media (max-width:1199px), (max-height:719px) {
+  .active { animation: paneEnter var(--motion-medium, 240ms) var(--motion-enter, ease-out) both; }
+}
+@keyframes paneEnter {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@media (prefers-reduced-motion:reduce) {
+  .active { animation: none; }
+}
