@@ -1,4 +1,4 @@
-export type Job = { id?: string; kind?: string; parent_id?: string; job_id: string; connection_id?: string; curation_id?: string; status: string; phase: string; completed: number; total: number; message?: string; error?: string; cancel_requested?: boolean; unit?: string; track?: { id: string; title: string; artist?: string }; summary?: Record<string, number> };
+export type Job = { id?: string; kind?: string; parent_id?: string; job_id: string; connection_id?: string; curation_id?: string; status: string; phase: string; completed: number; total: number; message?: string; error?: string; cancel_requested?: boolean; unit?: string; track?: { id: string; title: string; artist?: string }; summary?: Record<string, number>; progress?: Record<string, unknown> };
 export const isActiveJob = (job: Job | null) => !!job && ["queued", "running", "waiting"].includes(job.status);
 export const isTerminalJob = (job: Job | null) => !!job && ["complete", "partial", "failed", "cancelled"].includes(job.status);
 export async function jobRequest<T>(path: string, signal: AbortSignal, method = "GET"): Promise<T> {
@@ -12,7 +12,7 @@ export async function discoverJob(connectionId: string, signal: AbortSignal): Pr
   // Curation work must never be presented as library synchronization.
   for (const active of [true, false]) {
     const { jobs } = await jobRequest<{ jobs: Job[] }>(`/jobs?${query}&active_only=${active}`, signal);
-    const job = jobs.find(item => !item.curation_id && item.kind !== "curation_refresh" && !item.parent_id);
+    const job = jobs.find(item => item.status !== "cancelled" && !item.curation_id && item.kind !== "curation_refresh" && !item.parent_id);
     if (job) return job;
   }
   return null;
@@ -39,4 +39,30 @@ export function watchJob(connectionId: string, jobId: string | null, receive: (j
   }
   void poll();
   return () => { controller.abort(); clearTimeout(timer); };
+}
+
+
+/** Legacy parent `completed` counts included cancelled batches. Never label those successful. */
+export function jobPresentation(job: Job | null) {
+  const total = job?.total || 0;
+  const batch = job?.unit === "batches";
+  const counts = job?.summary || job?.progress || {};
+  const successful = batch ? (typeof counts.complete === "number" ? counts.complete : 0) : (job?.completed || 0);
+  const percent = total ? Math.min(100, Math.max(0, Math.round(successful / total * 100))) : 0;
+  const showPercent = !!job && (isActiveJob(job) || job.status === "complete");
+  const detail = `${successful} of ${total} ${batch ? "batches successful" : job?.unit || "tracks"}`;
+  const message = batch ? detail : job?.message || "Waiting for worker";
+  const summary: string[] = [];
+  if (batch) {
+    for (const [key, label] of [["complete", "successful"], ["partial", "partially successful"], ["failed", "failed"], ["cancelled", "cancelled"]]) {
+      const count = counts[key];
+      if (typeof count === "number" && (count > 0 || key === "complete")) summary.push(`${count} ${label}`);
+    }
+  } else {
+    for (const [key, label] of [["inserted", "new"], ["already_linked", "reused"], ["failed", "failed"], ["waveforms_generated", "waveforms generated"], ["melody_indexed", "melodies indexed"], ["lyrics_embedded", "lyrics embedded"], ["karaoke_aligned", "karaoke aligned"], ["voice_classified", "vocals classified"], ["unlinked", "unlinked"]]) {
+      const count = job?.summary?.[key];
+      if (typeof count === "number") summary.push(`${count} ${label}`);
+    }
+  }
+  return { percent, showPercent, detail, message, summary };
 }

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 const source = stripTypeScriptTypes(readFileSync(new URL('./durableJobs.ts', import.meta.url), 'utf8'));
-const { discoverJob, watchJob, isActiveJob, isTerminalJob } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const { discoverJob, watchJob, isActiveJob, isTerminalJob, jobPresentation } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 const job = status => ({ id: 'job', job_id: 'job', status, phase: status, completed: 0, total: 1 });
 const response = body => ({ ok: true, json: async () => body });
 test('all active and terminal states are classified', () => {
@@ -56,4 +56,28 @@ test('historical cancelled jobs stop polling without scheduling another request'
   assert.equal(calls, 1);
   assert.equal(timers.length, 0);
   stop();
+});
+
+test('cancelled history does not reopen on entry', async t => {
+  t.mock.method(globalThis, 'fetch', async url => response({ jobs: url.includes('active_only=true') ? [] : [job('cancelled')] }));
+  assert.equal(await discoverJob('connection', new AbortController().signal), null);
+});
+test('legacy cancelled batch counters do not imply successful completion', () => {
+  const result = jobPresentation({ ...job('cancelled'), unit: 'batches', completed: 30, total: 30,
+    message: 'Processed 30 of 30 batches', summary: { complete: 1, cancelled: 29, total: 30, completed: 30 } });
+  assert.equal(result.showPercent, false);
+  assert.equal(result.percent, 3);
+  assert.equal(result.message, '1 of 30 batches successful');
+  assert.deepEqual(result.summary, ['1 successful', '29 cancelled']);
+});
+test('batch failures are distinct from successes', () => {
+  const result = jobPresentation({ ...job('partial'), unit: 'batches', completed: 3, total: 3,
+    summary: { complete: 1, partial: 1, failed: 1 } });
+  assert.equal(result.showPercent, false);
+  assert.deepEqual(result.summary, ['1 successful', '1 partially successful', '1 failed']);
+});
+test('song metrics are only displayed when actually reported', () => {
+  assert.deepEqual(jobPresentation(job('complete')).summary, []);
+  assert.deepEqual(jobPresentation({ ...job('complete'), summary: { inserted: 2, failed: 0 } }).summary,
+    ['2 new', '0 failed']);
 });

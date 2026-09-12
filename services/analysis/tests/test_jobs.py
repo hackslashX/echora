@@ -175,7 +175,9 @@ def test_batches_aggregate_and_hide_children(database):
     assert jobs.fail(b['id'], b['token'], 'error', retryable=False)
     final = jobs.get_job(root['id'], owner)
     assert final['status'] == 'partial'
-    assert final['progress']['completed'] == final['progress']['total'] == 2
+    assert final['progress']['completed'] == 1
+    assert final['progress']['finished'] == final['progress']['total'] == 2
+    assert final['message'].startswith('1 of 2 batches successful')
 
 
 def test_cancel_batch_and_empty_batch(database):
@@ -264,3 +266,28 @@ def test_public_progress_snapshot(database):
     assert public['phase'] == 'muq'
     assert public['completed'] == 2 and public['total'] == 3
     assert 'token' not in public
+
+
+def test_legacy_cancelled_progress_is_not_success():
+    row = {key: None for key in jobs.PUBLIC}
+    row.update(id=uuid4(), status='cancelled', progress={
+        'unit': 'batches', 'complete': 1, 'cancelled': 29,
+        'completed': 30, 'total': 30, 'message': 'Processed 30 of 30 batches'})
+    public = jobs._public(row)
+    assert public['completed'] == 1
+    assert public['progress']['finished'] == 30
+    assert public['message'] == '1 of 30 batches successful'
+
+
+def test_cancelled_batches_finish_parent_without_counting_as_success(database):
+    owner = uuid4()
+    root = jobs.enqueue('navidrome_sync', 'analysis', owner)
+    claim = jobs.claim('analysis', 'worker')
+    jobs.expand(root['id'], claim['token'], [{'track_ids': ['a']}, {'track_ids': ['b']}])
+    child = jobs.claim('analysis', 'worker')
+    jobs.finish(child['id'], child['token'])
+    final = jobs.cancel(root['id'], owner)
+    assert final['status'] == 'cancelled'
+    assert final['completed'] == 1 and final['total'] == 2
+    assert final['progress']['finished'] == 2
+    assert final['summary']['cancelled'] == 1

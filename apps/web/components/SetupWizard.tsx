@@ -1,6 +1,7 @@
 "use client";
 
 import { useDurableJob } from "./jobs/useDurableJob";
+import { jobPresentation } from "./jobs/durableJobs";
 import LoadingImage from "./media/LoadingImage";
 import { coverArtUrl } from "./media/coverArt";
 import { useRouter } from "next/navigation";
@@ -81,7 +82,8 @@ export default function SetupWizard({ initialStep = 0 }: { initialStep?: number 
     finally { setBusy(false); }
   }
 
-  const percent = job?.total ? Math.round(job.completed / job.total * 100) : 0;
+  const presentation = jobPresentation(job);
+  const { percent } = presentation;
 
   async function finishOnboarding() {
     setError("");
@@ -127,8 +129,8 @@ export default function SetupWizard({ initialStep = 0 }: { initialStep?: number 
         {step === 2 && <div className="wizard-card processing-card">
           <EdgeLines />
           <h1>{job?.status === "complete" ? <>Analysis<br />complete.</> : <>Build music<br />embeddings.</>}</h1>
-          <div className="progress-summary"><div><span className="phase">{job?.status === "complete" ? "Complete" : terminal ? job?.status : job?.phase || "Queued"}</span><strong>{job?.message || "Waiting for worker"}</strong><span>{job?.track ? `${job.track.artist || "Unknown artist"} — ${job.track.title}` : `${job?.completed || 0} of ${job?.total || chosen.length} ${job?.unit || "tracks"}`}</span></div><b>{percent}%</b></div>
-          <div className="meter"><i style={{ width: `${job?.phase === "models" ? 5 : percent}%` }} /></div>
+          <div className="progress-summary"><div><span className="phase">{job?.status === "complete" ? "Complete" : terminal ? job?.status : job?.phase || "Queued"}</span><strong>{presentation.message}</strong><span>{job?.track ? `${job.track.artist || "Unknown artist"} — ${job.track.title}` : presentation.detail}</span></div>{presentation.showPercent && <b>{percent}%</b>}</div>
+          {presentation.showPercent && <div className="meter"><i style={{ width: `${job?.phase === "models" ? 5 : percent}%` }} /></div>}
           <div className="process-stages">
             {[{ key: "models", label: "Load models" }, { key: "processing", label: "Process tracks" }, { key: "finalizing", label: "Save index" }].map((stage, index) => {
               const order = ["models", "processing", "finalizing", "complete"];
@@ -136,10 +138,10 @@ export default function SetupWizard({ initialStep = 0 }: { initialStep?: number 
               return <span key={stage.key} className={current > index ? "done" : current === index ? "active" : ""}>{current > index ? "✓" : `0${index + 1}`} <b>{stage.label}</b></span>;
             })}
           </div>
-          <div className="process-count">{job?.completed || 0} / {job?.total || chosen.length} tracks</div>
+          <div className="process-count">{presentation.detail}</div>
           {(error || jobError || job?.error) && <p role="alert" className="error">{error || jobError || job?.error}</p>}
           {terminal && <button className="primary" onClick={() => { dismiss(); navigate(tracks.length ? 1 : 0); }}>Dismiss / start again</button>}
-          {(job?.status === "complete" || job?.status === "partial") && <><div className="result-numbers"><div><strong>{job.summary?.inserted || 0}</strong><span>new</span></div><div><strong>{job.summary?.already_linked || 0}</strong><span>reused</span></div><div><strong>{job.summary?.failed || 0}</strong><span>failed</span></div></div><button className="primary enter-button" onClick={finishOnboarding}>Enter Echora <b>→</b></button></>}
+          {(job?.status === "complete" || job?.status === "partial") && <>{presentation.summary.length > 0 && <div className="result-numbers">{presentation.summary.map(item => <div key={item}><span>{item}</span></div>)}</div>}<button className="primary enter-button" onClick={finishOnboarding}>Enter Echora <b>→</b></button></>}
         </div>}
   </AppShell>;
 }
