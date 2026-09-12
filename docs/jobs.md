@@ -2,7 +2,7 @@
 
 ## Processes
 
-The API submits jobs and exposes owner-scoped `GET /jobs`, `GET /jobs/{id}`, and `POST /jobs/{id}/cancel`. It does not scan catalogs or execute background pipelines. The sync page discovers active work for its connection without browser-stored job IDs.
+The API submits jobs and exposes owner-scoped `GET /jobs` and `GET /jobs/{id}`. Jobs cannot be cancelled through the UI or public API. The API does not scan catalogs or execute background pipelines. The sync page discovers active work for its connection without browser-stored job IDs.
 
 Two worker types share PostgreSQL:
 
@@ -11,7 +11,7 @@ Two worker types share PostgreSQL:
 
 Each worker process claims one job at a time and supervises an isolated executor subprocess. Multiple processes can claim different batches. Device selection remains in the existing model implementations; CPU and GPU use the same pipeline. Size worker counts for available RAM/VRAM: automatic CUDA detection is not resource admission control.
 
-A sync scans the complete catalog before removing stale user links, then atomically expands into bounded child batches. Imports never remove unselected links. Each batch runs its required stages in sequence, loading each needed model once for that stage. `ECHORA_BATCH_SIZE` defaults to 32. The private disk audio cache defaults to 2 GiB per active executor (`ECHORA_AUDIO_CACHE_BYTES`); files beyond the limit are downloaded again rather than retained. Allow enough temporary disk space per worker.
+A sync scans the complete catalog before removing stale user links, then plans the work before atomically creating bounded child batches. New-tracks-only mode selects sources not yet indexed in the library. Entire-library mode selects new sources and songs with missing or incompatible audio, profiles, voice, lyrics, or eligible karaoke results. Known missing, unavailable, and instrumental lyrics alone do not requeue a song on every ordinary sync; explicit lyrics backfills can retry retrieval. Imports never remove unselected links. Each batch runs its required stages in sequence, loading each needed model once for that stage. `ECHORA_BATCH_SIZE` defaults to 32. The private disk audio cache defaults to 2 GiB per active executor (`ECHORA_AUDIO_CACHE_BYTES`); files beyond the limit are downloaded again rather than retained. Allow enough temporary disk space per worker.
 
 ## Recovery and results
 
@@ -19,7 +19,7 @@ Claims have renewable leases and unique tokens. Database writes to job state req
 
 Root jobs wait without holding a worker while their batches run. Progress is reported in batches, with terminal states `complete`, `partial`, `failed`, or `cancelled`. Audio and lyrics execution attempts link to their owning job; leaving a running claim marks any unfinished linked attempts interrupted. Other stages recover from their persisted artifacts and batch summaries, not a universal per-song task ledger.
 
-Cancellation is cooperative and checked at pipeline progress/network boundaries. The supervisor also stops an executor and its process group when the lease cannot be renewed. Completed artifacts are not rolled back. On Linux, executors receive a termination signal if their supervisor dies. Forced host/process failure can leave temporary directories; periodic host temporary-file cleanup remains advisable.
+Internal interruption is cooperative and checked at pipeline progress/network boundaries. Historical cancelled records remain readable, but no user cancellation action is exposed. The supervisor stops an executor and its process group when the lease cannot be renewed. Completed artifacts are not rolled back. On Linux, executors receive a termination signal if their supervisor dies. Forced host/process failure can leave temporary directories; periodic host temporary-file cleanup remains advisable.
 
 Curation schedules coalesce missed intervals into one refresh rather than replaying every missed run. Per-curation database locks serialize publication and recipe mutation. A durable publication intent stores the exact selected order before remote I/O. Replacing a known playlist can replay that same intent. If an initial playlist creation has an unknown outcome, automatic creation stops to avoid duplicates; an operator must reconcile it with Navidrome. No automatic ambiguous-creation resolution UI is provided yet.
 

@@ -209,3 +209,14 @@ def test_catalog_reconciliation_deduplicates_identical_source_tracks(db, visible
     result = main._reconcile_user_tracks(user, 'http://test', ['song', 'alias'])
     assert result['linked'] == 1
     assert db.execute('SELECT external_id FROM user_track_links WHERE user_id=%s', (user,)).fetchall() == [('alias',)]
+
+
+def test_sync_selection_respects_mode_and_library_scope(db, visible_track):
+    from echora_analysis.sync_plan import select_sync_tracks
+    _, _, library, _, _, _ = visible_track
+    db.execute('UPDATE libraries SET namespace=%s WHERE id=%s',
+               (uuid.uuid5(uuid.NAMESPACE_URL, 'http://test'), library))
+    assert select_sync_tracks(db, 'http://test', ['song', 'new'], 'missing') == ['new']
+    # Existing source has only MuQ, so entire-library repair includes it too.
+    assert select_sync_tracks(db, 'http://test', ['song', 'new'], 'all') == ['song', 'new']
+    assert select_sync_tracks(db, 'http://another-library', ['song'], 'missing') == ['song']

@@ -36,7 +36,7 @@ export default function SetupWizard({ initialStep = 0 }: { initialStep?: number 
   const [connectionId, setConnectionId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const { job, active, terminal, error: jobError, loading: jobLoading, track, cancel, cancelling, dismiss } = useDurableJob(connectionId);
+  const { job, active, terminal, error: jobError, loading: jobLoading, track, dismiss } = useDurableJob(connectionId);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -138,7 +138,6 @@ export default function SetupWizard({ initialStep = 0 }: { initialStep?: number 
           </div>
           <div className="process-count">{job?.completed || 0} / {job?.total || chosen.length} tracks</div>
           {(error || jobError || job?.error) && <p role="alert" className="error">{error || jobError || job?.error}</p>}
-          {active && <button className="primary" disabled={cancelling || job?.cancel_requested} onClick={cancel}>{job?.cancel_requested ? "Cancellation requested" : "Cancel"}</button>}
           {terminal && <button className="primary" onClick={() => { dismiss(); navigate(tracks.length ? 1 : 0); }}>Dismiss / start again</button>}
           {(job?.status === "complete" || job?.status === "partial") && <><div className="result-numbers"><div><strong>{job.summary?.inserted || 0}</strong><span>new</span></div><div><strong>{job.summary?.already_linked || 0}</strong><span>reused</span></div><div><strong>{job.summary?.failed || 0}</strong><span>failed</span></div></div><button className="primary enter-button" onClick={finishOnboarding}>Enter Echora <b>→</b></button></>}
         </div>}
