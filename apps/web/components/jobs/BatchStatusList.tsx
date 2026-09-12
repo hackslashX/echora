@@ -33,7 +33,7 @@ export default function BatchStatusList({ jobId, active }: { jobId: string; acti
   }, [jobId, active, page]);
   if (data?.total === 0 && !error) return null;
   return <section className={styles.panel} aria-label="Batch status">
-    <header><strong>Batch status</strong><span>Active batches first</span></header>
+    <header><strong>Batch status</strong></header>
     {error && <p role="status">{error}</p>}
     {!data && !error && <p>Reading batch status</p>}
     <div className={styles.list} tabIndex={0} aria-label="Batches">
