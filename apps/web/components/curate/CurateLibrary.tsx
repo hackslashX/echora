@@ -9,7 +9,7 @@ import AppShell from "../shell/AppShell";
 import CopyrightFooter from "../shell/CopyrightFooter";
 import { trackTemplate } from "../shell/gridGeometry";
 import MobilePivots from "../shell/MobilePivots";
-import paneStyles from "../shell/MobilePane.module.css";
+import { useMobilePane } from "../shell/useMobilePane";
 import styles from "./CurateLibrary.module.css";
 import motionStyles from "./CurateMotion.module.css";
 import { useDialogFocus } from "../shell/useDialogFocus";
@@ -68,7 +68,7 @@ export default function CurateLibrary() {
   const [refreshEnabled, setRefreshEnabled] = useState(true);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [detailKind, setDetailKind] = useState<"preview" | "saved" | null>(null);
-  const [mobilePane, setMobilePane] = useState<"recipe" | "playlists">("recipe");
+  const [mobilePane, setMobilePane, paneTransition] = useMobilePane<"recipe" | "playlists">("recipe", ["recipe", "playlists"]);
   const [curations, setCurations] = useState<Curation[]>([]);
   const [busyAction, setBusyAction] = useState<"preview" | "save" | "refresh" | "delete" | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Curation | null>(null);
@@ -169,7 +169,7 @@ export default function CurateLibrary() {
   return <AppShell title="Curate" footer={<CopyrightFooter />} breadcrumb flush fullPage grid={{ columns, rows: [1] }}>
     <main className={styles.page} style={{ gridTemplateColumns: trackTemplate(columns, 160), gridTemplateRows: trackTemplate([1], 88) }}>
       <MobilePivots label="Curation sections" active={mobilePane} onChange={setMobilePane} items={[{ key: "recipe", label: "recipe" }, { key: "playlists", label: "playlists", count: curations.length }]} />
-      <section className={`${styles.recipe} ${mobilePane === "recipe" ? `${styles.mobileActive} ${paneStyles.active}` : ""}`}>
+      <section className={`${styles.recipe} ${mobilePane === "recipe" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
         <div className={styles.recipeScroll}><CardHeader as="h1" title="Build playlists" description="Combine any curation signals you want. Empty aspects do not affect the score." />
         <section className={styles.commonSettings} aria-label="Playlist settings">
           <label><span>Playlist name</span><input value={name} onChange={event => setName(event.target.value)} placeholder="Late-night circuitry" /></label>
@@ -187,7 +187,7 @@ export default function CurateLibrary() {
         <div className={styles.actions}><button onClick={generate} disabled={busy || !hasPositiveEvidence}><WandSparkles />{busyAction === "preview" ? "CURATING" : "PREVIEW"}</button><button onClick={save} disabled={busy || !hasPositiveEvidence}><Save />{busyAction === "save" ? "SAVING" : "SAVE + SYNC"}</button></div>
         {(error || curationJobs.error) && <Alert tone="error" className={styles.actionError}>{error || curationJobs.error}</Alert>}
       </section>
-      <section className={`${styles.results} ${mobilePane === "playlists" ? `${styles.mobileActive} ${paneStyles.active}` : ""}`}>
+      <section className={`${styles.results} ${mobilePane === "playlists" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
         {preview ? <div className={`${styles.panelView} ${styles.detailView}`}>
           <CardHeader title={name || "Temporary preview"} count={shown.length} leading={<button className={styles.back} onClick={closeDetails} aria-label="Back to saved curations"><ArrowLeft /></button>} />
           {preview.references && <div className={styles.references}>{(["positive", "negative"] as const).map(kind => preview.references[kind].map(reference => <span className={kind === "negative" ? styles.negative : ""} key={`${kind}-${reference.kind}-${reference.name}`}>{reference.kind} · {reference.name}</span>))}</div>}

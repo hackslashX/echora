@@ -9,7 +9,7 @@ import { readCompactLayoutPreference, writeCompactLayoutPreference } from "../sh
 import { defaultPlaybackPreferences, PlaybackPreferences, readPlaybackPreferences, writePlaybackPreferences } from "../player/playbackPreferences";
 import CardHeader from "../ui/CardHeader";
 import MobilePivots from "../shell/MobilePivots";
-import paneStyles from "../shell/MobilePane.module.css";
+import { useMobilePane } from "../shell/useMobilePane";
 import styles from "./SettingsView.module.css";
 
 type Tab = "server" | "lastfm" | "playback" | "models" | "appearance" | "timezone" | "account" | "oidc";
@@ -32,7 +32,7 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
 const zones = ["UTC", "America/Los_Angeles", "America/Denver", "America/Chicago", "America/New_York", "America/Toronto", "America/Sao_Paulo", "Europe/London", "Europe/Paris", "Europe/Berlin", "Europe/Warsaw", "Africa/Johannesburg", "Asia/Dubai", "Asia/Kolkata", "Asia/Bangkok", "Asia/Shanghai", "Asia/Tokyo", "Asia/Seoul", "Australia/Sydney", "Pacific/Auckland"];
 
 export default function SettingsView() {
-  const [tab, setTab] = useState<Tab>("server");
+  const [tab, setTab, paneTransition] = useMobilePane<Tab>("server", ["server", "lastfm", "playback", "models", "appearance", "timezone", "account", "oidc"]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [serverUrl, setServerUrl] = useState("");
   const [serverUsername, setServerUsername] = useState("");
@@ -124,7 +124,7 @@ export default function SettingsView() {
     <main className={styles.page} style={{ gridTemplateColumns: trackTemplate(columns, 160), gridTemplateRows: trackTemplate([1], 88) }}>
       <MobilePivots label="Settings sections" active={tab} onChange={selectTab} items={tabs.map(item => ({ key: item.id, label: item.label }))} />
       <aside className={styles.tabs}><CardHeader as="h1" title="Settings" description="Playback, appearance, connections, and account preferences." /><nav>{tabs.map(item => <button key={item.id} className={tab === item.id ? styles.active : ""} onClick={() => { selectTab(item.id); }}><item.icon /><span><strong>{item.label}</strong><small>{item.note}</small></span></button>)}</nav></aside>
-      <section key={tab} className={`${styles.content} ${paneStyles.active}`}>
+      <section key={tab} className={`${styles.content} ${paneTransition}`}>
         {tab === "server" && <form onSubmit={saveServer}><CardHeader icon={<Server />} title="Sync server" description="Update the Navidrome server used for synchronization and playlist publishing." /><label><span>Server URL</span><input type="url" required value={serverUrl} onChange={event => setServerUrl(event.target.value)} /></label><label><span>Username</span><input required value={serverUsername} onChange={event => setServerUsername(event.target.value)} /></label><label><span>Password</span><input type="password" required value={serverPassword} onChange={event => setServerPassword(event.target.value)} placeholder="Required to verify changes" /></label><button disabled={busy || !serverCanSave}>VERIFY + SAVE</button></form>}
         {tab === "lastfm" && <form onSubmit={saveLastFm}><CardHeader icon={<Radio />} title="Last.fm integration" description="Connect listening history for familiarity mixes and time-of-day curations." /><div className={styles.connection}><span>{settings?.lastfm.connected ? "CONNECTED" : "NOT CONNECTED"}</span><strong>{settings?.lastfm.username || "No Last.fm user"}</strong></div><label><span>Last.fm username</span><input required value={lastfmUsername} onChange={event => setLastfmUsername(event.target.value)} /></label><label><span>API key</span><input type="password" required value={lastfmKey} onChange={event => setLastfmKey(event.target.value)} placeholder="Stored encrypted" /></label><div className={styles.formActions}><button disabled={busy || !lastfmCanSave}>VERIFY + SAVE</button>{settings?.lastfm.connected && <button type="button" className={styles.secondary} onClick={() => submit(() => api("/settings/lastfm", { method: "DELETE" }), "Last.fm disconnected")}>DISCONNECT</button>}</div></form>}
         {tab === "playback" && <section className={styles.preferences}><CardHeader icon={<SlidersHorizontal />} title="Playback" description="Choose the stream sent by Navidrome. Original uses the source file without bitrate reduction." /><label className={styles.selectPreference}><span>Music transcoding</span><select value={playback.quality} onChange={event => savePlayback({ ...playback, quality: event.target.value as PlaybackPreferences["quality"] })}><option value="original">Original</option><option value="320">320 kbps</option><option value="120">120 kbps</option></select><small>Original keeps the source quality. Lower bitrates use less bandwidth.</small></label></section>}
