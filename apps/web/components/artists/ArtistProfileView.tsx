@@ -6,6 +6,7 @@ import AppShell from "../shell/AppShell";
 import CopyrightFooter from "../shell/CopyrightFooter";
 import TransitionLink from "../shell/TransitionLink";
 import { trackTemplate } from "../shell/gridGeometry";
+import CardHeader from "../ui/CardHeader";
 import styles from "./ArtistProfileView.module.css";
 
 type Track = { id: string; title: string; artist?: string; album?: string };
@@ -36,10 +37,10 @@ export default function ArtistProfileView({ artist }: { artist: string }) {
   return <AppShell title="Artist profile" footer={<CopyrightFooter />} grid={{ columns, rows }} flush fullPage breadcrumb>
     <main className={styles.layout} style={{ gridTemplateColumns: trackTemplate(columns, 160), gridTemplateRows: trackTemplate(rows, 88) }}>
       <aside className={styles.profile}>
-        <header><span>ARTIST REPRESENTATION</span><h1>{artist}</h1><div><button className={model === "muq_mulan" ? styles.active : ""} onClick={() => { setLoading(true); setError(""); setModel("muq_mulan"); }}>SEMANTIC</button><button className={model === "mert" ? styles.active : ""} onClick={() => { setLoading(true); setError(""); setModel("mert"); }}>ACOUSTIC</button></div></header>
+        <CardHeader as="h1" eyebrow="Artist representation" title={artist} sticky actions={<><button className={model === "muq_mulan" ? styles.active : ""} onClick={() => { setLoading(true); setError(""); setModel("muq_mulan"); }}>SEMANTIC</button><button className={model === "mert" ? styles.active : ""} onClick={() => { setLoading(true); setError(""); setModel("mert"); }}>ACOUSTIC</button></>} />
         {loading ? <p className={styles.empty}>Building catalogue facets</p> : error ? <p className={styles.empty}>{error}</p> : profile && <><dl><div><dt>TRACKS</dt><dd>{profile.track_count}</dd></div><div><dt>FACETS</dt><dd>{profile.component_count}</dd></div></dl><section className={styles.facets}>{profile.facets.map(facet => <article key={facet.index}><span><Disc3 /></span><div><small>FACET {facet.index + 1} · {Math.round(facet.weight * 100)}% · {facet.track_count} TRACKS</small><strong>{facet.representative_track.title}</strong><p>{facet.representative_track.album || "Unknown album"}</p></div></article>)}</section></>}
       </aside>
-      <section className={styles.similar}><header><h2>Similar artists</h2><span>Bidirectional facet matching</span></header><div>{similar.map(item => <TransitionLink href={`/artists/${encodeURIComponent(item.artist)}`} key={item.artist}><span className={styles.score}>{Math.round(item.similarity * 100)}</span><div><strong>{item.artist}</strong><p>{item.track_count} tracks · {item.component_count} facets</p><small>BEST MATCH&nbsp; F{item.strongest_facet_match.target_facet + 1} → F{item.strongest_facet_match.candidate_facet + 1}&nbsp; {Math.round(item.strongest_facet_match.similarity * 100)}%</small></div></TransitionLink>)}</div></section>
+      <section className={styles.similar}><CardHeader title="Similar artists" description="Bidirectional facet matching" /><div>{similar.map(item => <TransitionLink href={`/artists/${encodeURIComponent(item.artist)}`} key={item.artist}><span className={styles.score}>{Math.round(item.similarity * 100)}</span><div><strong>{item.artist}</strong><p>{item.track_count} tracks · {item.component_count} facets</p><small>BEST MATCH&nbsp; F{item.strongest_facet_match.target_facet + 1} → F{item.strongest_facet_match.candidate_facet + 1}&nbsp; {Math.round(item.strongest_facet_match.similarity * 100)}%</small></div></TransitionLink>)}</div></section>
     </main>
   </AppShell>;
 }

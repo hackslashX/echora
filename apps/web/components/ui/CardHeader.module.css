@@ -1,0 +1,67 @@
+/* Attribute + class keeps legacy page header rules out of this component. */
+.header[data-card-header] {
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px 20px;
+  border: 0;
+  border-top: 4px solid var(--aqua);
+  border-bottom: 1px solid rgb(var(--accent-rgb) / .24);
+  background: color-mix(in srgb, var(--aqua) 12%, #080e14);
+}
+.header .copy { flex: 1; min-width: 0; }
+.header .title, .header .count {
+  margin: 0;
+  color: color-mix(in srgb, var(--aqua) 8%, #f5f7f6);
+  font: 500 28px/1.25 "Space Grotesk", sans-serif;
+  letter-spacing: -1px;
+}
+.header .title {
+  display: block;
+  padding: .06em 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.header .description {
+  display: block;
+  max-width: 100%;
+  margin: 5px 0 0;
+  color: color-mix(in srgb, var(--aqua) 12%, #bcc4c1);
+  font: 400 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: normal;
+}
+.header .count { flex: 0 0 auto; align-self: flex-start; padding: .06em 0; color: var(--aqua); font-variant-numeric: tabular-nums; }
+.header .eyebrow { display: block; margin: 0 0 5px; color: var(--aqua); font: 12px/1.4 "DM Mono", monospace; }
+.header .leading, .header .icon, .header .actions { display: flex; align-items: center; flex: 0 0 auto; gap: 8px; }
+.header .icon { color: var(--aqua); }
+.header .icon svg { width: 32px; height: 32px; stroke-width: 1.7; }
+.header .leading button, .header .actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 40px;
+  height: 40px;
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid var(--glass-stroke);
+  background: color-mix(in srgb, var(--aqua) 6%, #080e14);
+  color: color-mix(in srgb, var(--aqua) 15%, #e0e5e3);
+  font: 500 12px "DM Mono", monospace;
+  cursor: pointer;
+}
+.header .leading svg, .header .actions svg { width: 16px; height: 16px; }
+.header button:hover:not(:disabled) { border-color: var(--aqua); color: var(--aqua); background: color-mix(in srgb, var(--aqua) 18%, #080e14); }
+.header button:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+.header button:disabled { opacity: .4; cursor: default; }
+.header.sticky { position: sticky; top: 0; z-index: 2; }
+@media (max-width:1199px), (max-height:719px) {
+  .header[data-card-header] { padding: 12px 14px; gap: 9px; }
+  .header .title, .header .count { font-size: 24px; }
+  .header .actions { flex-wrap: wrap; }
+  .header .leading button, .header .actions button { min-width: 44px; height: 44px; }
+}

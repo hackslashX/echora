@@ -9,10 +9,12 @@ import AppShell from "../shell/AppShell";
 import CopyrightFooter from "../shell/CopyrightFooter";
 import { trackTemplate } from "../shell/gridGeometry";
 import MobilePivots from "../shell/MobilePivots";
+import { useMobilePane } from "../shell/useMobilePane";
 import styles from "./CurateLibrary.module.css";
 import motionStyles from "./CurateMotion.module.css";
 import { useDialogFocus } from "../shell/useDialogFocus";
 import Alert from "../ui/Alert";
+import CardHeader from "../ui/CardHeader";
 import TagInput, { type Tag } from "./TagInput";
 import TrackReferencePicker, { type ReferenceTrack } from "./TrackReferencePicker";
 import { useCurationJobs } from "../jobs/useCurationJobs";
@@ -66,7 +68,7 @@ export default function CurateLibrary() {
   const [refreshEnabled, setRefreshEnabled] = useState(true);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [detailKind, setDetailKind] = useState<"preview" | "saved" | null>(null);
-  const [mobilePane, setMobilePane] = useState<"recipe" | "playlists">("recipe");
+  const [mobilePane, setMobilePane, paneTransition] = useMobilePane<"recipe" | "playlists">("recipe", ["recipe", "playlists"]);
   const [curations, setCurations] = useState<Curation[]>([]);
   const [busyAction, setBusyAction] = useState<"preview" | "save" | "refresh" | "delete" | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Curation | null>(null);
@@ -167,8 +169,8 @@ export default function CurateLibrary() {
   return <AppShell title="Curate" footer={<CopyrightFooter />} breadcrumb flush fullPage grid={{ columns, rows: [1] }}>
     <main className={styles.page} style={{ gridTemplateColumns: trackTemplate(columns, 160), gridTemplateRows: trackTemplate([1], 88) }}>
       <MobilePivots label="Curation sections" active={mobilePane} onChange={setMobilePane} items={[{ key: "recipe", label: "recipe" }, { key: "playlists", label: "playlists", count: curations.length }]} />
-      <section className={`${styles.recipe} ${mobilePane === "recipe" ? styles.mobileActive : ""}`}>
-        <div className={styles.recipeScroll}><header><h1>Build playlists</h1><p>Combine any curation signals you want. Empty aspects do not affect the score.</p></header>
+      <section className={`${styles.recipe} ${mobilePane === "recipe" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
+        <div className={styles.recipeScroll}><CardHeader as="h1" title="Build playlists" description="Combine any curation signals you want. Empty aspects do not affect the score." />
         <section className={styles.commonSettings} aria-label="Playlist settings">
           <label><span>Playlist name</span><input value={name} onChange={event => setName(event.target.value)} placeholder="Late-night circuitry" /></label>
         </section>
@@ -185,14 +187,14 @@ export default function CurateLibrary() {
         <div className={styles.actions}><button onClick={generate} disabled={busy || !hasPositiveEvidence}><WandSparkles />{busyAction === "preview" ? "CURATING" : "PREVIEW"}</button><button onClick={save} disabled={busy || !hasPositiveEvidence}><Save />{busyAction === "save" ? "SAVING" : "SAVE + SYNC"}</button></div>
         {(error || curationJobs.error) && <Alert tone="error" className={styles.actionError}>{error || curationJobs.error}</Alert>}
       </section>
-      <section className={`${styles.results} ${mobilePane === "playlists" ? styles.mobileActive : ""}`}>
+      <section className={`${styles.results} ${mobilePane === "playlists" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
         {preview ? <div className={`${styles.panelView} ${styles.detailView}`}>
-          <header><button className={styles.back} onClick={closeDetails} aria-label="Back to saved curations"><ArrowLeft /></button><h2>{name || "Temporary preview"}</h2><strong>{shown.length}</strong></header>
+          <CardHeader title={name || "Temporary preview"} count={shown.length} leading={<button className={styles.back} onClick={closeDetails} aria-label="Back to saved curations"><ArrowLeft /></button>} />
           {preview.references && <div className={styles.references}>{(["positive", "negative"] as const).map(kind => preview.references[kind].map(reference => <span className={kind === "negative" ? styles.negative : ""} key={`${kind}-${reference.kind}-${reference.name}`}>{reference.kind} · {reference.name}</span>))}</div>}
           <div className={styles.trackList}>{shown.length ? shown.map((track, index) => <article key={track.id}><b>{String(index + 1).padStart(2, "0")}</b><div className={styles.art}>{track.cover_art && connectionId ? <LoadingImage sizes="46px" src={coverArtUrl(connectionId, track.cover_art, 92)} alt="" /> : <Disc3 />}</div><div><strong>{track.title}</strong><small className={styles.trackMeta}><span>{track.artist || "Unknown artist"} · {track.album || "Unknown album"}</span>{track.evidence?.selection_pool === "familiar" && <em className={styles.historyBadge} title={`${track.evidence.listen_count || 0} matched Last.fm listens`}>LAST.FM PICK</em>}</small></div><span>{track.percentile == null ? track.score.toFixed(2) : `TOP ${Math.max(1, Math.round((1 - track.percentile) * 100))}%`}</span><button onClick={() => current?.id === track.id ? toggle() : playQueue(playerTracks(shown), index)} aria-label={`Play ${track.title}`}>{current?.id === track.id && playing ? <Pause /> : <Play />}</button></article>) : <p>This curation does not have a completed playlist yet.</p>}</div>
           {shown.length > 0 && <footer><button onClick={() => playQueue(playerTracks(shown), 0)}><Play /> {detailKind === "saved" ? "PLAY PLAYLIST" : "PLAY PREVIEW"}</button><span>{weightLabel}{preview.familiarity?.active ? ` · ${preview.familiarity.familiar_tracks} familiar / ${preview.familiarity.discovery_tracks} discovery` : ""}</span>{preview.language && <em className={styles.languageNote}>{preview.language.strictness === "only" ? `· ${preview.language.matched_tracks} confident ${preview.language.target.toUpperCase()} match${preview.language.matched_tracks === 1 ? "" : "es"}` : `· ${preview.language.matched_tracks} primary ${preview.language.target.toUpperCase()} · rest closest vibe`}</em>}</footer>}
         </div> : <div className={`${styles.panelView} ${styles.curationView}`}>
-          <header><div><h2>Saved curations</h2><p>Your synced playlists and their latest revisions.</p></div><strong>{curations.length}</strong></header>
+          <CardHeader title="Saved curations" description="Your synced playlists and their latest revisions." count={curations.length} />
           <div className={styles.curationList}>{curations.length ? curations.map(curation => <article key={curation.id} className={styles.curationCard}><button className={styles.curationMain} onClick={() => openCuration(curation)}><span data-status={curation.status} title={curation.status === "ready" ? "Latest playlist revision is synced" : curation.status === "refreshing" ? "A new playlist revision is being generated" : curation.status === "failed" ? "The latest refresh failed" : "Playlist has not been generated yet"}>{curation.status}</span><strong>{curation.name}</strong><small>{curation.tracks.length} tracks · {curation.refresh_enabled ? "refreshes every 24 hours" : "manual refresh"}</small>{curation.last_error && <em>{curation.last_error}</em>}</button><button title="Refresh now" disabled={busy || curation.status === "refreshing" || curationJobs.jobs.some(job => job.curation_id === curation.id)} onClick={() => refresh(curation)}><RefreshCw /></button><button title="Toggle schedule" className={curation.refresh_enabled ? styles.enabled : ""} onClick={() => toggleSchedule(curation)}><Clock3 /></button><button title="Delete curation" className={styles.deleteButton} onClick={() => setDeleteTarget(curation)}><Trash2 /></button></article>) : <div className={styles.emptyCurations}><ListMusic /><strong>No saved curations</strong><p>Choose your playlist criteria, then use Save + Sync to publish it.</p></div>}</div>
         </div>}
       </section>
