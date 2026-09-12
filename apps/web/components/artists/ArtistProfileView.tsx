@@ -34,7 +34,7 @@ export default function ArtistProfileView({ artist }: { artist: string }) {
   const columns = [0.34, 0.04, 0.62];
   const rows = [1];
   return <AppShell title="Artist profile" footer={<CopyrightFooter />} grid={{ columns, rows }} flush fullPage breadcrumb>
-    <main className={styles.layout} style={{ gridTemplateColumns: trackTemplate(columns, 180), gridTemplateRows: trackTemplate(rows, 152) }}>
+    <main className={styles.layout} style={{ gridTemplateColumns: trackTemplate(columns, 160), gridTemplateRows: trackTemplate(rows, 88) }}>
       <aside className={styles.profile}>
         <header><span>ARTIST REPRESENTATION</span><h1>{artist}</h1><div><button className={model === "muq_mulan" ? styles.active : ""} onClick={() => { setLoading(true); setError(""); setModel("muq_mulan"); }}>SEMANTIC</button><button className={model === "mert" ? styles.active : ""} onClick={() => { setLoading(true); setError(""); setModel("mert"); }}>ACOUSTIC</button></div></header>
         {loading ? <p className={styles.empty}>Building catalogue facets</p> : error ? <p className={styles.empty}>{error}</p> : profile && <><dl><div><dt>TRACKS</dt><dd>{profile.track_count}</dd></div><div><dt>FACETS</dt><dd>{profile.component_count}</dd></div></dl><section className={styles.facets}>{profile.facets.map(facet => <article key={facet.index}><span><Disc3 /></span><div><small>FACET {facet.index + 1} · {Math.round(facet.weight * 100)}% · {facet.track_count} TRACKS</small><strong>{facet.representative_track.title}</strong><p>{facet.representative_track.album || "Unknown album"}</p></div></article>)}</section></>}

@@ -95,7 +95,7 @@ export default function BrowseLibrary() {
   const columns = [0.27, 0.04, 0.69];
   const rows = [1];
   return <AppShell title="Browse" footer={<CopyrightFooter />} grid={{ columns, rows }} flush fullPage breadcrumb>
-    <section className={styles.layout} style={{ gridTemplateColumns: trackTemplate(columns, 180), gridTemplateRows: trackTemplate(rows, 152) }}>
+    <section className={styles.layout} style={{ gridTemplateColumns: trackTemplate(columns, 160), gridTemplateRows: trackTemplate(rows, 88) }}>
       <MobilePivots label="Browse sections" active={mobilePane} onChange={setMobilePane} items={[{ key: "tracks", label: humResults ? "matches" : "tracks", count: total }, { key: "filters", label: "filters" }]} />
       <aside className={`${styles.filters} ${mobilePane === "filters" ? styles.mobileActive : ""}`}>
         <h1>Filters</h1>

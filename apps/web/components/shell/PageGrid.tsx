@@ -24,7 +24,7 @@ function morph(oldLines: Line[], newLines: Line[], prefix: string): { from: Line
     const oldLine = oldDynamic[index];
     const newLine = newDynamic[index];
     const collapseLeft = index < count / 2;
-    const edge = collapseLeft ? `${prefix === "v" ? 180 : 152}px` : `calc(100% - ${prefix === "v" ? 180 : 152}px)`;
+    const edge = collapseLeft ? `${prefix === "v" ? 160 : 88}px` : `calc(100% - ${prefix === "v" ? 160 : 88}px)`;
     from.push({ id: `${prefix}-dynamic-${index}`, position: oldLine?.position || edge, opacity: oldLine ? 1 : 0 });
     to.push({ id: `${prefix}-dynamic-${index}`, position: newLine?.position || edge, opacity: newLine ? 1 : 0 });
   }
@@ -37,15 +37,15 @@ function style(axis: "left" | "top", line: Line, delay = 0): CSSProperties {
 
 export default function PageGrid({ columns, rows, phase }: GridDefinition & { phase: Phase }) {
   const previous = useRef<GridDefinition>({ columns, rows });
-  const [vertical, setVertical] = useState(() => linesFor(columns, 180, "v"));
-  const [horizontal, setHorizontal] = useState(() => linesFor(rows, 152, "h"));
+  const [vertical, setVertical] = useState(() => linesFor(columns, 160, "v"));
+  const [horizontal, setHorizontal] = useState(() => linesFor(rows, 88, "h"));
   const signature = `${columns.join(",")}|${rows.join(",")}`;
 
   useEffect(() => {
     const oldSignature = `${previous.current.columns.join(",")}|${previous.current.rows.join(",")}`;
     if (oldSignature === signature) return;
-    const verticalMorph = morph(linesFor(previous.current.columns, 180, "v"), linesFor(columns, 180, "v"), "v");
-    const horizontalMorph = morph(linesFor(previous.current.rows, 152, "h"), linesFor(rows, 152, "h"), "h");
+    const verticalMorph = morph(linesFor(previous.current.columns, 160, "v"), linesFor(columns, 160, "v"), "v");
+    const horizontalMorph = morph(linesFor(previous.current.rows, 88, "h"), linesFor(rows, 88, "h"), "h");
     setVertical(verticalMorph.from); setHorizontal(horizontalMorph.from);
     const frame = requestAnimationFrame(() => requestAnimationFrame(() => { setVertical(verticalMorph.to); setHorizontal(horizontalMorph.to); }));
     previous.current = { columns, rows };
