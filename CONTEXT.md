@@ -36,6 +36,18 @@ A user's association with a library they added. It establishes the source throug
 
 A user's current link to a shared track through one library. Synchronization creates links for songs present in that user's live catalog and removes links for songs no longer present. Removing a link does not delete shared metadata or representations.
 
+## Library sync
+
+A user's request to reconcile their visible catalog with a music source and produce missing or outdated analysis. A sync removes stale user track links only after a complete catalog scan.
+
+## Track import
+
+A user's request to add and analyze selected songs without removing other songs from their library.
+
+## Analysis batch
+
+A bounded selection of songs processed together through the required analysis stages. Finished analysis remains reusable when other songs in the batch fail.
+
 ## Recording group
 
 A non-destructive set of tracks believed to contain the same recording. Membership records evidence and confidence. Grouping never deletes or replaces tracks. Members are alternative copies when Echora generates a journey or curation, so one generated selection contains at most one member.

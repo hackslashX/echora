@@ -20,7 +20,7 @@ Percentiles are relative ranks, not match probabilities. Track evidence has `mat
 
 Default audio and lyrics configurations preserve the hashes of existing compatible runs. Custom model repository IDs contribute to the configuration hash and require new representations. Changing a revision or preprocessing configuration reduces coverage until matching representations exist. Readers do not fall back to an incompatible older space. Historical data remains in the original tables.
 
-This is a fail-closed policy, not a blue/green corpus rollout. Before changing production model revisions, plan the backfill or expect reduced availability. All processes sharing this database must use the same configuration. The existing single-analysis-replica restriction still applies.
+This is a fail-closed policy, not a blue/green corpus rollout. Before changing production model revisions, plan the backfill or expect reduced availability. All processes sharing this database must use the same representation configuration. Background execution uses durable worker claims; interactive inference capacity still needs explicit deployment limits.
 
 Curation previews and revisions retain the exact representation run IDs. Per-track evidence also retains its run IDs.
 
@@ -28,7 +28,7 @@ Curation previews and revisions retain the exact representation run IDs. Per-tra
 
 `analysis_runs` remains the reusable representation definition. Reusing it no longer resets its status or start time. Audio and lyrics embedding executions create separate `analysis_attempts` and `analysis_attempt_tracks` rows. Their status distinguishes complete, partial, failed, and interrupted execution.
 
-Readers treat committed embedding and profile rows as completed per-track artifacts. They do not hide existing tracks while another track in the same representation is being processed. The writers commit each track's aggregate and window representations together. Startup marks unfinished attempts interrupted.
+Readers treat committed embedding and profile rows as completed per-track artifacts. They do not hide existing tracks while another track in the same representation is being processed. The writers commit each track's aggregate and window representations together. API startup does not mark other workers' attempts interrupted. Worker attempts link to their durable job; leaving a running claim marks any unfinished linked attempts interrupted. Retries replan from committed artifacts. Legacy unlinked attempt rows are not a substitute for the durable job lifecycle.
 
 The old `analysis_runs.status` field is not a reliable batch-success indicator. Use `analysis_attempts` for audio and lyrics embedding outcomes. Other processing stages still report their existing summaries.
 

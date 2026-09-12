@@ -15,7 +15,7 @@ from .lyrics_analysis import LyricsEmbeddingModel
 from .language_detection import detect_distribution
 from .models import release_model
 from .navidrome import NavidromeClient
-from .processing_plan import plan_lyrics
+from .processing_plan import plan_lyrics, resolve_library_id
 from .representations import configure_representations, embedding_config
 from .analysis_attempts import start_attempt, record_track, finish_attempt
 
@@ -92,8 +92,9 @@ def backfill_lyrics(
     report = progress or (lambda _: None)
     summary = {"total": 0, "available": 0, "missing": 0, "unavailable": 0, "embedded": 0, "failed": 0}
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection, NavidromeClient(url, username, password) as client:
+        library_id = resolve_library_id(connection, url)
         configure_representations(connection)
-        planned = plan_lyrics(connection, external_ids).lyrics_external_ids
+        planned = plan_lyrics(connection, external_ids, library_id=library_id).lyrics_external_ids
         if not planned:
             report({"phase": "planning", "message": "Lyrics analysis already current",
                     "completed": 0, "total": 0, "unit": "tracks"})
@@ -102,9 +103,9 @@ def backfill_lyrics(
             cursor.execute(
                 """SELECT DISTINCT ON (ts.track_id) ts.track_id, ts.external_id, t.title
                    FROM track_sources ts JOIN tracks t ON t.id=ts.track_id
-                   WHERE ts.source_type='subsonic' AND ts.external_id=ANY(%s)
+                   WHERE ts.source_type='subsonic' AND ts.external_id=ANY(%s) AND ts.library_id=%s
                    ORDER BY ts.track_id, ts.id""",
-                (list(planned),),
+                (list(planned), library_id),
             )
             tracks = cursor.fetchall()
         summary["total"] = len(tracks)
@@ -134,29 +135,31 @@ def backfill_lyrics(
             os.environ.get("LYRICS_MODEL_ID", "BAAI/bge-m3"),
             os.environ.get("LYRICS_REVISION", "5617a9f61b028005a4858fdac845db406aefb181"), device,
         )
-        run_id = _create_run(connection, model)
-        attempt_id = start_attempt(connection, run_id, len(embeddable))
-        connection.commit()
-        for index, (track_id, title, lyrics) in enumerate(embeddable):
-            try:
-                embedded = model.embed(str(lyrics["text"]))
-                _store_embeddings(connection, track_id, run_id, embedded)
-                record_track(connection, attempt_id, str(track_id), track_id)
-                summary["embedded"] += 1
-                connection.commit()
-            except Exception:
-                connection.rollback()
-                summary["failed"] += 1
-                record_track(connection, attempt_id, str(track_id), track_id,
-                             error="Lyrics embedding failed; see service logs")
-                connection.commit()
-            report({"phase": "lyrics", "message": f"Embedding lyrics for {title}",
-                    "completed": index + 1, "total": len(embeddable), "unit": "tracks",
-                    "summary": summary})
-        finish_attempt(connection, attempt_id)
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id=%s", (run_id,))
-        connection.commit()
-        release_model(model)
-        del model
+        try:
+            run_id = _create_run(connection, model)
+            attempt_id = start_attempt(connection, run_id, len(embeddable))
+            connection.commit()
+            for index, (track_id, title, lyrics) in enumerate(embeddable):
+                try:
+                    embedded = model.embed(str(lyrics["text"]))
+                    _store_embeddings(connection, track_id, run_id, embedded)
+                    record_track(connection, attempt_id, str(track_id), track_id)
+                    summary["embedded"] += 1
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    summary["failed"] += 1
+                    record_track(connection, attempt_id, str(track_id), track_id,
+                                 error="Lyrics embedding failed; see service logs")
+                    connection.commit()
+                report({"phase": "lyrics", "message": f"Embedding lyrics for {title}",
+                        "completed": index + 1, "total": len(embeddable), "unit": "tracks",
+                        "summary": summary})
+            finish_attempt(connection, attempt_id)
+            with connection.cursor() as cursor:
+                cursor.execute("UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id=%s", (run_id,))
+            connection.commit()
+        finally:
+            release_model(model)
+            del model
     return summary
