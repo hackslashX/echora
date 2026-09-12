@@ -37,7 +37,7 @@
 .header .eyebrow { display: block; margin: 0 0 5px; color: var(--aqua); font: 12px/1.4 "DM Mono", monospace; }
 .header .leading, .header .icon, .header .actions { display: flex; align-items: center; flex: 0 0 auto; gap: 8px; }
 .header .icon { color: var(--aqua); }
-.header .icon svg { width: 24px; height: 24px; }
+.header .icon svg { width: 32px; height: 32px; stroke-width: 1.7; }
 .header .leading button, .header .actions button {
   display: inline-flex;
   align-items: center;
