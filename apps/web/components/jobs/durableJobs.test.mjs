@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 const source = stripTypeScriptTypes(readFileSync(new URL('./durableJobs.ts', import.meta.url), 'utf8'));
-const { discoverJob, watchJob, isActiveJob, isTerminalJob, jobRequest } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const { discoverJob, watchJob, isActiveJob, isTerminalJob } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 const job = status => ({ id: 'job', job_id: 'job', status, phase: status, completed: 0, total: 1 });
 const response = body => ({ ok: true, json: async () => body });
 test('all active and terminal states are classified', () => {
@@ -37,7 +37,23 @@ test('cleanup aborts requests and ignores late results', async t => {
   stop(); assert.equal(signal.aborted, true); finish(response(job('complete')));
   await new Promise(resolve => setImmediate(resolve)); assert.equal(received, false);
 });
-test('cancel uses owner-scoped endpoint and returns the job', async t => {
-  t.mock.method(globalThis, 'fetch', async (url, options) => { assert.equal(url, '/analysis/jobs/job/cancel'); assert.equal(options.method, 'POST'); return response({ ...job('waiting'), cancel_requested: true }); });
-  assert.equal((await jobRequest('/jobs/job/cancel', new AbortController().signal, 'POST')).cancel_requested, true);
+test('library job surfaces and hook expose no cancellation action', () => {
+  // Source-level contract guard: the frontend suite has no DOM rendering harness.
+  for (const path of ['../sync/SyncLibrary.tsx', '../SetupWizard.tsx', './useDurableJob.ts']) {
+    const source = readFileSync(new URL(path, import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /cancel/i, `${path} must not expose job cancellation`);
+  }
+});
+test('historical cancelled jobs stop polling without scheduling another request', async t => {
+  let calls = 0;
+  const timers = [];
+  t.mock.method(globalThis, 'setTimeout', (...args) => { timers.push(args); return 0; });
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return response(job('cancelled')); });
+  let received;
+  const stop = watchJob('connection', 'job', value => { received = value; }, () => {});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(received.status, 'cancelled');
+  assert.equal(calls, 1);
+  assert.equal(timers.length, 0);
+  stop();
 });

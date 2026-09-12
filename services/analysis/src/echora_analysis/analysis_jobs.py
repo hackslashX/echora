@@ -152,10 +152,18 @@ def execute(job: dict, context) -> dict | None:
             if operation == 'navidrome_sync':
                 report({'phase': 'scanning', 'message': 'Scanning complete catalog'})
                 with NavidromeClient(*credentials) as client:
-                    ids = [track.id for track in client.all_tracks()]
+                    catalog_ids = [track.id for track in client.all_tracks()]
+                context.check()
+                from .sync_plan import select_sync_tracks
+                report({'phase': 'planning', 'message': 'Checking missing analysis before batching'})
+                with _connect() as connection:
+                    ids = select_sync_tracks(connection, credentials[0], catalog_ids, payload.get('mode', 'all'))
                 context.check()
                 main._attach_user_library(user_id, credentials[0])
-                main._reconcile_user_tracks(user_id, credentials[0], ids)
+                # Reconcile the complete snapshot, never only the work selection.
+                main._reconcile_user_tracks(user_id, credentials[0], catalog_ids)
+                report({'phase': 'planning', 'message': f'{len(ids)} songs need processing',
+                        'total': len(ids), 'completed': 0, 'unit': 'tracks'})
             elif operation == 'import':
                 if ids is None:
                     raise ValueError('import requires track_ids')

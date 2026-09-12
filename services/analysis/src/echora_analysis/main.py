@@ -822,8 +822,8 @@ def _enqueue_connection_job(kind: str, connection_id: str, user: dict[str, objec
 def start_navidrome_sync(
     connection_id: str, request: SyncRequest, echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
-    # Both legacy modes repair missing/outdated artifacts; neither forces recomputation.
-    return _enqueue_connection_job("navidrome_sync", connection_id, _session_user(echora_session))
+    return _enqueue_connection_job("navidrome_sync", connection_id, _session_user(echora_session),
+                                   payload={"mode": request.mode})
 
 
 @app.post("/navidrome/connections/{connection_id}/recordings/backfill", status_code=202, dependencies=[Depends(require_user)])
@@ -2605,15 +2605,6 @@ def list_user_jobs(
 def job(job_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
     value = jobs.get_job(job_id, user["id"])
-    if value is None:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return value
-
-
-@app.post("/jobs/{job_id}/cancel", status_code=202)
-def cancel_job(job_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
-    user = _session_user(echora_session)
-    value = jobs.cancel(job_id, user["id"])
     if value is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return value

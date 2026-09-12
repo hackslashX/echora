@@ -147,8 +147,10 @@ def _aggregate(db, parent_id):
     counts.update({r['status']: r['n'] for r in rows})
     counts['total'] = sum(counts.values())
     counts['completed'] = sum(counts[s] for s in TERMINAL)
+    selection = db.execute("""SELECT coalesce(sum(jsonb_array_length(payload->'track_ids')),0) AS tracks
+        FROM jobs WHERE parent_id=%s""", (parent_id,)).fetchone()['tracks']
     snapshot = {**counts, 'phase': 'processing', 'unit': 'batches',
-                'message': f"Processed {counts['completed']} of {counts['total']} batches"}
+                'message': f"Processed {counts['completed']} of {counts['total']} batches for {selection} songs"}
     db.execute('UPDATE jobs SET progress=%s,updated_at=now() WHERE id=%s',
                (Jsonb(snapshot), parent_id))
     if counts['completed'] == counts['total']:

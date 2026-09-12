@@ -17,7 +17,7 @@ def api(monkeypatch):
     return main, TestClient(main.app), user_id
 
 
-def test_job_get_and_cancel_always_use_current_owner(api, monkeypatch):
+def test_job_get_is_owned_and_cancellation_is_not_exposed(api, monkeypatch):
     main, client, user_id = api
     job_id = uuid4()
     get = Mock(return_value=None)
@@ -27,7 +27,7 @@ def test_job_get_and_cancel_always_use_current_owner(api, monkeypatch):
     assert client.get(f'/jobs/{job_id}').status_code == 404
     assert client.post(f'/jobs/{job_id}/cancel').status_code == 404
     get.assert_called_once_with(job_id, user_id)
-    cancel.assert_called_once_with(job_id, user_id)
+    cancel.assert_not_called()
     assert client.get('/jobs/not-a-uuid').status_code == 422
 
 
@@ -52,7 +52,7 @@ def test_sync_returns_before_catalog_scan_and_never_queues_secrets(api, monkeypa
     response = client.post(f'/navidrome/connections/{connection_id}/sync', json={'mode': 'missing'})
     assert response.status_code == 202
     assert enqueue.call_args.args == ('navidrome_sync', 'analysis', user_id)
-    assert enqueue.call_args.kwargs['payload'] == {}
+    assert enqueue.call_args.kwargs['payload'] == {'mode': 'missing'}
     assert 'secret' not in repr(enqueue.call_args)
     client_factory.assert_not_called()
 
