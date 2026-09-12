@@ -64,3 +64,6 @@
 /* Panel geometry stays here; CardHeader owns all header:where(:not([data-card-header])) typography. */
 .recipe{padding:0 20px 20px}.recipeScroll{padding:0;overflow:auto}.recipeScroll>[data-card-header]{margin:0 -20px 20px}.recipeScroll{overflow-x:hidden;margin-inline:-20px;padding-inline:20px}.results{padding:0 20px 20px}.panelView>[data-card-header]{margin:0 -20px 20px}.recipeScroll>header:where(:not([data-card-header])){margin-bottom:20px}
 @media(max-width:1199px),(max-height:719px){.recipe.mobileActive,.results.mobileActive{padding:0 14px 14px}.recipeScroll{margin-inline:-14px;padding-inline:14px}.recipeScroll>[data-card-header],.panelView>[data-card-header]{margin:0 -14px 16px}}
+
+/* The outer mobile pane owns the tab transition. */
+@media(max-width:1199px),(max-height:719px){.detailView,.curationView{animation:none}}

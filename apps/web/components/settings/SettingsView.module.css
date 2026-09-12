@@ -8,3 +8,5 @@
 
 .preferenceSection{padding-top:0}.preferenceSection>[data-card-header]{margin:0 -20px 20px}
 @media(max-width:1199px),(max-height:719px){.preferenceSection>[data-card-header]{margin:0 -14px 16px}}
+
+@media(max-width:1199px),(max-height:719px){.page{grid-template-columns:minmax(0,1fr)!important;grid-template-rows:44px minmax(0,1fr)!important}.tabs{display:none}.content{grid-column:1;grid-row:2;min-width:0}}
