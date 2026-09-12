@@ -1,8 +1,9 @@
 @media (max-width:1199px), (max-height:719px) {
-  .active { animation: paneEnter var(--motion-medium, 240ms) var(--motion-enter, ease-out) both; }
+  .active { --pane-offset: 20px; animation: paneEnter var(--motion-medium, 240ms) var(--motion-enter, ease-out) both; }
+  .backward { --pane-offset: -20px; }
 }
 @keyframes paneEnter {
-  from { opacity: 0; transform: translateX(20px); }
+  from { opacity: 0; transform: translateX(var(--pane-offset)); }
   to { opacity: 1; transform: translateX(0); }
 }
 @media (prefers-reduced-motion:reduce) {
