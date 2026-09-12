@@ -5,3 +5,6 @@
 
 .tabs{padding:0 20px 20px}.tabs>[data-card-header]{margin:0 -20px 20px}.content{padding:0 20px 20px}.content form,.preferences,.oidcAdmin{width:100%;max-width:none}.content form>[data-card-header],.preferences>[data-card-header],.oidcAdmin>[data-card-header]{margin:0 -20px 20px}
 @media(max-width:1199px),(max-height:719px){.tabs{padding:0}.tabs>[data-card-header]{display:none}.content{padding:0 14px 14px}.content form>[data-card-header],.preferences>[data-card-header],.oidcAdmin>[data-card-header]{margin:0 -14px 16px}}
+
+.preferenceSection{padding-top:0}.preferenceSection>[data-card-header]{margin:0 -20px 20px}
+@media(max-width:1199px),(max-height:719px){.preferenceSection>[data-card-header]{margin:0 -14px 16px}}
