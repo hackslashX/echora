@@ -2608,3 +2608,13 @@ def job(job_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) ->
     if value is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return value
+
+
+@app.get("/jobs/{job_id}/batches")
+def job_batches(job_id: uuid.UUID, limit: int = 25, offset: int = 0,
+                echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
+    result = jobs.list_batches(job_id, user['id'], limit=limit, offset=offset)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return result
