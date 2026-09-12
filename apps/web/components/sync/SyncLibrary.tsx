@@ -7,6 +7,7 @@ import CopyrightFooter from "../shell/CopyrightFooter";
 import { trackTemplate } from "../shell/gridGeometry";
 import MobilePivots from "../shell/MobilePivots";
 import { useDurableJob } from "../jobs/useDurableJob";
+import { jobPresentation } from "../jobs/durableJobs";
 import styles from "./SyncLibrary.module.css";
 
 type Track = { id: string; title: string; artist?: string; album?: string };
@@ -58,12 +59,13 @@ export default function SyncLibrary() {
 
   const indeterminatePhases = new Set(["queued", "scanning", "starting", "planning", "models"]);
   const indeterminate = Boolean(active && (job?.unit === "models" || indeterminatePhases.has(job?.phase || "")));
-  const percent = job?.total ? Math.min(100, Math.round(job.completed / job.total * 100)) : 0;
+  const presentation = jobPresentation(job);
+  const { percent } = presentation;
   const progressDetail = job?.unit === "models"
     ? `${job.completed} of ${job.total} models ready`
     : indeterminate
       ? "This setup step does not report track progress"
-      : `${job?.completed || 0} of ${job?.total || 0} ${job?.unit || "tracks"}`;
+      : presentation.detail;
   const columns = [0.32, 0.04, 0.64];
   const rows = [1];
   return <AppShell title="Sync" footer={<CopyrightFooter />} breadcrumb flush fullPage grid={{ columns, rows }}>
@@ -73,7 +75,7 @@ export default function SyncLibrary() {
       <section className={`${styles.workspace} ${mobilePane === "status" ? styles.mobileActive : ""}`}>
         <header><div><h2>{active ? "Processing library" : busy ? "Scanning Navidrome" : "Library scan complete"}</h2></div><button onClick={() => connectionId && scan(connectionId)} disabled={busy || !!active}><RefreshCw /> RESCAN</button></header>
         <div className={styles.metrics}><div><Database /><strong>{status?.total ?? "—"}</strong><span>Navidrome tracks</span></div><div><Check /><strong>{status?.processed ?? "—"}</strong><span>Already indexed</span></div><div><Waves /><strong>{status?.missing ?? "—"}</strong><span>New tracks</span></div></div>
-        {job ? <section className={`${styles.progress} ${indeterminate ? styles.indeterminate : ""}`}><div><span>{job?.phase?.toUpperCase()}</span><strong>{job?.message || (job?.track ? `${job.track.artist || "Unknown artist"} · ${job.track.title}` : "Preparing models")}</strong><small>{progressDetail}</small></div>{!indeterminate && <b>{percent}%</b>}<i role="progressbar" aria-label={indeterminate ? "Preparing analysis" : "Library sync progress"} aria-valuemin={indeterminate ? undefined : 0} aria-valuemax={indeterminate ? undefined : 100} aria-valuenow={indeterminate ? undefined : percent}><u style={indeterminate ? undefined : { width: `${percent}%` }} /></i>{job?.error && <p>{job.error}</p>}{terminal && <button className={styles.start} onClick={dismiss}>Dismiss / start again</button>}{terminal && <div className={styles.summary}><span>{job.summary?.inserted || 0} new</span><span>{job.summary?.already_linked || 0} reused</span><span>{job.summary?.failed || 0} failed</span><span>{job.summary?.waveforms_generated || 0} waveforms generated</span><span>{job.summary?.melody_indexed || 0} melodies indexed</span><span>{job.summary?.lyrics_embedded || 0} lyrics embedded</span><span>{job.summary?.karaoke_aligned || 0} karaoke aligned</span><span>{job.summary?.voice_classified || 0} vocals classified</span><span>{job.summary?.unlinked || 0} unlinked</span></div>}</section> : <section className={styles.ready}><div className={styles.mode}><button className={mode === "all" ? styles.selected : ""} onClick={() => setMode("all")}><strong>ENTIRE LIBRARY</strong><small>Fill missing analysis for existing and new tracks</small></button><button className={mode === "missing" ? styles.selected : ""} onClick={() => setMode("missing")}><strong>NEW TRACKS ONLY</strong><small>Process the {status?.missing || 0} tracks not yet indexed</small></button></div><button className={styles.start} onClick={start} disabled={busy || jobLoading || !!jobError || !status || (mode === "missing" && status.missing === 0)}>START PROCESSING <b>↗</b></button></section>}
+        {job ? <section className={`${styles.progress} ${indeterminate ? styles.indeterminate : ""}`}><div><span>{job?.phase?.toUpperCase()}</span><strong>{presentation.message}</strong><small>{progressDetail}</small></div>{!indeterminate && presentation.showPercent && <b>{percent}%</b>}{(active || job.status === "complete") && <i role="progressbar" aria-label={indeterminate ? "Preparing analysis" : "Library sync progress"} aria-valuemin={indeterminate ? undefined : 0} aria-valuemax={indeterminate ? undefined : 100} aria-valuenow={indeterminate ? undefined : percent}><u style={indeterminate ? undefined : { width: `${percent}%` }} /></i>}{job?.error && <p>{job.error}</p>}{terminal && <button className={styles.start} onClick={dismiss}>Dismiss / start again</button>}{terminal && presentation.summary.length > 0 && <div className={styles.summary}>{presentation.summary.map(item => <span key={item}>{item}</span>)}</div>}</section> : <section className={styles.ready}><div className={styles.mode}><button className={mode === "all" ? styles.selected : ""} onClick={() => setMode("all")}><strong>ENTIRE LIBRARY</strong><small>Fill missing analysis for existing and new tracks</small></button><button className={mode === "missing" ? styles.selected : ""} onClick={() => setMode("missing")}><strong>NEW TRACKS ONLY</strong><small>Process the {status?.missing || 0} tracks not yet indexed</small></button></div><button className={styles.start} onClick={start} disabled={busy || jobLoading || !!jobError || !status || (mode === "missing" && status.missing === 0)}>START PROCESSING <b>↗</b></button></section>}
         <section className={styles.queue}><header><span>WAITING IN NAVIDROME</span><b>{status?.missing || 0}</b></header><div>{status?.tracks.length ? status.tracks.map(track => <article key={track.id}><span>{track.title}</span><small>{track.artist || "Unknown artist"}</small><i>{track.album || "Unknown album"}</i></article>) : <div className={styles.queueEmpty}>{busy ? <RefreshCw className={styles.scanningIcon} aria-hidden="true" /> : <CircleCheck aria-hidden="true" />}<p>{busy ? "Scanning the catalog" : "No unprocessed tracks found"}</p></div>}</div></section>
         {(error || jobError) && <p role="alert" className={styles.error}>{error || jobError}</p>}
       </section>

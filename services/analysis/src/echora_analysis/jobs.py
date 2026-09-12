@@ -37,10 +37,16 @@ def _public(row, existing=False):
         elif isinstance(value, datetime):
             result[key] = value.isoformat()
     # Preserve the legacy snapshot shape while retaining structured progress.
-    snapshot = row.get('progress') or {}
+    snapshot = dict(row.get('progress') or {})
+    if snapshot.get('unit') == 'batches' and 'complete' in snapshot:
+        # Normalize historical snapshots that counted cancelled batches as processed.
+        if snapshot.get('completed') != snapshot['complete']:
+            snapshot['message'] = f"{snapshot['complete']} of {snapshot.get('total', 0)} batches successful"
+        snapshot['completed'] = snapshot['complete']
+        snapshot['finished'] = sum(snapshot.get(state, 0) for state in TERMINAL)
     result['progress'] = {key: value for key, value in snapshot.items()
                           if key in {'phase', 'completed', 'total', 'message', 'unit', 'track',
-                                     'plan', 'summary', *ACTIVE, *TERMINAL}}
+                                     'plan', 'summary', 'finished', *ACTIVE, *TERMINAL}}
     for key in ('phase', 'completed', 'total', 'message', 'unit', 'track'):
         if key in snapshot:
             result[key] = snapshot[key]
@@ -146,14 +152,15 @@ def _aggregate(db, parent_id):
     counts = {state: 0 for state in (*ACTIVE, *TERMINAL)}
     counts.update({r['status']: r['n'] for r in rows})
     counts['total'] = sum(counts.values())
-    counts['completed'] = sum(counts[s] for s in TERMINAL)
+    counts['finished'] = sum(counts[s] for s in TERMINAL)
+    counts['completed'] = counts['complete']
     selection = db.execute("""SELECT coalesce(sum(jsonb_array_length(payload->'track_ids')),0) AS tracks
         FROM jobs WHERE parent_id=%s""", (parent_id,)).fetchone()['tracks']
     snapshot = {**counts, 'phase': 'processing', 'unit': 'batches',
-                'message': f"Processed {counts['completed']} of {counts['total']} batches for {selection} songs"}
+                'message': f"{counts['complete']} of {counts['total']} batches successful for {selection} songs"}
     db.execute('UPDATE jobs SET progress=%s,updated_at=now() WHERE id=%s',
                (Jsonb(snapshot), parent_id))
-    if counts['completed'] == counts['total']:
+    if counts['finished'] == counts['total']:
         status = ('cancelled' if parent['cancel_requested'] else
                   'complete' if counts['complete'] == counts['total'] else
                   'partial' if counts['complete'] or counts['partial'] else
