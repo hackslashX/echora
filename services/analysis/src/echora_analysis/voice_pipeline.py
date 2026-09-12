@@ -18,6 +18,7 @@ from psycopg.types.json import Jsonb
 
 from .audio import decode_audio
 from .navidrome import NavidromeClient
+from .processing_plan import resolve_library_id, _id_filter
 from .representations import voice_config, configure_representations
 
 logger = logging.getLogger(__name__)
@@ -194,6 +195,7 @@ def backfill_voice(
     url: str, username: str, password: str,
     progress: Callable[[dict[str, object]], None] | None = None,
     limit: int | None = None,
+    external_ids: list[str] | None = None,
 ) -> dict[str, int]:
     """Classify lead-vocal gender for every track that lacks voice evidence.
 
@@ -204,15 +206,16 @@ def backfill_voice(
     report = progress or (lambda _: None)
     summary = {"total": 0, "classified": 0, "failed": 0}
     with psycopg.connect(os.environ["DATABASE_URL"]) as connection, NavidromeClient(url, username, password) as client:
+        library_id = resolve_library_id(connection, url)
+        restriction, parameters = _id_filter(external_ids)
         configure_representations(connection)
         run_id = _create_run(connection)
         with connection.cursor() as cursor:
             cursor.execute(
-                """SELECT DISTINCT ON (ts.track_id) ts.track_id, ts.external_id, t.title
+                f"""SELECT DISTINCT ON (ts.track_id) ts.track_id, ts.external_id, t.title
                    FROM track_sources ts JOIN tracks t ON t.id=ts.track_id
-                   JOIN libraries library ON library.id=ts.library_id
                    WHERE ts.source_type='subsonic'
-                     AND lower(rtrim(library.root_path, '/'))=lower(rtrim(%s, '/'))
+                     AND ts.library_id=%s{restriction}
                      AND NOT EXISTS (
                        SELECT 1 FROM embeddings e
                        JOIN track_vocal_activity activity ON activity.track_id=e.track_id AND activity.run_id=e.run_id
@@ -220,7 +223,7 @@ def backfill_voice(
                      )
                    ORDER BY ts.track_id, ts.id
                    LIMIT %s""",
-                (url, VOICE_EMBEDDING_TYPE, run_id, limit),
+                (library_id, *parameters, VOICE_EMBEDDING_TYPE, run_id, limit),
             )
             tracks = cursor.fetchall()
         if not tracks:
@@ -230,29 +233,39 @@ def backfill_voice(
         summary["total"] = len(tracks)
         report({"phase": "models", "message": "Loading voice classifier", "completed": 0, "total": 1, "unit": "models"})
         model = shared_voice_model()
-        connection.commit()
-        for index, (track_id, external_id, title) in enumerate(tracks):
-            try:
-                waveform = _fetch_stream(client, str(external_id))
-                values, activity = model.classify_with_activity(waveform)
-                _store_activation(connection, track_id, run_id, values)
-                with connection.cursor() as cursor:
-                    cursor.execute(
-                        """INSERT INTO track_vocal_activity (track_id, run_id, activity)
-                           VALUES (%s,%s,%s) ON CONFLICT (track_id, run_id)
-                           DO UPDATE SET activity=EXCLUDED.activity, created_at=now()""",
-                        (track_id, run_id, Jsonb(activity)),
-                    )
-                summary["classified"] += 1
-                connection.commit()
-            except Exception:
-                connection.rollback()
-                summary["failed"] += 1
-                logger.exception("Voice classification failed for track %s", track_id)
-            report({"phase": "voice", "message": f"Classifying vocals for {title}",
-                    "completed": index + 1, "total": len(tracks), "unit": "tracks",
-                    "summary": summary})
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id=%s", (run_id,))
-        connection.commit()
+        try:
+            connection.commit()
+            for index, (track_id, external_id, title) in enumerate(tracks):
+                report({"phase": "voice", "message": f"Classifying vocals for {title}",
+                        "completed": index, "total": len(tracks), "unit": "tracks",
+                        "track": {"id": str(external_id), "title": title}})
+                try:
+                    waveform = _fetch_stream(client, str(external_id))
+                    values, activity = model.classify_with_activity(waveform)
+                    _store_activation(connection, track_id, run_id, values)
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            """INSERT INTO track_vocal_activity (track_id, run_id, activity)
+                               VALUES (%s,%s,%s) ON CONFLICT (track_id, run_id)
+                               DO UPDATE SET activity=EXCLUDED.activity, created_at=now()""",
+                            (track_id, run_id, Jsonb(activity)),
+                        )
+                    summary["classified"] += 1
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    summary["failed"] += 1
+                    logger.exception("Voice classification failed for track %s", track_id)
+                report({"phase": "voice", "message": f"Classifying vocals for {title}",
+                        "completed": index + 1, "total": len(tracks), "unit": "tracks",
+                        "summary": summary})
+            with connection.cursor() as cursor:
+                cursor.execute("UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id=%s", (run_id,))
+            connection.commit()
+        finally:
+            global _model
+            with _model_lock:
+                if _model is not None and _model[0] is model:
+                    _model = None
+            del model
     return summary

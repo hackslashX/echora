@@ -1,5 +1,7 @@
 "use client";
 
+import { useDurableJob } from "./jobs/useDurableJob";
+import { jobPresentation } from "./jobs/durableJobs";
 import LoadingImage from "./media/LoadingImage";
 import { coverArtUrl } from "./media/coverArt";
 import { useRouter } from "next/navigation";
@@ -11,7 +13,6 @@ import StepNavigation from "./onboarding/StepNavigation";
 
 type Credentials = { url: string; username: string; password: string };
 type Track = { id: string; title: string; artist?: string; album?: string; duration: number; genre?: string; cover_art?: string };
-type Job = { job_id: string; status: "queued" | "running" | "complete" | "failed"; phase: string; message?: string; completed: number; total: number; unit?: "models" | "tracks"; error?: string; track?: Pick<Track, "id" | "title" | "artist">; summary?: Record<string, number> };
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/analysis${path}`, options);
@@ -27,7 +28,7 @@ const formatDuration = (seconds: number) => `${Math.floor(seconds / 60)}:${Strin
 
 export default function SetupWizard({ initialStep = 0 }: { initialStep?: number }) {
   const router = useRouter();
-  const [step, setStep] = useState(initialStep);
+  const [requestedStep, setStep] = useState(initialStep);
   const [credentials, setCredentials] = useState<Credentials>({ url: "http://host.docker.internal:4533", username: "", password: "" });
   const [limit, setLimit] = useState(100);
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -36,16 +37,14 @@ export default function SetupWizard({ initialStep = 0 }: { initialStep?: number 
   const [connectionId, setConnectionId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [job, setJob] = useState<Job | null>(null);
+  const { job, active, terminal, error: jobError, loading: jobLoading, track, dismiss } = useDurableJob(connectionId);
 
   useEffect(() => {
-    if (!job || !["queued", "running"].includes(job.status)) return;
-    const timer = window.setTimeout(async () => {
-      try { setJob(await api<Job>(`/jobs/${job.job_id}`)); }
-      catch (reason) { setError(reason instanceof Error ? reason.message : "Could not read job progress"); }
-    }, 1200);
-    return () => window.clearTimeout(timer);
-  }, [job]);
+    const controller = new AbortController();
+    api<{ navidrome_connection_id?: string }>("/auth/me", { signal: controller.signal }).then(user => { if (!controller.signal.aborted) setConnectionId(user.navidrome_connection_id || ""); }).catch(reason => { if (!controller.signal.aborted) setError(reason.message); });
+    return () => controller.abort();
+  }, []);
+  const step = job ? 2 : requestedStep;
 
   const chosen = useMemo(() => tracks.filter(track => selected.has(track.id)), [tracks, selected]);
 
@@ -78,12 +77,13 @@ export default function SetupWizard({ initialStep = 0 }: { initialStep?: number 
     setBusy(true); setError("");
     try {
       const result = await api<{ job_id: string; status: "queued" }>("/ingest/navidrome", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...credentials, track_ids: chosen.map(track => track.id) }) });
-      setJob({ ...result, phase: "queued", completed: 0, total: chosen.length }); navigate(2);
+      track(result.job_id); navigate(2);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not start processing"); }
     finally { setBusy(false); }
   }
 
-  const percent = job?.total ? Math.round(job.completed / job.total * 100) : 0;
+  const presentation = jobPresentation(job);
+  const { percent } = presentation;
 
   async function finishOnboarding() {
     setError("");
@@ -108,7 +108,7 @@ export default function SetupWizard({ initialStep = 0 }: { initialStep?: number 
             <label><span>Password</span><input required type="password" autoComplete="current-password" value={credentials.password} onChange={event => setCredentials({ ...credentials, password: event.target.value })} /></label>
           </div>
           <div className="sample-control"><span>Sample</span><input type="range" min="10" max="200" step="10" value={limit} onChange={event => setLimit(Number(event.target.value))} /><output>{limit}</output></div>
-          {error && <p className="error">{error}</p>}
+          {(error || jobError) && <p role="alert" className="error">{error || jobError}</p>}
           <button className="primary" disabled={busy}>{busy ? "Connecting…" : <>Find my music <b>↗</b></>}</button>
         </form>}
 
@@ -122,15 +122,15 @@ export default function SetupWizard({ initialStep = 0 }: { initialStep?: number 
             <span className="song-name"><strong>{track.title}</strong><small>{track.artist || "Unknown artist"}</small></span>
             <span className="song-album">{track.album || "Unknown album"}</span><time>{formatDuration(track.duration)}</time>
           </label>)}</div>
-          {error && <p className="error">{error}</p>}
-          <div className="review-action"><button className="primary" onClick={start} disabled={busy || !selected.size}>Process {selected.size} tracks <b>↗</b></button></div>
+          {(error || jobError) && <p role="alert" className="error">{error || jobError}</p>}
+          <div className="review-action"><button className="primary" onClick={start} disabled={busy || jobLoading || active || !!jobError || !selected.size}>Process {selected.size} tracks <b>↗</b></button></div>
         </div>}
 
         {step === 2 && <div className="wizard-card processing-card">
           <EdgeLines />
           <h1>{job?.status === "complete" ? <>Analysis<br />complete.</> : <>Build music<br />embeddings.</>}</h1>
-          <div className="progress-summary"><div><span className="phase">{job?.status === "complete" ? "Complete" : job?.phase || "Queued"}</span><strong>{job?.message || "Waiting for worker"}</strong><span>{job?.track ? `${job.track.artist || "Unknown artist"} — ${job.track.title}` : `${job?.completed || 0} of ${job?.total || chosen.length} ${job?.unit || "tracks"}`}</span></div><b>{percent}%</b></div>
-          <div className="meter"><i style={{ width: `${job?.phase === "models" ? 5 : percent}%` }} /></div>
+          <div className="progress-summary"><div><span className="phase">{job?.status === "complete" ? "Complete" : terminal ? job?.status : job?.phase || "Queued"}</span><strong>{presentation.message}</strong><span>{job?.track ? `${job.track.artist || "Unknown artist"} — ${job.track.title}` : presentation.detail}</span></div>{presentation.showPercent && <b>{percent}%</b>}</div>
+          {presentation.showPercent && <div className="meter"><i style={{ width: `${job?.phase === "models" ? 5 : percent}%` }} /></div>}
           <div className="process-stages">
             {[{ key: "models", label: "Load models" }, { key: "processing", label: "Process tracks" }, { key: "finalizing", label: "Save index" }].map((stage, index) => {
               const order = ["models", "processing", "finalizing", "complete"];
@@ -138,9 +138,10 @@ export default function SetupWizard({ initialStep = 0 }: { initialStep?: number 
               return <span key={stage.key} className={current > index ? "done" : current === index ? "active" : ""}>{current > index ? "✓" : `0${index + 1}`} <b>{stage.label}</b></span>;
             })}
           </div>
-          <div className="process-count">{job?.completed || 0} / {job?.total || chosen.length} tracks</div>
-          {job?.status === "failed" && <p className="error">{job.error}</p>}
-          {job?.status === "complete" && <><div className="result-numbers"><div><strong>{job.summary?.inserted || 0}</strong><span>new</span></div><div><strong>{job.summary?.already_linked || 0}</strong><span>reused</span></div><div><strong>{job.summary?.failed || 0}</strong><span>failed</span></div></div><button className="primary enter-button" onClick={finishOnboarding}>Enter Echora <b>→</b></button></>}
+          <div className="process-count">{presentation.detail}</div>
+          {(error || jobError || job?.error) && <p role="alert" className="error">{error || jobError || job?.error}</p>}
+          {terminal && <button className="primary" onClick={() => { dismiss(); navigate(tracks.length ? 1 : 0); }}>Dismiss / start again</button>}
+          {(job?.status === "complete" || job?.status === "partial") && <>{presentation.summary.length > 0 && <div className="result-numbers">{presentation.summary.map(item => <div key={item}><span>{item}</span></div>)}</div>}<button className="primary enter-button" onClick={finishOnboarding}>Enter Echora <b>→</b></button></>}
         </div>}
   </AppShell>;
 }

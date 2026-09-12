@@ -185,3 +185,38 @@ def test_waveform_planner_skips_current_and_retries_old_revision(db, visible_tra
     assert not plan_audio(db, library, ["song"]).waveform_external_ids
     db.execute("UPDATE track_waveforms SET revision='old' WHERE track_id=%s", (track,))
     assert plan_audio(db, library, ["song"]).waveform_external_ids == frozenset({"song"})
+
+
+def test_job_transition_interrupts_only_its_unfinished_attempts(db, monkeypatch):
+    job_id = uuid.uuid4()
+    db.execute("INSERT INTO jobs(id,kind,worker_type,user_id,status) VALUES (%s,'analysis_batch','analysis',%s,'running')",
+               (job_id, uuid.uuid4()))
+    run = add_run(db)
+    unrelated = start_attempt(db, run, 1)
+    monkeypatch.setenv('ECHORA_JOB_ID', str(job_id))
+    owned = start_attempt(db, run, 1)
+    db.execute("UPDATE jobs SET status='queued' WHERE id=%s", (job_id,))
+    assert db.execute('SELECT status FROM analysis_attempts WHERE id=%s', (owned,)).fetchone() == ('interrupted',)
+    assert db.execute('SELECT status FROM analysis_attempts WHERE id=%s', (unrelated,)).fetchone() == ('running',)
+
+
+def test_catalog_reconciliation_deduplicates_identical_source_tracks(db, visible_track):
+    main, user, library, _, track, _ = visible_track
+    db.execute('UPDATE libraries SET namespace=%s WHERE id=%s',
+               (uuid.uuid5(uuid.NAMESPACE_URL, 'http://test'), library))
+    db.execute("INSERT INTO track_sources(library_id,track_id,source_type,external_id) VALUES (%s,%s,'subsonic','alias')",
+               (library, track))
+    result = main._reconcile_user_tracks(user, 'http://test', ['song', 'alias'])
+    assert result['linked'] == 1
+    assert db.execute('SELECT external_id FROM user_track_links WHERE user_id=%s', (user,)).fetchall() == [('alias',)]
+
+
+def test_sync_selection_respects_mode_and_library_scope(db, visible_track):
+    from echora_analysis.sync_plan import select_sync_tracks
+    _, _, library, _, _, _ = visible_track
+    db.execute('UPDATE libraries SET namespace=%s WHERE id=%s',
+               (uuid.uuid5(uuid.NAMESPACE_URL, 'http://test'), library))
+    assert select_sync_tracks(db, 'http://test', ['song', 'new'], 'missing') == ['new']
+    # Existing source has only MuQ, so entire-library repair includes it too.
+    assert select_sync_tracks(db, 'http://test', ['song', 'new'], 'all') == ['song', 'new']
+    assert select_sync_tracks(db, 'http://another-library', ['song'], 'missing') == ['song']

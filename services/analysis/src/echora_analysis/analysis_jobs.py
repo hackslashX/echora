@@ -1,0 +1,234 @@
+"""Subprocess analysis orchestration. Queue payloads contain references, never secrets.
+
+Parents: connection_id + optional external track_ids; import requires track_ids.
+Profiles instead use canonical UUID track_ids and require no connection_id.
+Hum parents accept track_limit and create a durable corpus using the parent job ID.
+Hum children carry corpus_id; parent coordination finalizes corpus status.
+Children: the same payload plus operation (parent kind), bounded track_ids.
+User identity belongs to the job envelope, not the payload.
+"""
+from __future__ import annotations
+
+from dataclasses import asdict
+import os
+import uuid
+
+import psycopg
+
+from .navidrome import NavidromeClient, batch_audio_cache
+
+OPERATIONS = frozenset({"navidrome_sync", "import", "lyrics_backfill", "voice_backfill",
+                        "karaoke_backfill", "recordings_backfill", "audio_profiles", "hum_corpus"})
+
+
+def _connect():
+    return psycopg.connect(os.environ["DATABASE_URL"])
+
+
+def _source_rows(user_id, url, ids=None):
+    with _connect() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT DISTINCT ts.external_id, ts.track_id FROM track_sources ts
+               JOIN libraries l ON l.id=ts.library_id
+               JOIN user_track_links u ON u.library_id=ts.library_id AND u.track_id=ts.track_id
+                 AND u.external_id=ts.external_id
+               WHERE u.user_id=%s AND l.root_path=%s AND ts.source_type='subsonic'
+                 AND (%s::text[] IS NULL OR ts.external_id=ANY(%s)) ORDER BY ts.external_id""",
+            (user_id, url.rstrip('/'), ids, ids))
+        return cursor.fetchall()
+
+
+def _add_links(user_id, url, ids):
+    # Never reconcile a batch: removing absent IDs would delete sibling batches.
+    with _connect() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """INSERT INTO user_track_links (user_id,library_id,track_id,external_id)
+               SELECT DISTINCT ON (ts.track_id) %s,ts.library_id,ts.track_id,ts.external_id
+               FROM track_sources ts JOIN libraries l ON l.id=ts.library_id
+               WHERE l.root_path=%s AND ts.source_type='subsonic' AND ts.external_id=ANY(%s)
+               ORDER BY ts.track_id,ts.external_id
+               ON CONFLICT (user_id,library_id,track_id) DO UPDATE SET external_id=EXCLUDED.external_id""",
+            (user_id, url.rstrip('/'), ids))
+        return cursor.rowcount
+
+
+def _profiles(ids, report):
+    from .audio_profiles import SUPPORTED_PROFILE_MODELS, build_audio_profiles
+    models = {name: build_audio_profiles([uuid.UUID(str(v)) for v in ids], report, model_name=name)
+              for name in SUPPORTED_PROFILE_MODELS}
+    return {"models": models, "profiled": sum(v['profiled'] for v in models.values()),
+            "failed": sum(v['failed'] for v in models.values())}
+
+
+def _recordings(credentials, user_id, ids, report, check):
+    from .recordings import store_and_match_fingerprint
+    summary = {"fingerprinted": 0, "matched": 0, "failed": 0}
+    with _connect() as connection, connection.cursor() as cursor, NavidromeClient(*credentials) as client:
+        for external_id, track_id in _source_rows(user_id, credentials[0], ids):
+            check()
+            cursor.execute("SELECT duration_seconds FROM tracks WHERE id=%s AND NOT EXISTS (SELECT 1 FROM track_fingerprints WHERE track_id=%s)", (track_id, track_id))
+            row = cursor.fetchone()
+            if not row:
+                continue
+            try:
+                result = store_and_match_fingerprint(connection, track_id, client.audio_bytes(external_id), float(row[0] or 0))
+                connection.commit()
+                summary['fingerprinted'] += 1
+                summary['matched'] += int(bool(result.get('matched')))
+            except Exception:
+                connection.rollback()
+                summary['failed'] += 1
+            report({"phase": "fingerprint", "summary": dict(summary)})
+    return summary
+
+
+def _hum(credentials, user_id, payload, report, check):
+    from .hum_search import create_sync_run, store_track_contours, release_separator
+    summary = {"tracks": 0, "contours": 0, "failed": 0}
+    try:
+        with _connect() as connection, connection.cursor() as cursor, NavidromeClient(*credentials) as client:
+            cursor.execute("SELECT id FROM hum_corpora WHERE id=%s AND user_id=%s", (payload['corpus_id'], user_id))
+            if not cursor.fetchone():
+                raise ValueError("Unknown hum corpus")
+            run_id = create_sync_run(connection)
+            cursor.execute("UPDATE hum_corpora SET run_id=%s WHERE id=%s AND user_id=%s",
+                           (run_id, payload['corpus_id'], user_id))
+            connection.commit()
+            for external_id, track_id in _source_rows(user_id, credentials[0], payload['track_ids']):
+                check()
+                cursor.execute("SELECT 1 FROM hum_corpus_tracks WHERE corpus_id=%s AND track_id=%s", (payload['corpus_id'], track_id))
+                if cursor.fetchone():
+                    continue
+                try:
+                    cursor.execute("SELECT count(*) FROM melody_contours WHERE track_id=%s AND run_id=%s", (track_id, run_id))
+                    existing = cursor.fetchone()[0]
+                    if not existing:
+                        summary['contours'] += store_track_contours(connection, track_id, run_id, client.audio_bytes(external_id))
+                    cursor.execute("INSERT INTO hum_corpus_tracks(corpus_id,track_id) VALUES (%s,%s) ON CONFLICT DO NOTHING", (payload['corpus_id'], track_id))
+                    connection.commit()
+                    summary['tracks'] += 1
+                except Exception:
+                    connection.rollback()
+                    summary['failed'] += 1
+                report({"phase": "melody-index", "summary": dict(summary)})
+    finally:
+        release_separator()
+    return summary
+
+
+def execute(job: dict, context) -> dict | None:
+    """Execute a leaf, or atomically expand a parent and return None.
+
+    context.check must raise a BaseException-derived cancellation signal.
+    jobs.expand owns parent waiting state and analysis_batch child creation.
+    """
+    context.check()
+    kind = job['kind']
+    payload = dict(job.get('payload') or {})
+    if 'connection_id' not in payload and job.get('connection_id'):
+        payload['connection_id'] = str(job['connection_id'])
+    operation = payload.get('operation') if kind == 'analysis_batch' else kind
+    if operation not in OPERATIONS:
+        raise ValueError(f"Unsupported analysis operation: {operation}")
+    user_id = job['user_id']
+
+    def report(update):
+        context.check()
+        context.report(update)
+        context.check()
+
+    from . import main  # Transitional credential and ownership helpers only.
+    credentials = None
+    if operation != 'audio_profiles':
+        credentials = main._load_connection(payload['connection_id'], user_id)
+        if credentials is None:
+            raise ValueError('Connection unavailable')
+    with batch_audio_cache(context.check):
+        if kind != 'analysis_batch':
+            size = int(os.getenv('ECHORA_BATCH_SIZE', '32'))
+            if size <= 0:
+                raise ValueError('ECHORA_BATCH_SIZE must be positive')
+            ids = payload.get('track_ids')
+            if operation == 'navidrome_sync':
+                report({'phase': 'scanning', 'message': 'Scanning complete catalog'})
+                with NavidromeClient(*credentials) as client:
+                    catalog_ids = [track.id for track in client.all_tracks()]
+                context.check()
+                from .sync_plan import select_sync_tracks
+                report({'phase': 'planning', 'message': 'Checking missing analysis before batching'})
+                with _connect() as connection:
+                    ids = select_sync_tracks(connection, credentials[0], catalog_ids, payload.get('mode', 'all'))
+                context.check()
+                main._attach_user_library(user_id, credentials[0])
+                # Reconcile the complete snapshot, never only the work selection.
+                main._reconcile_user_tracks(user_id, credentials[0], catalog_ids)
+                report({'phase': 'planning', 'message': f'{len(ids)} songs need processing',
+                        'total': len(ids), 'completed': 0, 'unit': 'tracks'})
+            elif operation == 'import':
+                if ids is None:
+                    raise ValueError('import requires track_ids')
+            elif operation == 'audio_profiles':
+                allowed = {str(v) for v in main._user_audio_track_ids(user_id)}
+                ids = sorted(allowed) if ids is None else [str(v) for v in ids if str(v) in allowed]
+            else:
+                ids = [row[0] for row in _source_rows(user_id, credentials[0], ids)]
+            ids = list(dict.fromkeys(str(v) for v in ids))
+            if operation == 'hum_corpus':
+                from .hum_search import DEFAULT_CORPUS_SIZE
+                limit = int(payload.get('track_limit', DEFAULT_CORPUS_SIZE))
+                if not 1 <= limit <= 500:
+                    raise ValueError('track_limit must be between 1 and 500')
+                ids = ids[:limit]
+                payload['corpus_id'] = str(job['id'])
+                context.check()
+                with _connect() as connection, connection.cursor() as cursor:
+                    cursor.execute(
+                        """INSERT INTO hum_corpora(id,user_id,status,track_limit)
+                           VALUES (%s,%s,'building',%s) ON CONFLICT (id) DO NOTHING""",
+                        (payload['corpus_id'], user_id, limit))
+                    cursor.execute("SELECT user_id FROM hum_corpora WHERE id=%s", (payload['corpus_id'],))
+                    if str(cursor.fetchone()[0]) != str(user_id):
+                        raise ValueError('Hum corpus ownership mismatch')
+            # Whitelist fields: never forward arbitrary request data into the queue.
+            base = {'operation': operation}
+            if credentials:
+                base['connection_id'] = payload['connection_id']
+            if operation == 'hum_corpus':
+                base['corpus_id'] = payload['corpus_id']
+            batches = [{**base, 'track_ids': ids[i:i + size]} for i in range(0, len(ids), size)]
+            context.check()
+            from . import jobs  # Worker/API integration may be installed independently.
+            if jobs.expand(job['id'], job.get('claim_token') or context.token, batches) is False:
+                raise jobs.JobCancelled()
+            return None
+
+        ids = payload['track_ids']
+        if not ids:
+            return {'total': 0}
+        if operation == 'audio_profiles':
+            allowed = {str(v) for v in main._user_audio_track_ids(user_id)}
+            return _profiles([v for v in ids if str(v) in allowed], report)
+        summary = {}
+        if operation in {'navidrome_sync', 'import'}:
+            from .ingest import ingest_navidrome
+            summary.update(asdict(ingest_navidrome(*credentials, ids, report)))
+            context.check()
+            main._attach_user_library(user_id, credentials[0])
+            summary['linked'] = _add_links(user_id, credentials[0], ids)
+            canonical = list({row[1] for row in _source_rows(user_id, credentials[0], ids)})
+            summary['audio_profiles'] = _profiles(canonical, report)
+        if operation in {'navidrome_sync', 'import', 'lyrics_backfill'}:
+            from .lyrics_pipeline import backfill_lyrics
+            summary['lyrics'] = backfill_lyrics(*credentials, progress=report, external_ids=ids, only_missing=True)
+        if operation in {'navidrome_sync', 'import', 'lyrics_backfill', 'karaoke_backfill'}:
+            from .karaoke_pipeline import backfill_karaoke
+            summary['karaoke'] = backfill_karaoke(*credentials, progress=report, external_ids=ids)
+        if operation in {'navidrome_sync', 'import', 'voice_backfill'}:
+            from .voice_pipeline import backfill_voice
+            summary['voice'] = backfill_voice(*credentials, progress=report, external_ids=ids)
+        if operation == 'recordings_backfill':
+            summary = _recordings(credentials, user_id, ids, report, context.check)
+        if operation == 'hum_corpus':
+            summary = _hum(credentials, user_id, payload, report, context.check)
+        context.check()
+        return summary

@@ -1,0 +1,10 @@
+# docker compose -f compose.yaml -f compose.cpu.yaml up --build
+services:
+  analysis:
+    build:
+      dockerfile: services/analysis/docker/Dockerfile.cpu
+    gpus: !reset []
+  analysis-worker:
+    build:
+      dockerfile: services/analysis/docker/Dockerfile.cpu
+    gpus: !reset []

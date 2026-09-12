@@ -71,18 +71,44 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports: ["8000:8000"]
+    healthcheck: &analysis-healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
 
-  analysis-cpu:
-    profiles: ["cpu"]
+  analysis-worker:
+    build:
+      context: .
+      dockerfile: services/analysis/docker/Dockerfile.gpu
+    environment:
+      <<: *analysis-environment
+      ECHORA_BATCH_SIZE: ${ECHORA_BATCH_SIZE:-32}
+    volumes: *analysis-volumes
+    user: "1001"
+    command: ["python", "-m", "echora_analysis.worker", "analysis"]
+    depends_on:
+      analysis: { condition: service_healthy }
+    gpus: all
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  scheduled-worker:
     build:
       context: .
       dockerfile: services/analysis/docker/Dockerfile.cpu
     environment: *analysis-environment
     volumes: *analysis-volumes
+    user: "1001"
+    command: ["python", "-m", "echora_analysis.worker", "scheduled"]
     depends_on:
-      postgres: { condition: service_healthy }
-      redis: { condition: service_healthy }
-    ports: ["8001:8000"]
+      analysis: { condition: service_healthy }
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    stop_grace_period: 30s
 
   web:
     build:
