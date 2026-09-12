@@ -253,9 +253,10 @@ def _reconcile_user_tracks(user_id: uuid.UUID, source_url: str, external_ids: li
         unlinked = cursor.rowcount
         cursor.execute(
             """INSERT INTO user_track_links (user_id, library_id, track_id, external_id)
-               SELECT %s, ts.library_id, ts.track_id, ts.external_id
+               SELECT DISTINCT ON (ts.track_id) %s, ts.library_id, ts.track_id, ts.external_id
                FROM track_sources ts
                WHERE ts.library_id=%s AND ts.source_type='subsonic' AND ts.external_id=ANY(%s)
+               ORDER BY ts.track_id, ts.external_id
                ON CONFLICT (user_id, library_id, track_id) DO UPDATE
                SET external_id=EXCLUDED.external_id, last_seen_at=now()""",
             (user_id, library_id, external_ids),

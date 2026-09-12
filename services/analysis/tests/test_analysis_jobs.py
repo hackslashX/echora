@@ -1,5 +1,6 @@
 """Orchestration tests use no database or model downloads."""
 import sys
+import echora_analysis
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -21,7 +22,9 @@ def test_import_expands_only_selected_ids_without_reconciliation(monkeypatch):
                            _reconcile_user_tracks=Mock())
     jobs = SimpleNamespace(expand=Mock())
     monkeypatch.setitem(sys.modules, 'echora_analysis.main', main)
+    monkeypatch.setattr(echora_analysis, 'main', main, raising=False)
     monkeypatch.setitem(sys.modules, 'echora_analysis.jobs', jobs)
+    monkeypatch.setattr(echora_analysis, 'jobs', jobs, raising=False)
     monkeypatch.setenv('ECHORA_BATCH_SIZE', '2')
     job = {'id': 'parent', 'kind': 'import', 'user_id': 'user',
            'payload': {'connection_id': 'connection', 'track_ids': ['a', 'b', 'a', 'c'], 'password': 'DO NOT COPY'}}
@@ -37,7 +40,9 @@ def test_failed_scan_never_reconciles_or_expands(monkeypatch):
                            _attach_user_library=Mock(), _reconcile_user_tracks=Mock())
     jobs = SimpleNamespace(expand=Mock())
     monkeypatch.setitem(sys.modules, 'echora_analysis.main', main)
+    monkeypatch.setattr(echora_analysis, 'main', main, raising=False)
     monkeypatch.setitem(sys.modules, 'echora_analysis.jobs', jobs)
+    monkeypatch.setattr(echora_analysis, 'jobs', jobs, raising=False)
     with patch.object(analysis_jobs, 'NavidromeClient') as client:
         client.return_value.__enter__.return_value.all_tracks.side_effect = RuntimeError('partial')
         with pytest.raises(RuntimeError):
@@ -57,6 +62,7 @@ def test_cancellation_propagates_before_imports():
 def test_batch_profiles_are_canonical_and_scoped(monkeypatch):
     main = SimpleNamespace(_user_audio_track_ids=Mock(return_value=['owned', 'other']))
     monkeypatch.setitem(sys.modules, 'echora_analysis.main', main)
+    monkeypatch.setattr(echora_analysis, 'main', main, raising=False)
     with patch.object(analysis_jobs, '_profiles', return_value={'profiled': 1}) as profiles:
         result = analysis_jobs.execute({'kind': 'analysis_batch', 'user_id': 'u',
                                        'payload': {'operation': 'audio_profiles', 'track_ids': ['owned', 'foreign']}}, context())
@@ -69,8 +75,12 @@ def test_hum_parent_creates_durable_corpus_from_job_id(monkeypatch):
     main = SimpleNamespace(_load_connection=Mock(return_value=('url', 'u', 'p')))
     jobs = SimpleNamespace(expand=Mock())
     monkeypatch.setitem(sys.modules, 'echora_analysis.main', main)
+    monkeypatch.setattr(echora_analysis, 'main', main, raising=False)
     monkeypatch.setitem(sys.modules, 'echora_analysis.jobs', jobs)
-    monkeypatch.setitem(sys.modules, 'echora_analysis.hum_search', SimpleNamespace(DEFAULT_CORPUS_SIZE=100))
+    monkeypatch.setattr(echora_analysis, 'jobs', jobs, raising=False)
+    hum = SimpleNamespace(DEFAULT_CORPUS_SIZE=100)
+    monkeypatch.setitem(sys.modules, 'echora_analysis.hum_search', hum)
+    monkeypatch.setattr(echora_analysis, 'hum_search', hum, raising=False)
     db = MagicMock()
     cursor = db.__enter__.return_value.cursor.return_value.__enter__.return_value
     cursor.fetchone.return_value = ('user',)

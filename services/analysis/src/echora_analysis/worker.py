@@ -8,6 +8,8 @@ import os
 import signal
 import socket
 import threading
+import tempfile
+import sys
 import time
 import uuid
 
@@ -26,11 +28,26 @@ def _has_failures(value: object) -> bool:
     return False
 
 
-def execute(job: dict) -> None:
+def execute(job: dict, work_directory: str | None = None, supervisor_pid: int | None = None) -> None:
     """Run one claim in an isolated process so model memory dies with the claim."""
     # Pipeline subprocesses inherit this group, allowing the supervisor to stop all work.
     if hasattr(os, "setsid"):
         os.setsid()
+    def cancelled(*_):
+        raise jobs.JobCancelled()
+    signal.signal(signal.SIGTERM, cancelled)
+    if sys.platform == 'linux' and supervisor_pid is not None:
+        # Stop an orphaned executor when its supervisor is killed, even by SIGKILL.
+        import ctypes
+        if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM, 0, 0, 0) != 0:
+            raise RuntimeError('Could not install parent-death signal')
+        if os.getppid() != supervisor_pid:
+            return
+    if work_directory is not None:
+        os.environ['TMPDIR'] = work_directory
+        tempfile.tempdir = work_directory
+    previous_job_id = os.environ.get('ECHORA_JOB_ID')
+    os.environ['ECHORA_JOB_ID'] = str(job['id'])
     context = jobs.JobContext(job)
     try:
         context.check()
@@ -41,13 +58,25 @@ def execute(job: dict) -> None:
         summary = handler(job, context)
         # None means the scan expanded into durable child batches.
         if summary is not None:
-            context.complete(summary, status="partial" if _has_failures(summary) else "complete")
+            partial = _has_failures(summary)
+            if partial and job.get('attempts', 1) < job.get('max_attempts', 3):
+                # Per-song failures are swallowed by pipelines to preserve the rest
+                # of the batch. Retry that batch using its committed artifact plan.
+                context.report({'message': 'Retrying incomplete analysis', 'summary': summary})
+                jobs.fail(job['id'], job['claim_token'], 'Incomplete analysis', retryable=True)
+            else:
+                context.complete(summary, status="partial" if partial else "complete")
     except jobs.JobCancelled:
         logger.info("Job %s cancelled or claim lost", job["id"])
     except Exception:
         # Do not log provider exception strings: they can contain signed URLs/credentials.
         logger.error("Job %s execution failed", job["id"])
         jobs.fail(job["id"], job["claim_token"], "Execution failed", retryable=True)
+    finally:
+        if previous_job_id is None:
+            os.environ.pop('ECHORA_JOB_ID', None)
+        else:
+            os.environ['ECHORA_JOB_ID'] = previous_job_id
 
 
 def _terminate(process) -> None:
@@ -74,8 +103,15 @@ def _terminate(process) -> None:
 
 
 def supervise(job: dict, stop: threading.Event, lease_seconds: int) -> None:
-    process = multiprocessing.get_context("spawn").Process(target=execute, args=(job,))
-    process.start()
+    # The supervisor owns cleanup even when an executor cannot run its finally blocks.
+    directory = tempfile.TemporaryDirectory(prefix='echora-worker-')
+    process = multiprocessing.get_context("spawn").Process(
+        target=execute, args=(job, directory.name, os.getpid()))
+    try:
+        process.start()
+    except BaseException:
+        directory.cleanup()
+        raise
     heartbeat_interval = min(10, lease_seconds / 3)
     try:
         while process.is_alive():
@@ -98,6 +134,7 @@ def supervise(job: dict, stop: threading.Event, lease_seconds: int) -> None:
             jobs.fail(job["id"], job["claim_token"], "Worker process exited", retryable=True)
     finally:
         _terminate(process)
+        directory.cleanup()
 
 
 def run(worker_type: str, *, once: bool = False, poll_seconds: float = 2, lease_seconds: int = 120) -> None:
