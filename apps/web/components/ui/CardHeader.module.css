@@ -1,0 +1,14 @@
+.header{
+  --card-header-pad-x:20px;
+  --card-header-pad-y:16px;
+  min-width:0;
+  display:grid;
+  grid-template-columns:auto auto minmax(0,1fr) auto auto;
+  align-items:center;
+  gap:12px;
+  padding:var(--card-header-pad-y) var(--card-header-pad-x);
+  border-bottom:1px solid rgb(var(--accent-rgb) / .24);
+  background:linear-gradient(100deg,rgb(var(--accent-rgb) / .11),rgb(var(--accent-rgb) / .035));
+}
+.sticky{position:sticky;top:0;z-index:2;backdrop-filter:blur(24px)}.leading,.icon,.actions{display:flex;align-items:center}.leading:empty,.icon:empty,.actions:empty{display:none}.icon{color:var(--aqua)}.icon svg{width:24px;height:24px;stroke-width:1.7}.copy{min-width:0}.eyebrow{display:block;margin-bottom:5px;color:var(--aqua);font:700 var(--type-caption) var(--ui-font);letter-spacing:.8px;text-transform:uppercase}.title{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f2f6f4;font:500 clamp(24px,2vw,30px)/1.15 var(--ui-font);letter-spacing:-1.2px;padding-block:.06em}.description{max-width:680px;margin:5px 0 0;color:#929f9a;font:var(--type-label)/1.45 var(--ui-font)}.count{align-self:center;color:var(--aqua);font:500 clamp(24px,2vw,30px)/1 var(--ui-font);font-variant-numeric:tabular-nums}.actions{gap:8px}.leading button,.actions button{min-width:38px;height:38px;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:0 10px;border:1px solid var(--glass-stroke);background:rgba(7,13,19,.5);color:#c8d2ce;font:600 var(--type-caption) var(--ui-font);cursor:pointer}.leading button:hover:not(:disabled),.actions button:hover:not(:disabled){border-color:var(--aqua);background:rgb(var(--accent-rgb) / .14);color:var(--aqua)}.leading button:disabled,.actions button:disabled{opacity:.4;cursor:default}.leading svg,.actions svg{width:16px;height:16px}
+@media(max-width:1199px),(max-height:719px){.header{--card-header-pad-x:14px;--card-header-pad-y:12px;gap:9px}.title,.count{font-size:26px}.description{font-size:var(--type-caption)}.icon svg{width:21px;height:21px}.actions button,.leading button{min-width:36px;height:36px;padding:0 8px}.actions button span{display:none}}
