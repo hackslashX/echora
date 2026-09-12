@@ -16,7 +16,7 @@ type CardHeaderProps = {
 
 export default function CardHeader({ title, description, icon, leading, actions, count, eyebrow, as = "h2", className = "", sticky = false }: CardHeaderProps) {
   const Heading = as as ElementType;
-  return <div className={`${styles.header} ${sticky ? styles.sticky : ""} ${className}`}>
+  return <header data-card-header className={`${styles.header} ${sticky ? styles.sticky : ""} ${className}`}>
     {leading && <div className={styles.leading}>{leading}</div>}
     {icon && <div className={styles.icon}>{icon}</div>}
     <div className={styles.copy}>
@@ -26,5 +26,5 @@ export default function CardHeader({ title, description, icon, leading, actions,
     </div>
     {count != null && <strong className={styles.count}>{count}</strong>}
     {actions && <div className={styles.actions}>{actions}</div>}
-  </div>;
+  </header>;
 }

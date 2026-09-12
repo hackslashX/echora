@@ -1,14 +1,65 @@
-.header{
-  --card-header-pad-x:20px;
-  --card-header-pad-y:16px;
-  min-width:0;
-  display:grid;
-  grid-template-columns:auto auto minmax(0,1fr) auto auto;
-  align-items:center;
-  gap:12px;
-  padding:var(--card-header-pad-y) var(--card-header-pad-x);
-  border-bottom:1px solid rgb(var(--accent-rgb) / .24);
-  background:linear-gradient(100deg,rgb(var(--accent-rgb) / .11),rgb(var(--accent-rgb) / .035));
+/* Attribute + class keeps legacy page header rules out of this component. */
+.header[data-card-header] {
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px 20px;
+  border: 0;
+  border-bottom: 1px solid rgb(var(--accent-rgb) / .24);
+  background: #142226;
 }
-.sticky{position:sticky;top:0;z-index:2;backdrop-filter:blur(24px)}.leading,.icon,.actions{display:flex;align-items:center}.leading:empty,.icon:empty,.actions:empty{display:none}.icon{color:var(--aqua)}.icon svg{width:24px;height:24px;stroke-width:1.7}.copy{min-width:0}.eyebrow{display:block;margin-bottom:5px;color:var(--aqua);font:700 var(--type-caption) var(--ui-font);letter-spacing:.8px;text-transform:uppercase}.title{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f2f6f4;font:500 clamp(24px,2vw,30px)/1.15 var(--ui-font);letter-spacing:-1.2px;padding-block:.06em}.description{max-width:680px;margin:5px 0 0;color:#929f9a;font:var(--type-label)/1.45 var(--ui-font)}.count{align-self:center;color:var(--aqua);font:500 clamp(24px,2vw,30px)/1 var(--ui-font);font-variant-numeric:tabular-nums}.actions{gap:8px}.leading button,.actions button{min-width:38px;height:38px;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:0 10px;border:1px solid var(--glass-stroke);background:rgba(7,13,19,.5);color:#c8d2ce;font:600 var(--type-caption) var(--ui-font);cursor:pointer}.leading button:hover:not(:disabled),.actions button:hover:not(:disabled){border-color:var(--aqua);background:rgb(var(--accent-rgb) / .14);color:var(--aqua)}.leading button:disabled,.actions button:disabled{opacity:.4;cursor:default}.leading svg,.actions svg{width:16px;height:16px}
-@media(max-width:1199px),(max-height:719px){.header{--card-header-pad-x:14px;--card-header-pad-y:12px;gap:9px}.title,.count{font-size:26px}.description{font-size:var(--type-caption)}.icon svg{width:21px;height:21px}.actions button,.leading button{min-width:36px;height:36px;padding:0 8px}.actions button span{display:none}}
+.header .copy { flex: 1; min-width: 0; }
+.header .title, .header .count {
+  margin: 0;
+  color: #f2f6f4;
+  font: 500 28px/1.25 "Space Grotesk", sans-serif;
+  letter-spacing: -1px;
+}
+.header .title {
+  display: block;
+  padding: .06em 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.header .description {
+  display: block;
+  max-width: 100%;
+  margin: 5px 0 0;
+  color: #a2b2ad;
+  font: 12px/1.6 "DM Mono", monospace;
+}
+.header .count { flex: 0 0 auto; align-self: flex-start; padding: .06em 0; color: var(--aqua); font-variant-numeric: tabular-nums; }
+.header .eyebrow { display: block; margin: 0 0 5px; color: var(--aqua); font: 12px/1.4 "DM Mono", monospace; }
+.header .leading, .header .icon, .header .actions { display: flex; align-items: center; flex: 0 0 auto; gap: 8px; }
+.header .icon { color: var(--aqua); }
+.header .icon svg { width: 24px; height: 24px; }
+.header .leading button, .header .actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 40px;
+  height: 40px;
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid var(--glass-stroke);
+  background: #0b171b;
+  color: #d3dfda;
+  font: 500 12px "DM Mono", monospace;
+  cursor: pointer;
+}
+.header .leading svg, .header .actions svg { width: 16px; height: 16px; }
+.header button:hover:not(:disabled) { border-color: var(--aqua); color: var(--aqua); }
+.header button:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+.header button:disabled { opacity: .4; cursor: default; }
+.header.sticky { position: sticky; top: 0; z-index: 2; }
+@media (max-width:1199px), (max-height:719px) {
+  .header[data-card-header] { padding: 12px 14px; gap: 9px; }
+  .header .title, .header .count { font-size: 24px; }
+  .header .actions { flex-wrap: wrap; }
+  .header .leading button, .header .actions button { min-width: 44px; height: 44px; }
+}
