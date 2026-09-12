@@ -1,4 +1,4 @@
-import { LibraryBig, Orbit, RefreshCw, Settings, WandSparkles } from "lucide-react";
+import { ArrowUpRight, LibraryBig, Orbit, RefreshCw, Settings, WandSparkles } from "lucide-react";
 import AppShell from "./shell/AppShell";
 import styles from "./home/HomeMenu.module.css";
 import CopyrightFooter from "./shell/CopyrightFooter";
@@ -18,9 +18,9 @@ export default function HomeGrid() {
   const columns = [1, 1, 1, 1, 1];
   const rows = [1, 1, 1];
   return <AppShell title="Home" footer={footer} flush fullPage grid={{ columns, rows }}>
-    <section className={styles.grid} style={{ gridTemplateColumns: trackTemplate(columns, 180), gridTemplateRows: trackTemplate(rows, 152) }} aria-label="Main menu">
+    <section className={styles.grid} style={{ gridTemplateColumns: trackTemplate(columns, 160), gridTemplateRows: trackTemplate(rows, 88) }} aria-label="Main menu">
       {items.map((item, index) => <TransitionLink key={item.label} href={item.href} className={`${styles.tile} ${styles[item.position]}`}>
-        <span>0{index + 1}</span><item.Icon className={styles.icon} strokeWidth={1.35} aria-hidden="true" /><div><strong>{item.label}</strong><small>{item.note}</small></div><b>↗</b>
+        <span>0{index + 1}</span><item.Icon className={styles.icon} strokeWidth={1.35} aria-hidden="true" /><div><strong>{item.label}</strong><small>{item.note}</small></div><ArrowUpRight className={styles.arrow} strokeWidth={2} aria-hidden="true" />
       </TransitionLink>)}
     </section>
   </AppShell>;

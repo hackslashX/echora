@@ -153,7 +153,7 @@ export default function CurateLibrary() {
     : "Language constraint only · neutral musical score";
   const columns = [0.46, 0.04, 0.50];
   return <AppShell title="Curate" footer={<CopyrightFooter />} breadcrumb flush fullPage grid={{ columns, rows: [1] }}>
-    <main className={styles.page} style={{ gridTemplateColumns: trackTemplate(columns, 180), gridTemplateRows: trackTemplate([1], 152) }}>
+    <main className={styles.page} style={{ gridTemplateColumns: trackTemplate(columns, 160), gridTemplateRows: trackTemplate([1], 88) }}>
       <MobilePivots label="Curation sections" active={mobilePane} onChange={setMobilePane} items={[{ key: "recipe", label: "recipe" }, { key: "playlists", label: "playlists", count: curations.length }]} />
       <section className={`${styles.recipe} ${mobilePane === "recipe" ? styles.mobileActive : ""}`}>
         <div className={styles.recipeScroll}><header><h1>Build playlists</h1><p>Combine any curation signals you want. Empty aspects do not affect the score.</p></header>
