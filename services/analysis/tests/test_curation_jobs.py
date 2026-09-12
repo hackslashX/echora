@@ -294,3 +294,93 @@ def test_routes_share_lock_and_refresh_is_202():
     decorator = ast.unparse(functions["refresh_curation"].decorator_list[0])
     assert "status_code=202" in decorator
     assert "enqueue" in ast.unparse(functions["_refresh_curation"])
+
+
+def test_due_poll_skips_locked_curation_without_blocking(env, monkeypatch):
+    from echora_analysis import jobs
+    env.db.acquired = False
+    calls = []
+    monkeypatch.setattr(jobs, "enqueue", lambda **kw: calls.append(kw))
+    assert cj.enqueue_due() == 0
+    assert not calls
+    assert env.db.curation["due"]
+
+
+def test_schedule_crash_after_enqueue_reuses_dedupe_key(env, monkeypatch):
+    from echora_analysis import jobs
+    queued = {}
+    calls = []
+
+    def enqueue(**kw):
+        key = (kw["user_id"], kw["dedupe_key"])
+        calls.append(key)
+        queued.setdefault(key, {"id": uuid4(), "status": "queued"})
+        return queued[key]
+
+    execute = env.db.execute
+    fail_once = [True]
+
+    def crash(sql, args=()):
+        if "UPDATE curations" in sql and fail_once[0]:
+            fail_once[0] = False
+            raise RuntimeError("crash after enqueue committed")
+        return execute(sql, args)
+
+    monkeypatch.setattr(jobs, "enqueue", enqueue)
+    monkeypatch.setattr(env.db, "execute", crash)
+    with pytest.raises(RuntimeError, match="crash after enqueue"):
+        cj.enqueue_due()
+    assert env.db.curation["due"]
+    assert cj.enqueue_due() == 1
+    assert len(queued) == 1
+    assert len(calls) == 2
+
+
+def test_selection_failure_preserves_playlist_and_sets_failed(env, monkeypatch):
+    def fail(*args):
+        raise ValueError("No tracks meet this recipe")
+
+    monkeypatch.setattr(cj, "_prepare", fail)
+    with pytest.raises(ValueError, match="No tracks"):
+        cj.execute(env.job, env.context)
+    assert env.db.curation["status"] == "failed"
+    assert env.db.publication is None
+    assert not env.remote.calls
+
+
+@pytest.mark.parametrize("deleted", [False, True])
+def test_manual_enqueue_missing_or_wrong_owner_never_queues(env, monkeypatch, deleted):
+    from echora_analysis import jobs
+
+    calls = []
+    monkeypatch.setattr(jobs, "enqueue", lambda **kw: calls.append(kw))
+    curation_id = env.db.curation["id"]
+    if deleted:
+        env.db.curation = None
+        env.db.commit()
+    with pytest.raises(HTTPException) as exc:
+        cj.enqueue(curation_id, uuid4())
+    assert exc.value.status_code == 404
+    assert not calls
+
+
+def test_deleted_curation_job_is_noop(env):
+    env.db.curation = None
+    env.db.commit()
+    assert cj.execute(env.job, env.context) == {
+        "curation_id": env.job["payload"]["curation_id"], "deleted": True,
+    }
+    assert not env.remote.calls
+    assert not env.selections
+
+
+def test_known_playlist_can_be_deleted_after_uncertain_replacement(env):
+    env.db.curation["navidrome_playlist_id"] = "existing"
+    env.db.commit()
+    env.remote.error = TimeoutError("response lost")
+    with pytest.raises(TimeoutError):
+        cj.execute(env.job, env.context)
+    cj.assert_mutable(env.db, env.db.curation["id"], deleting=True)
+    with pytest.raises(HTTPException) as exc:
+        cj.assert_mutable(env.db, env.db.curation["id"])
+    assert exc.value.status_code == 409
