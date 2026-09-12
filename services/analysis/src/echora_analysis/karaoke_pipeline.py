@@ -541,7 +541,7 @@ def _backfill_karaoke(
                     "completed": 0, "total": 0, "unit": "tracks"})
             return summary
         bound_to_source = False
-        report({"phase": "models", "message": "Loading FA-Kara alignment model",
+        report({"phase": "models", "message": "Loading Echora alignment model",
                 "completed": 0, "total": 1, "unit": "models"})
         with connection.cursor() as cursor:
             cursor.execute(
