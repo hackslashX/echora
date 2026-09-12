@@ -9,6 +9,8 @@ import AppShell from "../shell/AppShell";
 import CopyrightFooter from "../shell/CopyrightFooter";
 import { trackTemplate } from "../shell/gridGeometry";
 import MobilePivots from "../shell/MobilePivots";
+import { useMobilePane } from "../shell/useMobilePane";
+import CardHeader from "../ui/CardHeader";
 import HumSearchButton from "./HumSearchButton";
 import styles from "./BrowseLibrary.module.css";
 
@@ -36,7 +38,7 @@ export default function BrowseLibrary() {
   const [sortBy, setSortBy] = useState<"name" | "artist" | "released">("name");
   const [connectionId, setConnectionId] = useState("");
   const [humResults, setHumResults] = useState(false);
-  const [mobilePane, setMobilePane] = useState<"tracks" | "filters">("tracks");
+  const [mobilePane, setMobilePane, paneTransition] = useMobilePane<"tracks" | "filters">("tracks", ["tracks", "filters"]);
   const listRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const pageSize = 10;
@@ -97,13 +99,13 @@ export default function BrowseLibrary() {
   return <AppShell title="Browse" footer={<CopyrightFooter />} grid={{ columns, rows }} flush fullPage breadcrumb>
     <section className={styles.layout} style={{ gridTemplateColumns: trackTemplate(columns, 160), gridTemplateRows: trackTemplate(rows, 88) }}>
       <MobilePivots label="Browse sections" active={mobilePane} onChange={setMobilePane} items={[{ key: "tracks", label: humResults ? "matches" : "tracks", count: total }, { key: "filters", label: "filters" }]} />
-      <aside className={`${styles.filters} ${mobilePane === "filters" ? styles.mobileActive : ""}`}>
-        <h1>Filters</h1>
+      <aside className={`${styles.filters} ${mobilePane === "filters" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
+        <CardHeader as="h1" title="Filters" />
         <section className={styles.filterGroup}><span>Artists</span><input value={artistQuery} onChange={event => setArtistQuery(event.target.value)} placeholder="Search artists" /><div><button type="button" className={!artist ? styles.selected : ""} onClick={() => { setArtist(""); setAlbum(""); resetResults(); }}>All artists</button>{artists.map(item => <button type="button" className={artist === item.name ? styles.selected : ""} onClick={() => { setArtist(item.name); setAlbum(""); resetResults(); }} key={item.name}>{item.name}<b>{item.tracks}</b></button>)}</div></section>
         <section className={styles.filterGroup}><span>Albums</span><input value={albumQuery} onChange={event => setAlbumQuery(event.target.value)} placeholder="Search albums" /><div><button type="button" className={!album ? styles.selected : ""} onClick={() => { setAlbum(""); resetResults(); }}>All albums</button>{albums.map(item => <button type="button" className={album === item.name ? styles.selected : ""} onClick={() => { setAlbum(item.name); resetResults(); }} key={item.name}>{item.name}<b>{item.tracks}</b></button>)}</div></section>
       </aside>
-      <section className={`${styles.listing} ${mobilePane === "tracks" ? styles.mobileActive : ""}`}>
-        <header><h2>{humResults ? "Hum matches" : "Tracks"}</h2><strong>{total}</strong></header>
+      <section className={`${styles.listing} ${mobilePane === "tracks" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
+        <CardHeader title={humResults ? "Hum matches" : "Tracks"} count={total} />
         <div className={styles.search}><label><Search /><input value={query} onChange={event => { setQuery(event.target.value); resetResults(); }} placeholder="Search tracks" /></label><HumSearchButton onResults={showHumResults} onError={setError} /><select aria-label="Sort tracks" value={sortBy} onChange={event => { setSortBy(event.target.value as "name" | "artist" | "released"); resetResults(); }}><option value="name">Name</option><option value="artist">Artist</option><option value="released">Date released</option></select></div>
         <div className={styles.list} ref={listRef}>{loading && tracks.length === 0 ? <div className={styles.empty}>Loading library</div> : error ? <div className={styles.empty}>{error}</div> : tracks.length === 0 ? <div className={styles.empty}>No matching tracks</div> : <>{tracks.map(track => <button type="button" className={`${styles.row} ${player.track?.id === track.id ? styles.current : ""}`} key={track.id} onClick={() => play(track)} disabled={!connectionId || !track.source_id}>
           <span className={styles.art}>{track.cover_art && connectionId ? <LoadingImage sizes="48px" alt="" src={coverArtUrl(connectionId, track.cover_art, 96)} /> : <Disc3 />}</span>
