@@ -111,7 +111,7 @@ export default function FullscreenPlayer() {
   const playbackHeight = Math.min(innerHeight * .46, Math.max(148, playbackContentHeight));
   const playbackWeight = playbackHeight / innerHeight;
   const rows = [1 - playbackWeight, playbackWeight];
-  const artworkWeight = playbackHeight / innerWidth;
+  const artworkWeight = Math.max(118, playbackHeight - 30) / innerWidth;
   const spacerWeight = Math.min(.08, Math.max(.045, 72 / innerWidth), (1 - artworkWeight) * .2);
   const columns = [artworkWeight, spacerWeight, 1 - artworkWeight - spacerWeight];
   const mobileLyricsLayout = timedLines.length > 0 || player.lyricsLoading;
