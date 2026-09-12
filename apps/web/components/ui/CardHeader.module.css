@@ -29,8 +29,9 @@
   display: block;
   max-width: 100%;
   margin: 5px 0 0;
-  color: #a2b2ad;
-  font: 12px/1.6 "DM Mono", monospace;
+  color: #b4c1bc;
+  font: 400 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: normal;
 }
 .header .count { flex: 0 0 auto; align-self: flex-start; padding: .06em 0; color: var(--aqua); font-variant-numeric: tabular-nums; }
 .header .eyebrow { display: block; margin: 0 0 5px; color: var(--aqua); font: 12px/1.4 "DM Mono", monospace; }
