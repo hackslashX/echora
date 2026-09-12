@@ -208,6 +208,18 @@ def ingest_navidrome(
         library_id = _library(connection, url)
         songs = navidrome.tracks(song_ids)
         summary.discovered = len(songs)
+        identity_downloaded: set[str] = set()
+        # Resolve content identity before planning: another source may already
+        # have every artifact for these exact bytes.
+        for song in songs:
+            report({"phase": "identity", "message": "Resolving track identity"})
+            if _source_track_id(connection, library_id, song.id) is None:
+                audio = navidrome.audio_bytes(song.id)
+                _, inserted = _upsert_track(connection, library_id, song, hashlib.sha256(audio).hexdigest())
+                summary.downloaded += 1
+                identity_downloaded.add(song.id)
+                summary.inserted += int(inserted)
+                connection.commit()
         plan = plan_audio(connection, library_id, [song.id for song in songs])
         required_models = int(plan.needs_muq) + int(plan.needs_mert)
         report({"phase": "planning", "message": "Processing plan ready", "completed": 0,
@@ -219,7 +231,7 @@ def ingest_navidrome(
                          "waveform": len(plan.waveform_external_ids)}})
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        downloaded_ids: set[str] = set()
+        downloaded_ids: set[str] = set(identity_downloaded)
         inserted_ids: set[uuid.UUID] = set()
 
         def audio_track(song: NavidromeTrack) -> tuple[bytes, uuid.UUID]:
@@ -253,6 +265,11 @@ def ingest_navidrome(
                 })
                 try:
                     audio, track_id = audio_track(song)
+                    if _model_has_embedding(connection, track_id, run_id):
+                        summary.reused_embeddings += 1
+                        record_track(connection, attempt_id, song.id, track_id)
+                        connection.commit()
+                        continue
                     waveform = decode_audio(audio)
                     ranged_windows = full_coverage_window_ranges(waveform)
                     windows = [item[0] for item in ranged_windows]

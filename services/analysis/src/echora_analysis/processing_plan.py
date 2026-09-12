@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import uuid
 from typing import Iterable
 
 import psycopg
@@ -64,8 +65,25 @@ def _id_filter(external_ids: Iterable[str] | None) -> tuple[str, list[object]]:
     return " AND ts.external_id=ANY(%s)", [values]
 
 
-def plan_lyrics(connection: psycopg.Connection, external_ids: Iterable[str] | None = None) -> ProcessingPlan:
+def resolve_library_id(connection: psycopg.Connection, url: str) -> uuid.UUID:
+    """Resolve an existing library, never falling back to unscoped processing."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT id FROM libraries WHERE lower(rtrim(root_path, '/'))=lower(rtrim(%s, '/'))",
+            (url,),
+        )
+        rows = cursor.fetchall()
+    if len(rows) != 1:
+        raise ValueError("Expected exactly one library for the source URL")
+    return rows[0][0]
+
+
+def plan_lyrics(connection: psycopg.Connection, external_ids: Iterable[str] | None = None,
+                library_id: uuid.UUID | None = None) -> ProcessingPlan:
     restriction, parameters = _id_filter(external_ids)
+    if library_id is not None:
+        restriction += " AND ts.library_id=%s"
+        parameters.append(library_id)
     revision = os.environ.get("LYRICS_REVISION", "5617a9f61b028005a4858fdac845db406aefb181")
     with connection.cursor() as cursor:
         cursor.execute(
@@ -86,8 +104,12 @@ def plan_lyrics(connection: psycopg.Connection, external_ids: Iterable[str] | No
 
 def plan_karaoke(connection: psycopg.Connection, pipeline_revision: str,
                   external_ids: Iterable[str] | None = None,
-                  model_revision: str | None = None) -> ProcessingPlan:
+                  model_revision: str | None = None,
+                  library_id: uuid.UUID | None = None) -> ProcessingPlan:
     restriction, parameters = _id_filter(external_ids)
+    if library_id is not None:
+        restriction += " AND ts.library_id=%s"
+        parameters.append(library_id)
     with connection.cursor() as cursor:
         cursor.execute("SELECT karaoke_processing_enabled FROM analysis_settings WHERE singleton=true")
         setting = cursor.fetchone()
