@@ -1,7 +1,8 @@
 "use client";
 
 import { Disc3, Search } from "lucide-react";
-import { coverArtUrl } from "../media/coverArt";
+import { coverArtUrl } from "../media/coverArt"
+import { mediaUrl } from "../media/mediaOrigin";
 import LoadingImage from "../media/LoadingImage";
 import { useEffect, useRef, useState } from "react";
 import { usePlayer } from "../player/PlayerProvider";
@@ -89,7 +90,8 @@ export default function BrowseLibrary() {
     if (!connectionId || !track.source_id) return;
     player.play({
       id: track.id, title: track.title, artist: track.artist, album: track.album, durationSeconds: track.duration_seconds,
-      streamUrl: `/analysis/navidrome/connections/${connectionId}/stream/${encodeURIComponent(track.source_id)}`,
+      streamUrl: mediaUrl(`/navidrome/connections/${connectionId}/stream/${encodeURIComponent(track.source_id)}`),
+      connectionId, sourceId: track.source_id,
       coverUrl: track.cover_art ? coverArtUrl(connectionId, track.cover_art) : undefined,
     });
   }

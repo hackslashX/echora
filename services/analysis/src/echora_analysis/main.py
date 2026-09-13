@@ -25,6 +25,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import joinedload
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, HttpUrl, SecretStr
 from starlette.concurrency import run_in_threadpool
@@ -45,7 +46,7 @@ from .db import session_scope
 from . import jobs
 from .db_models import Curation, NavidromeConnection, OidcAllowedEmail, OidcSetting, User, UserPreference, UserSession
 from .hum_search import DEFAULT_CORPUS_SIZE, search_corpus
-from .journeys import normalize_rows as normalize_journey_rows, select_journey, spherical_targets
+from .journeys import normalize_rows as normalize_journey_rows, select_journey, select_multistop_journey, spherical_targets
 from .listening_history import recent_listens, track_listen_counts
 from .language_detection import LANGUAGE_NAMES, PRIMARY_SHARE, language_affinity
 from .karaoke_pipeline import KARAOKE_PIPELINE_REVISION
@@ -56,6 +57,16 @@ from .navidrome import NavidromeClient, media_navidrome_client
 from .representations import configure_representations
 
 app = FastAPI(title="Echora analysis", version="0.3.0")
+# Browser-facing media (covers, streams) is served cross-origin from the web app
+# when NEXT_PUBLIC_ANALYSIS_ORIGIN is set; canvas palette extraction needs CORS.
+# Origins are explicit: reflecting arbitrary origins with credentials would let
+# any site read responses using the visitor's session cookie.
+_cors_origins = [origin.strip() for origin in os.getenv("ECHORA_CORS_ORIGINS", "").split(",") if origin.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware, allow_origins=_cors_origins, allow_credentials=True,
+        allow_methods=["*"], allow_headers=["*"],
+    )
 app.add_middleware(
     SessionMiddleware, secret_key=os.environ.get("OIDC_SESSION_SECRET", secrets.token_urlsafe(48)),
     session_cookie="echora_oidc_state", same_site="lax",
@@ -155,7 +166,7 @@ class ConceptLensRequest(BaseModel):
 
 
 class CurationPreviewRequest(BaseModel):
-    curation_type: str = Field(default="combined", pattern="^(combined|language|examples|time_of_day)$")
+    curation_type: str = Field(default="combined", pattern="^(combined|language|examples|time_of_day|sonic_journey)$")
     positive_prompt: str = Field(default="", max_length=2000)
     negative_prompt: str = Field(default="", max_length=2000)
     sound_prompts: list[str] = Field(default_factory=list, max_length=12)
@@ -175,6 +186,11 @@ class CurationPreviewRequest(BaseModel):
     target_language: str = Field(default="", pattern="^$|^[a-z]{2,3}$")
     language_strictness: str = Field(default="primarily", pattern="^(only|primarily|sprinkle)$")
     existing_track_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+    # Sonic journey: ordered waypoints through fused audio+lyrics space.
+    journey_start_track_id: uuid.UUID | None = None
+    journey_stop_track_ids: list[uuid.UUID] = Field(default_factory=list, max_length=5)
+    journey_end_track_id: uuid.UUID | None = None
+    journey_lyrics_weight: int = Field(default=25, ge=0, le=100)
 
 
 class CurationCreateRequest(CurationPreviewRequest):
@@ -874,6 +890,50 @@ def start_karaoke_backfill(
     return _enqueue_connection_job("karaoke_backfill", connection_id, _session_user(echora_session))
 
 
+@app.post("/library/semantic-fusion/rebuild", status_code=202, dependencies=[Depends(require_user)])
+def start_semantic_fusion_build(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    return jobs.enqueue("semantic_fusion_build", "analysis", _session_user(echora_session)["id"],
+                        dedupe_key="semantic_fusion_build")
+
+
+@app.get("/library/semantic-fusion/status", dependencies=[Depends(require_user)])
+def semantic_fusion_status(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    _session_user(echora_session)
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT count(*) AS fused,
+                      (SELECT count(*) FROM current_embeddings l WHERE l.embedding_type='lyrics'
+                        AND l.window_index IS NULL) AS lyrics,
+                      (SELECT count(*) FROM current_embeddings a WHERE a.embedding_type='audio-track'
+                        AND a.window_index IS NULL) AS audio
+               FROM current_embeddings e WHERE e.embedding_type='semantic_fusion'""")
+        return cursor.fetchone()
+
+
+@app.get("/library/tracks/{track_id}/similar", dependencies=[Depends(require_user)])
+def similar_tracks(
+    track_id: uuid.UUID, limit: int = 20, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    _session_user(echora_session)
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT e.embedding FROM current_embeddings e
+               WHERE e.track_id=%s AND e.embedding_type='semantic_fusion'""", (track_id,))
+        seed = cursor.fetchone()
+        if seed is None:
+            raise HTTPException(status_code=404, detail="Track has no semantic fusion vector")
+        cursor.execute(
+            """SELECT t.id, t.title, t.artist, t.album,
+                      1 - (e.embedding <=> %s::vector) AS similarity
+               FROM current_embeddings e
+               JOIN tracks t ON t.id=e.track_id
+               WHERE e.embedding_type='semantic_fusion' AND e.track_id != %s
+               ORDER BY e.embedding <=> %s::vector LIMIT %s""",
+            (seed["embedding"], track_id, seed["embedding"], max(1, min(limit, 100))),
+        )
+        return {"track_id": str(track_id), "mode": "semantic_fusion", "results": cursor.fetchall()}
+
+
 @app.get("/library/tracks/{track_id}/recording-group", dependencies=[Depends(require_user)])
 def track_recording_group(
     track_id: uuid.UUID, echora_session: str | None = Cookie(default=None),
@@ -1092,6 +1152,29 @@ def stream_track(
         return Response(body, status_code=206, media_type=content_type, headers=headers)
     headers["Content-Length"] = str(total)
     return Response(content, media_type=content_type, headers=headers)
+
+
+class ScrobbleRequest(BaseModel):
+    connection_id: str
+    song_id: str = Field(min_length=1, max_length=200)
+    submission: bool = True
+
+
+@app.post("/navidrome/scrobble", status_code=204, dependencies=[Depends(require_user)])
+def scrobble_play(request: ScrobbleRequest, echora_session: str | None = Cookie(default=None)) -> Response:
+    """Report playback to the media server (Subsonic scrobble). Fire-and-forget
+    from the player: failures must never interrupt listening, hence 204-empty
+    on success and a bare 502 the client ignores on failure."""
+    user = _session_user(echora_session)
+    credentials = _load_connection(request.connection_id, user["id"])
+    if credentials is None:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    try:
+        with media_navidrome_client(*credentials) as client:
+            client.scrobble(request.song_id, request.submission)
+    except Exception as error:
+        raise HTTPException(status_code=502, detail="Scrobble failed") from error
+    return Response(status_code=204)
 
 
 @app.get("/navidrome/connections/{connection_id}/cover/{cover_id:path}", dependencies=[Depends(require_user)])
@@ -1586,6 +1669,99 @@ def _curation_corpus(
     )
 
 
+SONIC_AUDIO_SPLIT = (0.70, 0.30)  # MuQ : MERT within the audio share
+SONIC_SCORING_REVISION = 1
+
+
+def _preview_sonic_journey(
+    request: CurationPreviewRequest, rows: list[dict[str, object]], matrix: np.ndarray,
+    acoustic_matrix: np.ndarray | None, lyrics_matrix: np.ndarray, lyrics_available: np.ndarray,
+) -> dict[str, object]:
+    identifiers = {str(row["id"]): index for index, row in enumerate(rows)}
+    waypoints = [request.journey_start_track_id, *request.journey_stop_track_ids, request.journey_end_track_id]
+    if not waypoints[0] or not waypoints[-1]:
+        raise HTTPException(status_code=422, detail="Pick a start and an end track")
+    if waypoints[0] == waypoints[-1]:
+        raise HTTPException(status_code=422, detail="Journey start and end must be different tracks")
+    indices: list[int] = []
+    for waypoint in waypoints:
+        index = identifiers.get(str(waypoint))
+        if index is None:
+            raise HTTPException(status_code=404, detail="A journey stop lacks audio analysis")
+        indices.append(index)
+    if len(set(indices)) != len(indices):
+        raise HTTPException(status_code=422, detail="Each journey stop must be a different track")
+    if acoustic_matrix is None:
+        raise HTTPException(status_code=409, detail="MERT analysis has not run for this library yet")
+
+    def _norm(values: np.ndarray) -> np.ndarray:
+        return normalize_journey_rows(np.asarray(values, dtype=np.float32))
+
+    lyrics_share = request.journey_lyrics_weight / 100.0
+    audio = np.concatenate([
+        _norm(matrix) * np.sqrt(SONIC_AUDIO_SPLIT[0]),
+        _norm(acoustic_matrix) * np.sqrt(SONIC_AUDIO_SPLIT[1]),
+    ], axis=1)
+    fused = np.concatenate([
+        audio * np.sqrt(1 - lyrics_share),
+        _norm(lyrics_matrix) * np.sqrt(lyrics_share),
+    ], axis=1)
+
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT track_id::text AS id, group_id::text AS group_id FROM recording_group_members WHERE track_id=ANY(%s)",
+            ([row["id"] for row in rows],),
+        )
+        groups_by_id = {row["id"]: row["group_id"] for row in cursor.fetchall()}
+    steps = select_multistop_journey(
+        fused, indices, request.track_limit,
+        [row.get("artist") for row in rows],
+        [groups_by_id.get(str(row["id"])) for row in rows],
+    )
+    tracks = []
+    for position, (index, target_similarity, transition_similarity) in enumerate(steps):
+        row = rows[index]
+        tracks.append({
+            "id": row["id"], "title": row["title"], "artist": row.get("artist"),
+            "album": row.get("album"), "duration_seconds": row.get("duration_seconds"),
+            "source_id": row.get("source_id"), "cover_art": row.get("cover_art"),
+            "position": position, "score": float(target_similarity),
+            "percentile": float(target_similarity), "retained": False,
+            "waypoint": index in indices,
+            "evidence": {
+                "target_similarity": float(target_similarity),
+                "transition_similarity": float(transition_similarity),
+                "lyrics_available": bool(lyrics_available[index]) if index < len(lyrics_available) else False,
+            },
+        })
+    lyrics_weight = request.journey_lyrics_weight / 100.0
+    return {
+        "tracks": tracks, "references": {"positive": [], "negative": []},
+        "corpus_size": len(rows),
+        "selection": {
+            "requested": request.track_limit, "selected": len(tracks),
+            "shortfall": max(0, request.track_limit - len(tracks)),
+            "match_basis": "sonic_journey",
+        },
+        "curation_type": "sonic_journey",
+        "model": "muq_mulan+mert+bge_m3",
+        "weights": {
+            "muq_mulan": SONIC_AUDIO_SPLIT[0] * (1 - lyrics_weight),
+            "mert": SONIC_AUDIO_SPLIT[1] * (1 - lyrics_weight),
+            "lyrics": lyrics_weight,
+        },
+        "journey": {
+            "start_track_id": str(request.journey_start_track_id),
+            "stop_track_ids": [str(value) for value in request.journey_stop_track_ids],
+            "end_track_id": str(request.journey_end_track_id),
+            "lyrics_weight": request.journey_lyrics_weight,
+            "waypoint_count": len(indices),
+        },
+        "scoring_revision": SONIC_SCORING_REVISION,
+        "lyrics_coverage": int(lyrics_available.sum()),
+    }
+
+
 def _preview_curation(
     user_id: uuid.UUID, connection_id: uuid.UUID, request: CurationPreviewRequest,
 ) -> dict[str, object]:
@@ -1593,6 +1769,8 @@ def _preview_curation(
         rows, matrix, lyrics_matrix, lyrics_available, voice_matrix, voice_available,
         semantic_modes, acoustic_matrix, acoustic_available, acoustic_modes,
     ) = _curation_corpus(user_id, connection_id)
+    if request.curation_type == "sonic_journey":
+        return _preview_sonic_journey(request, rows, matrix, acoustic_matrix, lyrics_matrix, lyrics_available)
     language_map: dict[str, dict[str, object]] = {}
     if request.target_language:
         with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
@@ -1871,6 +2049,10 @@ def create_curation(request: CurationCreateRequest, echora_session: str | None =
             time_of_day_enabled=request.time_of_day_enabled,
             track_limit=request.track_limit, refresh_mode=request.refresh_mode,
             target_language=request.target_language, language_strictness=request.language_strictness,
+            journey_start_track_id=request.journey_start_track_id,
+            journey_stop_track_ids=request.journey_stop_track_ids,
+            journey_end_track_id=request.journey_end_track_id,
+            journey_lyrics_weight=request.journey_lyrics_weight,
             refresh_enabled=request.refresh_enabled,
         )
         session.add(curation)

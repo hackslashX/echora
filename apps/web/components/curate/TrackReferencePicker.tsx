@@ -6,10 +6,11 @@ import styles from "./TrackReferencePicker.module.css";
 
 export type ReferenceTrack = { id: string; title: string; artist?: string; album?: string };
 
-export default function TrackReferencePicker({ label, value, onChange }: {
+export default function TrackReferencePicker({ label, value, onChange, single = false }: {
   label: string;
   value: ReferenceTrack[];
   onChange: (tracks: ReferenceTrack[]) => void;
+  single?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<ReferenceTrack[]>([]);
@@ -28,15 +29,33 @@ export default function TrackReferencePicker({ label, value, onChange }: {
   }, [query, value]);
 
   function add(track: ReferenceTrack) {
-    onChange([...value, track]);
+    onChange(single ? [track] : [...value, track]);
     setQuery("");
     setResults([]);
   }
 
+  function onKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Backspace" && !query && value.length) { onChange(value.slice(0, -1)); }
+  }
+
   return <div className={styles.picker}>
     <span>{label}</span>
-    <label><Search /><input value={query} onChange={event => { const next = event.target.value; setQuery(next); if (next.trim().length < 2) setResults([]); }} placeholder="Search tracks" /></label>
+    <div className={styles.field} onClick={event => event.currentTarget.querySelector("input")?.focus()}>
+      <Search />
+      {value.map(track => (
+        <span key={track.id} className={styles.chip}>
+          <b>{track.title}</b>{track.artist && <small>{track.artist}</small>}
+          <button type="button" onClick={() => onChange(value.filter(item => item.id !== track.id))} aria-label={`Remove ${track.title}`}><X /></button>
+        </span>
+      ))}
+      <input
+        value={query}
+        onChange={event => { setQuery(event.target.value); }}
+        onKeyDown={onKeyDown}
+        placeholder={value.length ? "" : "Search tracks"}
+        aria-label={label}
+      />
+    </div>
     {results.length > 0 && <div className={styles.results}>{results.map(track => <button type="button" key={track.id} onClick={() => add(track)}><strong>{track.title}</strong><small>{track.artist || "Unknown artist"} · {track.album || "Unknown album"}</small></button>)}</div>}
-    {value.length > 0 && <div className={styles.selected}>{value.map(track => <span key={track.id}><b>{track.title}</b><button type="button" onClick={() => onChange(value.filter(item => item.id !== track.id))} aria-label={`Remove ${track.title}`}><X /></button></span>)}</div>}
   </div>;
 }
