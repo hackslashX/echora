@@ -42,5 +42,6 @@ export function streamUrlForQuality(url: string, quality: PlaybackQuality) {
   const next = new URL(url, window.location.origin);
   next.searchParams.set("quality", quality);
   next.searchParams.set("cache", "player");
+  if (next.origin !== window.location.origin) return next.toString();
   return `${next.pathname}${next.search}`;
 }
