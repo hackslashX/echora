@@ -18,7 +18,8 @@ import psycopg
 from .navidrome import NavidromeClient, batch_audio_cache
 
 OPERATIONS = frozenset({"navidrome_sync", "import", "lyrics_backfill", "voice_backfill",
-                        "karaoke_backfill", "recordings_backfill", "audio_profiles", "hum_corpus"})
+                        "karaoke_backfill", "recordings_backfill", "audio_profiles", "hum_corpus",
+                        "semantic_fusion_build"})
 
 
 def _connect():
@@ -139,11 +140,16 @@ def execute(job: dict, context) -> dict | None:
 
     from . import main  # Transitional credential and ownership helpers only.
     credentials = None
-    if operation != 'audio_profiles':
+    if operation not in {'audio_profiles', 'semantic_fusion_build'}:
         credentials = main._load_connection(payload['connection_id'], user_id)
         if credentials is None:
             raise ValueError('Connection unavailable')
     with batch_audio_cache(context.check):
+        if operation == 'semantic_fusion_build':
+            from .semantic_fusion import build_semantic_fusion
+            report({'phase': 'building', 'message': 'Building semantic fusion vectors',
+                    'completed': 0, 'total': 1, 'unit': 'builds'})
+            return build_semantic_fusion(progress=report)
         if kind != 'analysis_batch':
             size = int(os.getenv('ECHORA_BATCH_SIZE', '32'))
             if size <= 0:
