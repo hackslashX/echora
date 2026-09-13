@@ -1,7 +1,8 @@
 "use client";
 
 import { ArrowLeft, Clock3, Disc3, ListMusic, MessageSquareText, Pause, Play, RefreshCw, Save, Trash2, WandSparkles, X } from "lucide-react";
-import { coverArtUrl } from "../media/coverArt";
+import { coverArtUrl } from "../media/coverArt"
+import { mediaUrl } from "../media/mediaOrigin";
 import LoadingImage from "../media/LoadingImage";
 import { useEffect, useRef, useState } from "react";
 import { usePlayer, type PlayerTrack } from "../player/PlayerProvider";
@@ -112,7 +113,7 @@ export default function CurateLibrary() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save the curation"); }
     finally { setBusyAction(null); }
   }
-  function playerTracks(tracks: Track[]): PlayerTrack[] { return tracks.map(track => ({ id: track.id, title: track.title, artist: track.artist, album: track.album, durationSeconds: track.duration_seconds, coverUrl: track.cover_art && connectionId ? coverArtUrl(connectionId, track.cover_art) : undefined, streamUrl: `/analysis/navidrome/connections/${connectionId}/stream/${track.source_id}` })); }
+  function playerTracks(tracks: Track[]): PlayerTrack[] { return tracks.map(track => ({ id: track.id, title: track.title, artist: track.artist, album: track.album, durationSeconds: track.duration_seconds, coverUrl: track.cover_art && connectionId ? coverArtUrl(connectionId, track.cover_art) : undefined, streamUrl: mediaUrl(`/navidrome/connections/${connectionId}/stream/${track.source_id}`) })); }
   async function refresh(curation: Curation) {
     setBusyAction("refresh"); setError("");
     setCurations(items => items.map(item => item.id === curation.id ? { ...item, status: "refreshing", last_error: undefined } : item));

@@ -1,7 +1,8 @@
 "use client";
 
 import { Disc3, ListFilter, LocateFixed, Network, Pause, Play, Route, ScanSearch, Search, X } from "lucide-react";
-import { coverArtUrl } from "../media/coverArt";
+import { coverArtUrl } from "../media/coverArt"
+import { mediaUrl } from "../media/mediaOrigin";
 import LoadingImage from "../media/LoadingImage";
 import { PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { usePlayer } from "../player/PlayerProvider";
@@ -169,7 +170,7 @@ export default function MusicGalaxy() {
   function playerTrack(point: Point | JourneyStep) {
     if (!connectionId || !point.source_id) return null;
     return { id: point.id, title: point.title, artist: point.artist, album: point.album, durationSeconds: point.duration_seconds,
-      streamUrl: `/analysis/navidrome/connections/${connectionId}/stream/${encodeURIComponent(point.source_id)}`,
+      streamUrl: mediaUrl(`/navidrome/connections/${connectionId}/stream/${encodeURIComponent(point.source_id)}`),
       coverUrl: point.cover_art ? coverArtUrl(connectionId, point.cover_art) : undefined };
   }
   function generateJourney(destination: Point) {
