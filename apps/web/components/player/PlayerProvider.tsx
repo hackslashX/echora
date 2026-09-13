@@ -5,8 +5,17 @@ import { sizedPlayerCoverArtUrl } from "../media/coverArt";
 import { paletteFromPixels, type TrackPalette } from "./artworkPalette";
 import FullscreenPlayer from "./FullscreenPlayer";
 import { readPlaybackPreferences, streamUrlForQuality } from "./playbackPreferences";
+import { mediaUrl } from "../media/mediaOrigin";
 
-export type PlayerTrack = { id: string; title: string; artist?: string; album?: string; durationSeconds?: number; streamUrl: string; coverUrl?: string };
+export type PlayerTrack = { id: string; title: string; artist?: string; album?: string; durationSeconds?: number; streamUrl: string; coverUrl?: string; connectionId?: string; sourceId?: string };
+
+function scrobble(track: PlayerTrack | null, submission: boolean) {
+  if (!track?.connectionId || !track.sourceId) return;
+  fetch(mediaUrl("/navidrome/scrobble"), {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ connection_id: track.connectionId, song_id: track.sourceId, submission }),
+  }).catch(() => {});
+}
 export type AudioQuality = { codec?: string; content_type?: string; bit_rate_kbps?: number; bit_depth?: number; sample_rate_hz?: number; channels?: number; lossless?: boolean; streamQuality: "original" | "320" | "120" };
 export type PlayerLyrics = { trackId: string; available: boolean; karaoke?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[]; text?: string; language?: string; provenance?: { synced?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[] } };
 export type MelodyPreview = { source: string; points: { time_seconds: number; pitch: number | null }[] };
@@ -86,6 +95,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const activateQueueIndexRef = useRef<(index: number) => void>(() => {});
   const nextRef = useRef<() => void>(() => {});
   const previousRef = useRef<() => void>(() => {});
+  const listenedRef = useRef(0);
+  const announcedRef = useRef("");
   const [track, setTrack] = useState<PlayerTrack | null>(null);
   const [waveformData, setWaveformData] = useState<{ trackId: string; peaks: number[] | null; melody: MelodyPreview | null } | null>(null);
   const waveform = waveformData?.trackId === track?.id ? waveformData?.peaks ?? null : null;
@@ -120,18 +131,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const player = new Audio(); audio.current = player;
-    const time = () => { setCurrentTime(player.currentTime || 0); publishMediaPosition(player, trackRef.current?.durationSeconds); };
+    const time = () => { listenedRef.current = player.currentTime || 0; setCurrentTime(player.currentTime || 0); publishMediaPosition(player, trackRef.current?.durationSeconds); };
     const metadata = () => {
       const canonical = trackRef.current?.durationSeconds;
       setDuration(current => canonical && canonical > 0 ? canonical : Number.isFinite(player.duration) && player.duration > 0 ? player.duration : current);
       publishMediaPosition(player, canonical);
     };
     const progress = () => setBuffered(player.buffered.length ? player.buffered.end(player.buffered.length - 1) : 0);
-    const ended = () => { window.dispatchEvent(new CustomEvent("echora:playback-state", { detail: false })); publishPalette(null); if (queueIndexRef.current >= 0 && queueIndexRef.current < queueRef.current.length - 1) activateQueueIndexRef.current(queueIndexRef.current + 1); else setPlaying(false); };
+    const ended = () => { scrobble(trackRef.current, true); window.dispatchEvent(new CustomEvent("echora:playback-state", { detail: false })); publishPalette(null); if (queueIndexRef.current >= 0 && queueIndexRef.current < queueRef.current.length - 1) activateQueueIndexRef.current(queueIndexRef.current + 1); else setPlaying(false); };
     const paused = () => { window.dispatchEvent(new CustomEvent("echora:playback-state", { detail: false })); setPlaying(false); publishPalette(null); if (hasMediaSession()) navigator.mediaSession.playbackState = "paused"; };
     const waiting = () => setBuffering(true);
     const ready = () => setBuffering(false);
-    const started = () => { window.dispatchEvent(new CustomEvent("echora:playback-state", { detail: true })); setPlaying(true); setBuffering(false); publishPalette(paletteRef.current); if (hasMediaSession()) navigator.mediaSession.playbackState = "playing"; publishMediaPosition(player, trackRef.current?.durationSeconds); };
+    const started = () => { window.dispatchEvent(new CustomEvent("echora:playback-state", { detail: true })); setPlaying(true); setBuffering(false); publishPalette(paletteRef.current); if (hasMediaSession()) navigator.mediaSession.playbackState = "playing"; publishMediaPosition(player, trackRef.current?.durationSeconds); const current = trackRef.current; if (current?.sourceId && announcedRef.current !== current.sourceId + player.currentSrc) { announcedRef.current = current.sourceId + player.currentSrc; scrobble(current, false); } };
     const setAction = (action: MediaSessionAction, handler: MediaSessionActionHandler | null) => { try { navigator.mediaSession.setActionHandler(action, handler); } catch {} };
     if (hasMediaSession()) {
       setAction("play", () => { startAnalysis(); player.play().catch(() => setPlaying(false)); });
@@ -220,6 +231,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   function load(next: PlayerTrack) {
     const player = audio.current; if (!player) return;
+    const previous = trackRef.current;
+    if (previous?.sourceId && previous.sourceId !== next.sourceId) {
+      const seconds = listenedRef.current;
+      if (seconds >= (previous.durationSeconds || 0) / 2 || seconds >= 240) scrobble(previous, true);
+    }
+    listenedRef.current = 0; announcedRef.current = "";
     paletteRef.current = null; paletteTrackRef.current = next.id; trackRef.current = next; setBuffered(0); setBuffering(true); publishPalette(null); window.dispatchEvent(new CustomEvent("echora:track-change", { detail: next.id }));
     publishMediaMetadata(next);
     loadLyrics(next);

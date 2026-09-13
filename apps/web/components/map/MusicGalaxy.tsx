@@ -171,6 +171,7 @@ export default function MusicGalaxy() {
     if (!connectionId || !point.source_id) return null;
     return { id: point.id, title: point.title, artist: point.artist, album: point.album, durationSeconds: point.duration_seconds,
       streamUrl: mediaUrl(`/navidrome/connections/${connectionId}/stream/${encodeURIComponent(point.source_id)}`),
+      connectionId, sourceId: point.source_id,
       coverUrl: point.cover_art ? coverArtUrl(connectionId, point.cover_art) : undefined };
   }
   function generateJourney(destination: Point) {

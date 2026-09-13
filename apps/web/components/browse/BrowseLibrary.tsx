@@ -91,6 +91,7 @@ export default function BrowseLibrary() {
     player.play({
       id: track.id, title: track.title, artist: track.artist, album: track.album, durationSeconds: track.duration_seconds,
       streamUrl: mediaUrl(`/navidrome/connections/${connectionId}/stream/${encodeURIComponent(track.source_id)}`),
+      connectionId, sourceId: track.source_id,
       coverUrl: track.cover_art ? coverArtUrl(connectionId, track.cover_art) : undefined,
     });
   }
