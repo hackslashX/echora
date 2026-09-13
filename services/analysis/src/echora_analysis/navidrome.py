@@ -207,6 +207,11 @@ class NavidromeClient:
         response.raise_for_status()
         return response.content, response.headers.get("content-type", "image/jpeg")
 
+    def scrobble(self, song_id: str, submission: bool = True) -> None:
+        """Subsonic scrobble: submission=False marks the song as now playing,
+        submission=True records a completed play (feeds Navidrome play counts)."""
+        self._request("scrobble", id=song_id, submission="true" if submission else "false")
+
     def transcode_chunks(self, song_id: str, max_bit_rate: int = 320, range_header: str | None = None) -> Iterator[bytes]:
         headers = {"Range": range_header} if range_header else {}
         with self.client.stream(

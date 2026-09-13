@@ -129,6 +129,10 @@ def _prepare(curation, user_id, connection):
         track_limit=curation["track_limit"], refresh_mode=curation["refresh_mode"],
         target_language=str(curation.get("target_language") or ""), language_strictness=str(curation.get("language_strictness") or "primarily"),
         existing_track_ids=existing,
+        journey_start_track_id=curation.get("journey_start_track_id"),
+        journey_stop_track_ids=[uuid.UUID(str(value)) for value in (curation.get("journey_stop_track_ids") or [])],
+        journey_end_track_id=curation.get("journey_end_track_id"),
+        journey_lyrics_weight=int(curation.get("journey_lyrics_weight") if curation.get("journey_lyrics_weight") is not None else 25),
     )
     result = main._preview_curation(user_id, curation["navidrome_connection_id"], request)
     if not result["tracks"]:
@@ -148,6 +152,11 @@ def _prepare(curation, user_id, connection):
         "lookback_days": request.lookback_days,
         "track_limit": request.track_limit, "refresh_mode": request.refresh_mode,
         "target_language": request.target_language, "language_strictness": request.language_strictness,
+        **({"journey_start": None, "journey_stops": [], "journey_end": None} if request.curation_type == "sonic_journey" else {}),
+        "journey_start_track_id": str(request.journey_start_track_id) if request.journey_start_track_id else None,
+        "journey_stop_track_ids": [str(value) for value in request.journey_stop_track_ids],
+        "journey_end_track_id": str(request.journey_end_track_id) if request.journey_end_track_id else None,
+        "journey_lyrics_weight": request.journey_lyrics_weight,
         "references": result["references"], "model": result["model"],
         "weights": result.get("weights"), "lyrics_coverage": result.get("lyrics_coverage"),
         "signal_weights": result.get("signal_weights"),
@@ -158,6 +167,20 @@ def _prepare(curation, user_id, connection):
         "audio_profile_coverage": result.get("audio_profile_coverage"),
         "familiarity": result.get("familiarity"), "shuffle_seed": result.get("shuffle_seed"),
     }
+    if request.curation_type == "sonic_journey":
+        waypoint_ids = [request.journey_start_track_id, *request.journey_stop_track_ids, request.journey_end_track_id]
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT id::text AS id, title, artist FROM tracks WHERE id=ANY(%s)""",
+                ([value for value in waypoint_ids if value],),
+            )
+            by_id = {row["id"]: row for row in cursor.fetchall()}
+        def reference(value):
+            row = by_id.get(str(value))
+            return {"id": str(value), "title": row["title"], "artist": row.get("artist")} if row else None
+        recipe["journey_start"] = reference(request.journey_start_track_id)
+        recipe["journey_stops"] = [reference(value) for value in request.journey_stop_track_ids]
+        recipe["journey_end"] = reference(request.journey_end_track_id)
     revision = connection.execute("SELECT coalesce(max(revision_number), 0)+1 AS value FROM curation_revisions WHERE curation_id=%s", (curation_id,)).fetchone()["value"]
     return _json({"name": curation["name"], "source_ids": [str(t["source_id"]) for t in result["tracks"]], "tracks": result["tracks"], "recipe": recipe, "revision_number": revision})
 
