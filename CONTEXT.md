@@ -120,6 +120,10 @@ The source of evidence that defines a curation recipe. Language curations use po
 
 The durable curation type, its positive and negative evidence, familiarity mix, ranking mode, and adjustable track limit used to refresh a curation.
 
+## Sound shape
+
+A user's library-relative target for measured musical attributes. Its vocals axis expresses the desired balance between vocal and instrumental recordings, not a separate request for two independent signals.
+
 ## Familiarity mix
 
 A per-curation target split between relevant tracks played during its lookback window and relevant discovery tracks not played during that window. Recent play frequency boosts familiar candidates. The final membership is shuffled before publishing.

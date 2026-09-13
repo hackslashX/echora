@@ -371,3 +371,54 @@ def test_remaining_familiar_matches_are_labeled_as_familiar(fake_text_embeddings
     )
     assert len(selected) == 2
     assert {track["evidence"]["selection_pool"] for track in selected} == {"familiar"}
+
+
+def test_sound_profile_uses_library_relative_measured_descriptors():
+    rows = [
+        {"id": "slow", "title": "Slow", "artist": "A", "sound_descriptors": {"pace": 80.0, "energy": -22.0}},
+        {"id": "target", "title": "Target", "artist": "B", "sound_descriptors": {"pace": 120.0, "energy": -14.0}},
+        {"id": "fast", "title": "Fast", "artist": "C", "sound_descriptors": {"pace": 150.0, "energy": -7.0}},
+    ]
+    selected, _ = rank_curation(
+        rows, np.eye(3, dtype=np.float32), "", "", track_limit=3, refresh_mode="fresh",
+        sound_profile={"pace": .5, "energy": .5}, shuffle_seed=1, minimum_match_percentile=0,
+    )
+    by_id = {track["id"]: track for track in selected}
+    assert by_id["target"]["score"] > by_id["slow"]["score"]
+    assert by_id["target"]["score"] > by_id["fast"]["score"]
+    assert by_id["target"]["evidence"]["sound_profile"]["pace"]["value"] == 120.0
+
+
+def test_sound_profile_ignores_unavailable_axes_per_track():
+    rows = [
+        {"id": "measured", "title": "Measured", "artist": "A", "sound_descriptors": {"pace": 100.0}},
+        {"id": "missing", "title": "Missing", "artist": "B", "sound_descriptors": {}},
+        {"id": "other", "title": "Other", "artist": "C", "sound_descriptors": {"pace": 140.0}},
+    ]
+    selected, _ = rank_curation(
+        rows, np.eye(3, dtype=np.float32), "", "", track_limit=3, refresh_mode="fresh",
+        sound_profile={"pace": .0}, shuffle_seed=1, minimum_match_percentile=0,
+    )
+    by_id = {track["id"]: track for track in selected}
+    assert by_id["missing"]["score"] == .5
+    assert by_id["missing"]["evidence"]["sound_profile"] == {}
+
+
+def test_sound_profile_vocals_blends_vocal_and_instrumental_rankings():
+    rows = [
+        {"id": "instrumental", "title": "Instrumental", "artist": "A", "sound_descriptors": {"vocals": 0.05}},
+        {"id": "mixed", "title": "Mixed", "artist": "B", "sound_descriptors": {"vocals": 0.5}},
+        {"id": "vocal", "title": "Vocal", "artist": "C", "sound_descriptors": {"vocals": 0.95}},
+    ]
+
+    def scores(target: float) -> dict[str, float]:
+        selected, _ = rank_curation(
+            rows, np.eye(3, dtype=np.float32), "", "", track_limit=3, refresh_mode="fresh",
+            sound_profile={"vocals": target}, shuffle_seed=1, minimum_match_percentile=0,
+        )
+        return {track["id"]: track["score"] for track in selected}
+
+    instrumental = scores(0)
+    vocal = scores(1)
+    assert instrumental["instrumental"] > instrumental["vocal"]
+    assert vocal["vocal"] > vocal["instrumental"]

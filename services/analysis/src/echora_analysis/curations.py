@@ -13,7 +13,7 @@ from .concepts import combine_concept_percentiles, empirical_percentiles
 # promotion and the discovery pool both draw from inside this pool; anything
 # below it only appears when the pool cannot fill the playlist.
 MATCH_PERCENTILE = 0.75
-CURATION_SCORING_REVISION = 4
+CURATION_SCORING_REVISION = 5
 EXAMPLE_COMPONENT_WEIGHTS = {
     "muq_global": 0.50,
     "muq_modes": 0.20,
@@ -177,6 +177,7 @@ def rank_curation(
     acoustic_modes: list[ModeProfile | None] | None = None,
     context_track_ids: list[str] | None = None,
     eligible_track_ids: set[str] | None = None,
+    sound_profile: dict[str, float] | None = None,
     minimum_match_percentile: float = MATCH_PERCENTILE,
 ) -> tuple[list[dict[str, object]], dict[str, list[dict[str, str]]]]:
     """Rank a curation corpus across the sound (semantic) and themes (lyrics) channels.
@@ -206,6 +207,7 @@ def rank_curation(
         sound_negative_prompts, themes_negative_prompts,
         lyrics_positive_queries is not None and len(lyrics_positive_queries) > 0,
         lyrics_negative_queries is not None and len(lyrics_negative_queries) > 0,
+        sound_profile,
     ))
     structured = any(value is not None for value in (
         sound_prompts, themes_prompts, sound_negative_prompts, themes_negative_prompts,
@@ -452,6 +454,50 @@ def rank_curation(
             else:
                 score = semantic_percentiles
             percentiles = np.asarray(score, dtype=np.float32)
+    sound_profile = sound_profile or {}
+    profile_evidence: list[dict[str, object]] = [{} for _ in rows]
+    if sound_profile:
+        profile_parts: list[np.ndarray] = []
+        for axis, target in sound_profile.items():
+            raw = np.asarray([row.get("sound_descriptors", {}).get(axis, np.nan) for row in rows], dtype=np.float32)
+            available = np.isfinite(raw)
+            if available.sum() < 2:
+                continue
+            # Every axis is percentile-ranked within this library. The target
+            # is therefore meaningful for a collection with unusual mastering
+            # or a narrow tempo range, while raw units stay in the evidence.
+            actual = empirical_percentiles(raw, available)
+            if axis == "vocals":
+                # One vertex controls a continuous vocal-to-instrumental
+                # preference. Instrumental is the inverse of this same vocal
+                # signal, so it must not become a second, double-counted axis.
+                vocal_weight = float(target)
+                instrumental_weight = 1.0 - vocal_weight
+                closeness = vocal_weight * actual + instrumental_weight * (1.0 - actual)
+            else:
+                closeness = 1.0 - np.abs(actual - float(target))
+            profile_parts.append(np.where(available, closeness, np.nan))
+            for index in np.flatnonzero(available):
+                evidence = {
+                    "target": float(target), "actual_percentile": float(actual[index]),
+                    "value": float(raw[index]), "closeness": float(closeness[index]),
+                }
+                if axis == "vocals":
+                    evidence.update({
+                        "vocal_weight": vocal_weight,
+                        "instrumental_weight": instrumental_weight,
+                        "instrumental_percentile": float(1.0 - actual[index]),
+                    })
+                profile_evidence[index][axis] = evidence
+        if profile_parts:
+            profile_values = np.asarray(profile_parts, dtype=np.float32)
+            profile_score = np.nanmean(profile_values, axis=0)
+            profile_available = np.isfinite(profile_score)
+            # An unavailable descriptor removes this signal for that track;
+            # it is not evidence that the track is a poor match.
+            score = np.where(profile_available, (score + profile_score) / 2, score)
+            percentiles = np.asarray(score, dtype=np.float32)
+
     adjusted = score.copy()
     existing = set(existing_track_ids or [])
     if refresh_mode == "stable" and existing:
@@ -513,6 +559,7 @@ def rank_curation(
                 "lyrics_available": bool(lyrics_available[index]) if lyrics_available is not None else False,
                 "listen_count": count, "selection_pool": "familiar" if familiar else "discovery",
                 "tag_percentiles": tag_evidence.get(str(row["id"]), []),
+                "sound_profile": profile_evidence[index],
                 "example_similarity": example_evidence[index],
             },
         })

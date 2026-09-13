@@ -20,6 +20,7 @@ import TagInput, { type Tag } from "./TagInput";
 import TrackReferencePicker, { type ReferenceTrack } from "./TrackReferencePicker";
 import { useCurationJobs } from "../jobs/useCurationJobs";
 import LanguagePicker from "./LanguagePicker";
+import SoundProfile, { type SoundProfileValues } from "./SoundProfile";
 
 type Reference = { kind: "track" | "artist" | "album"; name: string };
 type Track = { id: string; title: string; artist?: string; album?: string; duration_seconds: number; source_id: string; cover_art?: string; score: number; percentile?: number; position?: number; evidence?: { selection_pool?: "familiar" | "discovery"; listen_count?: number } };
@@ -28,10 +29,10 @@ type LanguageReport = { target: string; strictness: "only" | "primarily" | "spri
 type Preview = { tracks: Track[]; references: { positive: Reference[]; negative: Reference[] }; corpus_size: number; weights?: { semantic: number; lyrics: number }; signal_weights?: Record<string, number>; familiarity?: Familiarity; language?: LanguageReport | null };
 const CURATION_LANGUAGES = [["", "Any language"], ["en", "English"], ["hi", "Hindi / Hinglish"], ["ur", "Urdu"], ["ja", "Japanese"], ["ko", "Korean"], ["zh", "Mandarin"], ["es", "Spanish"], ["fr", "French"], ["de", "German"], ["pt", "Portuguese"], ["it", "Italian"], ["ru", "Russian"], ["ar", "Arabic"], ["id", "Indonesian"], ["th", "Thai"]] as const;
 const LANGUAGE_STRICTNESS = [["only", "Only"], ["primarily", "Primarily"], ["sprinkle", "Sprinkle"]] as const;
-type RevisionRecipe = { references?: { positive: Reference[]; negative: Reference[] }; weights?: { semantic: number; lyrics: number }; signal_weights?: Record<string, number>; familiarity?: Familiarity; target_language?: string; language_strictness?: "only" | "primarily" | "sprinkle"; journey_start?: ReferenceTrack; journey_stops?: ReferenceTrack[]; journey_end?: ReferenceTrack; journey_lyrics_weight?: number };
+type RevisionRecipe = { references?: { positive: Reference[]; negative: Reference[] }; weights?: { semantic: number; lyrics: number }; signal_weights?: Record<string, number>; familiarity?: Familiarity; target_language?: string; language_strictness?: "only" | "primarily" | "sprinkle"; sound_profile?: SoundProfileValues; journey_start?: ReferenceTrack; journey_stops?: ReferenceTrack[]; journey_end?: ReferenceTrack; journey_lyrics_weight?: number };
 type CurationType = "combined" | "language" | "examples" | "time_of_day" | "sonic_journey";
 type CurationAspect = "language" | "examples" | "time_of_day" | "sonic";
-type Curation = { id: string; name: string; curation_type: CurationType; positive_prompt: string; negative_prompt: string; sound_prompts?: string[]; themes_prompts?: string[]; sound_negative_prompts?: string[]; themes_negative_prompts?: string[]; sound_weight?: number; positive_tracks: ReferenceTrack[]; negative_tracks: ReferenceTrack[]; familiarity_percent: number; period_start?: string; period_end?: string; time_of_day_enabled?: boolean; lookback_days: number; track_limit: number; refresh_mode: "stable" | "fresh"; refresh_enabled: boolean; status: string; last_error?: string; last_refreshed_at?: string; next_refresh_at?: string; recipe?: RevisionRecipe; tracks: Track[] };
+type Curation = { id: string; name: string; curation_type: CurationType; positive_prompt: string; negative_prompt: string; sound_prompts?: string[]; themes_prompts?: string[]; sound_negative_prompts?: string[]; themes_negative_prompts?: string[]; sound_weight?: number; sound_profile?: SoundProfileValues; positive_tracks: ReferenceTrack[]; negative_tracks: ReferenceTrack[]; familiarity_percent: number; period_start?: string; period_end?: string; time_of_day_enabled?: boolean; lookback_days: number; track_limit: number; refresh_mode: "stable" | "fresh"; refresh_enabled: boolean; status: string; last_error?: string; last_refreshed_at?: string; next_refresh_at?: string; recipe?: RevisionRecipe; tracks: Track[] };
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/analysis${path}`, options);
@@ -56,6 +57,7 @@ export default function CurateLibrary() {
   const [soundTags, setSoundTags] = useState<Tag[]>([]);
   const [themeTags, setThemeTags] = useState<Tag[]>([]);
   const [soundWeight, setSoundWeight] = useState(50);
+  const [soundProfile, setSoundProfile] = useState<SoundProfileValues>({});
   const [positiveTracks, setPositiveTracks] = useState<ReferenceTrack[]>([]);
   const [negativeTracks, setNegativeTracks] = useState<ReferenceTrack[]>([]);
   const [familiarityPercent, setFamiliarityPercent] = useState(70);
@@ -97,8 +99,9 @@ export default function CurateLibrary() {
   });
   const sound = split(soundTags);
   const themes = split(themeTags);
-  const recipe = { curation_type: activeAspect === "sonic" ? "sonic_journey" : "combined", positive_prompt: positive, negative_prompt: negative, sound_prompts: sound.positive, themes_prompts: themes.positive, sound_negative_prompts: sound.negative, themes_negative_prompts: themes.negative, sound_weight: soundWeight, positive_track_ids: positiveTracks.map(track => track.id), negative_track_ids: negativeTracks.map(track => track.id), familiarity_percent: familiarityPercent, period_start: timeEnabled ? periodStart : null, period_end: timeEnabled ? periodEnd : null, time_of_day_enabled: timeEnabled, lookback_days: 7, track_limit: trackLimit, refresh_mode: refreshMode, target_language: targetLanguage, language_strictness: languageStrictness, journey_start_track_id: journeyStart[0]?.id || null, journey_stop_track_ids: journeyStops.map(track => track.id), journey_end_track_id: journeyEnd[0]?.id || null, journey_lyrics_weight: journeyLyricsWeight };
-  const hasPositiveEvidence = Boolean(targetLanguage || sound.positive.length || themes.positive.length || positive.trim() || positiveTracks.length || (timeEnabled && historyConnected && periodStart && periodEnd) || (journeyStart.length && journeyEnd.length));
+  const recipe = { curation_type: activeAspect === "sonic" ? "sonic_journey" : "combined", positive_prompt: positive, negative_prompt: negative, sound_prompts: sound.positive, themes_prompts: themes.positive, sound_negative_prompts: sound.negative, themes_negative_prompts: themes.negative, sound_weight: soundWeight, sound_profile: soundProfile, positive_track_ids: positiveTracks.map(track => track.id), negative_track_ids: negativeTracks.map(track => track.id), familiarity_percent: familiarityPercent, period_start: timeEnabled ? periodStart : null, period_end: timeEnabled ? periodEnd : null, time_of_day_enabled: timeEnabled, lookback_days: 7, track_limit: trackLimit, refresh_mode: refreshMode, target_language: targetLanguage, language_strictness: languageStrictness, journey_start_track_id: journeyStart[0]?.id || null, journey_stop_track_ids: journeyStops.map(track => track.id), journey_end_track_id: journeyEnd[0]?.id || null, journey_lyrics_weight: journeyLyricsWeight };
+  const hasSoundProfile = Object.keys(soundProfile).length > 0;
+  const hasPositiveEvidence = Boolean(targetLanguage || sound.positive.length || themes.positive.length || positive.trim() || positiveTracks.length || hasSoundProfile || (timeEnabled && historyConnected && periodStart && periodEnd) || (journeyStart.length && journeyEnd.length));
   async function generate() {
     setBusyAction("preview"); setError("");
     try {
@@ -143,7 +146,7 @@ export default function CurateLibrary() {
     setPositive(curation.positive_prompt); setNegative(curation.negative_prompt);
     setSoundTags((curation.sound_prompts || []).map(label => ({ label, negative: false })).concat((curation.sound_negative_prompts || []).map(label => ({ label, negative: true }))));
     setThemeTags((curation.themes_prompts || []).map(label => ({ label, negative: false })).concat((curation.themes_negative_prompts || []).map(label => ({ label, negative: true }))));
-    setSoundWeight(curation.sound_weight ?? 50); setPositiveTracks(curation.positive_tracks || []); setNegativeTracks(curation.negative_tracks || []);
+    setSoundWeight(curation.sound_weight ?? 50); setSoundProfile(curation.recipe?.sound_profile || curation.sound_profile || {}); setPositiveTracks(curation.positive_tracks || []); setNegativeTracks(curation.negative_tracks || []);
     setFamiliarityPercent(curation.familiarity_percent ?? 70); setPeriodStart(curation.period_start || "18:00"); setPeriodEnd(curation.period_end || "23:00");
     setTimeEnabled(curation.time_of_day_enabled ?? curation.curation_type === "time_of_day");
     setTrackLimit(curation.track_limit); setRefreshMode(curation.refresh_mode); setRefreshEnabled(curation.refresh_enabled);
@@ -157,7 +160,7 @@ export default function CurateLibrary() {
   }
   function resetRecipeForm() {
     setName(""); setActiveAspect("language"); setPositive(""); setNegative("");
-    setSoundTags([]); setThemeTags([]); setSoundWeight(50);
+    setSoundTags([]); setThemeTags([]); setSoundWeight(50); setSoundProfile({});
     setPositiveTracks([]); setNegativeTracks([]);
     setFamiliarityPercent(70); setPeriodStart("18:00"); setPeriodEnd("23:00"); setTimeEnabled(false);
     setTrackLimit(30); setRefreshMode("stable"); setRefreshEnabled(true); setTargetLanguage(""); setLanguageStrictness("primarily"); setError("");
@@ -184,6 +187,7 @@ export default function CurateLibrary() {
         <section className={styles.commonSettings} aria-label="Playlist settings">
           <label><span>Playlist name</span><input value={name} onChange={event => setName(event.target.value)} placeholder="Late-night circuitry" /></label>
         </section>
+        <SoundProfile value={soundProfile} onChange={setSoundProfile} />
         <nav className={styles.types} aria-label="Curation aspects"><button className={activeAspect === "language" ? styles.activeType : ""} onClick={() => setActiveAspect("language")}><MessageSquareText /><span>Language</span>{targetLanguage && <small>Active</small>}</button><button className={activeAspect === "examples" ? styles.activeType : ""} onClick={() => setActiveAspect("examples")}><ListMusic /><span>Like / not like</span>{positiveTracks.length > 0 && <small>{positiveTracks.length} liked</small>}</button><button className={activeAspect === "time_of_day" ? styles.activeType : ""} onClick={() => setActiveAspect("time_of_day")}><Clock3 /><span>Time of day</span>{timeEnabled ? <small>Active</small> : !historyConnected ? <small>Needs Last.fm</small> : null}</button><button className={activeAspect === "sonic" ? styles.activeType : ""} onClick={() => setActiveAspect("sonic")}><Route /><span>Sonic journey</span>{journeyStart.length > 0 && journeyEnd.length > 0 ? <small>{journeyStops.length + 2} stops</small> : null}</button></nav>
         {activeAspect === "language" && <section className={styles.aspectPanel}><div className={styles.languageRow}><label className={styles.languagePick}><span>Language</span><LanguagePicker value={targetLanguage} onChange={setTargetLanguage} options={CURATION_LANGUAGES.map(([code, label]) => [code, label])} ariaLabel="Target language" /></label>{targetLanguage && <div className={styles.strictness} role="group" aria-label="Language strictness">{LANGUAGE_STRICTNESS.map(([value, label]) => <button key={value} type="button" className={languageStrictness === value ? styles.activeStrictness : ""} onClick={() => setLanguageStrictness(value as "only" | "primarily" | "sprinkle")}>{label}</button>)}</div>}</div>{targetLanguage && <p className={styles.languageHint}>{languageStrictness === "only" ? "Only tracks with confident lyrics in that language are included; the list may be shorter than the track limit." : languageStrictness === "primarily" ? "Primarily that language first, then the closest musical matches fill the playlist." : "All tracks compete, with a preference bonus for that language."}</p>}<Alert tone="info" className={styles.tagHelp}><b>Enter</b> adds each tag. <b className={styles.plus}>+guitars</b> matches guitar music; <b className={styles.minus}>-synths</b> keeps it out. Sound tags score the recording; themes score the lyrics.</Alert><TagInput label="Sound · instruments and production" placeholder="guitars · -synths · Enter to add" tags={soundTags} onChange={setSoundTags} />{sound.positive.length > 0 && themes.positive.length > 0 && <div className={styles.familiarity}><header><span>Blend</span><b>{soundWeight}% sound · {100 - soundWeight}% themes</b></header><input type="range" min="0" max="100" step="5" value={soundWeight} onChange={event => setSoundWeight(Number(event.target.value))} aria-label="Sound and themes blend" /><small>How much the recording versus the lyrics decide the ranking.</small></div>}<TagInput label="Themes · what the words are about" placeholder="heartbreak · -party · Enter to add" tags={themeTags} onChange={setThemeTags} /></section>}
         {activeAspect === "examples" && <section className={styles.aspectPanel}><TrackReferencePicker label="Songs like" value={positiveTracks} onChange={setPositiveTracks} /><TrackReferencePicker label="Songs not like" value={negativeTracks} onChange={setNegativeTracks} /><p className={styles.aspectHint}>These examples combine with any language, sound, themes, and listening-period evidence you configured.</p></section>}

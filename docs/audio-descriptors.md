@@ -15,7 +15,9 @@ The decoder supplies stereo 44.1 kHz audio. The pipeline stores:
 - Whole-track tempo, beat times, tempo estimates, and the raw Essentia multifeature confidence for audio at least ten seconds long. Half/double-tempo ambiguity remains explicit.
 - Whole-track key and scale with raw profile-correlation strength. This does not analyze key changes or provide verse/chorus labels.
 
-Silence produces null levels rather than JSON infinity, and no fabricated tempo or key. Short audio carries warnings for unavailable measurements. Confidence values are extractor evidence, not calibrated probabilities. No descriptor changes curation ranking or playlist order in this revision.
+Silence produces null levels rather than JSON infinity, and no fabricated tempo or key. Short audio carries warnings for unavailable measurements. Confidence values are extractor evidence, not calibrated probabilities.
+
+Curation sound profiles can use pace, energy, brightness, motion, vocal presence, and dynamics as library-relative soft ranking targets. Each available axis is percentile-ranked inside the user's visible library. The vocals axis blends the vocal percentile with its inverse instrumental percentile as the user moves the radar point. Missing or insufficient measurements remove that axis from a track's profile score rather than counting as a mismatch. Raw tempo, key, beat times, and loudness do not act as hard filters or control playlist order in this revision.
 
 The record includes the descriptor revision, sample rate, duration, and Essentia version when used. Bump `DESCRIPTOR_REVISION` when changing measurement settings or algorithms.
 
@@ -35,6 +37,6 @@ Authenticated users can inspect a visible track:
 GET /library/tracks/{track_id}/audio-descriptors
 ```
 
-The response includes descriptor status, measurements, optional vocal activity, and `used_in_curation: false`. Missing measurements return `pending`. A track outside the user's visible library returns 404.
+The response includes descriptor status, measurements, optional vocal activity, and `used_in_curation: {"sound_profile": true}`. Missing measurements return `pending`. A track outside the user's visible library returns 404.
 
 After deploying the migrations, run a normal Navidrome synchronization to backfill measurements. This adds one audio download and a CPU analysis pass for tracks without a completed descriptor record.

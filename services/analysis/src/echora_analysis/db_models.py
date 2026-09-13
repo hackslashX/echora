@@ -99,6 +99,7 @@ class Curation(Base):
     sound_negative_prompts: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     themes_negative_prompts: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     sound_weight: Mapped[int] = mapped_column(Integer, default=50)
+    sound_profile: Mapped[dict] = mapped_column(JSONB, default=dict)
     positive_track_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
     negative_track_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
     familiarity_percent: Mapped[int] = mapped_column(Integer, default=70)

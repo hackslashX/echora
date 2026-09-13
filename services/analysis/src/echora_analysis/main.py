@@ -41,7 +41,7 @@ from .audio_profiles import (
     SUPPORTED_PROFILE_MODELS,
 )
 from .concepts import combine_concept_percentiles, empirical_percentiles, expand_tag_groups, predefined_concepts, score_concept
-from .curations import CURATION_SCORING_REVISION, EXAMPLE_COMPONENT_WEIGHTS, rank_curation
+from .curations import CURATION_SCORING_REVISION, EXAMPLE_COMPONENT_WEIGHTS, MATCH_PERCENTILE, rank_curation
 from .db import session_scope
 from . import jobs
 from .db_models import Curation, NavidromeConnection, OidcAllowedEmail, OidcSetting, User, UserPreference, UserSession
@@ -165,6 +165,16 @@ class ConceptLensRequest(BaseModel):
     representation: str = Field(default="hybrid", pattern="^(semantic|lyrics|hybrid)$")
 
 
+class SoundProfileRequest(BaseModel):
+    """Library-relative targets for measured audio descriptors."""
+    pace: float | None = Field(default=None, ge=0, le=1)
+    energy: float | None = Field(default=None, ge=0, le=1)
+    brightness: float | None = Field(default=None, ge=0, le=1)
+    motion: float | None = Field(default=None, ge=0, le=1)
+    vocals: float | None = Field(default=None, ge=0, le=1)
+    dynamics: float | None = Field(default=None, ge=0, le=1)
+
+
 class CurationPreviewRequest(BaseModel):
     curation_type: str = Field(default="combined", pattern="^(combined|language|examples|time_of_day|sonic_journey)$")
     positive_prompt: str = Field(default="", max_length=2000)
@@ -174,6 +184,7 @@ class CurationPreviewRequest(BaseModel):
     sound_negative_prompts: list[str] = Field(default_factory=list, max_length=12)
     themes_negative_prompts: list[str] = Field(default_factory=list, max_length=12)
     sound_weight: int = Field(default=50, ge=0, le=100)
+    sound_profile: SoundProfileRequest = Field(default_factory=SoundProfileRequest)
     positive_track_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
     negative_track_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
     familiarity_percent: int = Field(default=70, ge=0, le=100)
@@ -997,7 +1008,7 @@ def track_audio_descriptors(
         "status": descriptors["status"] if descriptors else "pending",
         "descriptors": descriptors,
         "vocal_activity": vocal,
-        "used_in_curation": False,
+        "used_in_curation": {"sound_profile": True},
     }
 
 
@@ -1557,7 +1568,9 @@ def _curation_corpus(
                       acoustic_embedding.embedding AS acoustic_embedding,
                       muq_profile.id AS muq_profile_id, mert_profile.id AS mert_profile_id,
                       ts.external_id AS source_id, ts.source_data->>'coverArt' AS cover_art,
-                      member.group_id::text AS recording_group_id
+                      member.group_id::text AS recording_group_id,
+                      descriptors.descriptors AS audio_descriptors,
+                      vocal_activity.activity AS vocal_activity
                FROM selected_embeddings
                JOIN tracks t ON t.id=selected_embeddings.track_id
                JOIN track_sources ts ON ts.track_id=t.id AND ts.source_type='subsonic'
@@ -1566,6 +1579,17 @@ def _curation_corpus(
                JOIN navidrome_connections nc ON nc.id=%s
                  AND lower(rtrim(nc.url, '/'))=lower(rtrim(l.root_path, '/'))
                LEFT JOIN recording_group_members member ON member.track_id=t.id
+               LEFT JOIN LATERAL (
+                 SELECT descriptors FROM track_audio_descriptors
+                 WHERE track_id=t.id AND status IN ('complete', 'partial')
+                 ORDER BY created_at DESC LIMIT 1
+               ) descriptors ON true
+               LEFT JOIN LATERAL (
+                 SELECT activity.activity FROM track_vocal_activity activity
+                 JOIN current_analysis_runs ar ON ar.id=activity.run_id
+                 WHERE activity.track_id=t.id AND ar.kind='voice_classification'
+                 ORDER BY activity.created_at DESC LIMIT 1
+               ) vocal_activity ON true
                LEFT JOIN LATERAL (
                  SELECT e.embedding::text AS embedding, e.run_id
                  FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
@@ -1662,6 +1686,28 @@ def _curation_corpus(
         }
     semantic_modes = [modes_by_profile.get(row.pop("muq_profile_id")) for row in rows]
     acoustic_modes = [modes_by_profile.get(row.pop("mert_profile_id")) for row in rows]
+    for row in rows:
+        descriptors = row.pop("audio_descriptors", None) or {}
+        rhythm = descriptors.get("rhythm") or {}
+        spectral = descriptors.get("spectral_curve") or []
+        loudness = descriptors.get("loudness") or {}
+        activity = row.pop("vocal_activity", None) or {}
+        activity_windows = activity.get("windows") or []
+        def _mean(values: list[object], field: str) -> float | None:
+            usable = [
+                float(item[field]) for item in values
+                if isinstance(item, dict) and item.get(field) is not None
+                and np.isfinite(float(item[field]))
+            ]
+            return float(np.mean(usable)) if usable else None
+        row["sound_descriptors"] = {
+            "pace": rhythm.get("bpm"),
+            "energy": descriptors.get("rms_dbfs"),
+            "brightness": _mean(spectral, "centroid_hz"),
+            "motion": _mean(spectral, "positive_spectral_flux"),
+            "vocals": _mean(activity_windows, "vocal_activation"),
+            "dynamics": loudness.get("range_lu"),
+        }
     return (
         rows, matrix, lyrics_matrix, lyrics_available, voice_matrix, voice_available,
         semantic_modes, acoustic_matrix if acoustic_dimension else None,
@@ -1830,7 +1876,7 @@ def _preview_curation(
     theme_prompts = theme_tags if structured else ([request.positive_prompt] if request.positive_prompt.strip() else [])
     visible_ids = {str(row["id"]) for row in rows}
     has_language_constraint = bool(request.target_language)
-    if not has_language_constraint and not semantic_prompts and not theme_prompts and not any(
+    if not has_language_constraint and not semantic_prompts and not theme_prompts and not request.sound_profile.model_dump(exclude_none=True) and not any(
         str(value) in visible_ids for value in [*effective_positive_ids, *time_of_day_track_ids]
     ):
         raise HTTPException(status_code=422, detail="None of the Songs like tracks are available in this library")
@@ -1867,6 +1913,7 @@ def _preview_curation(
     rank_limit = len(rows) if language_mode and language_eligible_ids is None else request.track_limit
     expanded_sound_prompts = expand_tag_groups(sound_tags) if structured and sound_tags else None
     expanded_sound_negatives = expand_tag_groups(sound_negatives) if structured and sound_negatives else None
+    has_sound_profile = bool(request.sound_profile.model_dump(exclude_none=True))
     tracks, references = rank_curation(
         rows, matrix, request.positive_prompt, request.negative_prompt,
         rank_limit, request.refresh_mode, [str(value) for value in request.existing_track_ids],
@@ -1880,11 +1927,19 @@ def _preview_curation(
         sound_negative_prompts=expanded_sound_negatives,
         themes_negative_prompts=expand_tag_groups(theme_negatives) if structured and theme_negatives else None,
         sound_weight=request.sound_weight if structured else None,
+        sound_profile=request.sound_profile.model_dump(exclude_none=True),
         semantic_modes=semantic_modes,
         acoustic_matrix=acoustic_matrix, acoustic_available=acoustic_available,
         acoustic_modes=acoustic_modes,
         context_track_ids=[str(value) for value in time_of_day_track_ids],
         eligible_track_ids=language_eligible_ids,
+        # Profile targets are preference scores, not semantic relevance claims.
+        # A profile-only recipe therefore ranks the measured library without
+        # applying the embedding match cutoff intended for text and examples.
+        minimum_match_percentile=(
+            0.0 if has_sound_profile and not (semantic_prompts or theme_prompts or effective_positive_ids or time_of_day_track_ids)
+            else MATCH_PERCENTILE
+        ),
     )
     language_report: dict[str, object] | None = None
     if language_mode:
@@ -1936,6 +1991,8 @@ def _preview_curation(
         signal_weights["examples"] = 1.0
     if time_of_day_track_ids:
         signal_weights["time_of_day"] = 1.0
+    if has_sound_profile:
+        signal_weights["sound_profile"] = 1.0
     signal_total = sum(signal_weights.values())
     if signal_total:
         signal_weights = {
@@ -2043,6 +2100,7 @@ def create_curation(request: CurationCreateRequest, echora_session: str | None =
             sound_negative_prompts=request.sound_negative_prompts,
             themes_negative_prompts=request.themes_negative_prompts,
             sound_weight=request.sound_weight,
+            sound_profile=request.sound_profile.model_dump(exclude_none=True),
             positive_track_ids=request.positive_track_ids, negative_track_ids=request.negative_track_ids,
             familiarity_percent=request.familiarity_percent, period_start=request.period_start,
             period_end=request.period_end, lookback_days=request.lookback_days,
