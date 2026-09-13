@@ -16,6 +16,9 @@ from psycopg.types.json import Jsonb
 
 ACTIVE = ('queued', 'running', 'waiting')
 TERMINAL = ('complete', 'partial', 'failed', 'cancelled')
+# Root jobs whose completion invalidates the semantic fusion vectors.
+FUSION_TRIGGER_KINDS = frozenset({'navidrome_sync', 'import', 'lyrics_backfill',
+                                  'karaoke_backfill', 'voice_backfill', 'audio_profiles'})
 PUBLIC = ('id', 'kind', 'worker_type', 'connection_id', 'parent_id', 'status',
           'cancel_requested', 'progress', 'summary', 'error', 'created_at',
           'updated_at', 'finished_at')
@@ -162,6 +165,21 @@ def _terminal(db, job_id, status, summary=None, error=None):
                     job_id, row['user_id']))
 
 
+def _emit_post_jobs(db, parent, status: str) -> None:
+    """Emit follow-up jobs once a sync-style root job reaches a terminal state.
+
+    Semantic fusion is corpus-level whitening, so it cannot run inside per-track
+    batches. It runs once after the last batch lands. Dedupe collapses repeated
+    emissions while a previous fusion build is still queued or running.
+    """
+    if status not in {'complete', 'partial'}:
+        return
+    if parent['kind'] not in FUSION_TRIGGER_KINDS:
+        return
+    _insert(db, 'semantic_fusion_build', 'analysis', parent['user_id'],
+            parent['connection_id'], {}, 'semantic_fusion_build', None)
+
+
 def _aggregate(db, parent_id):
     if not parent_id:
         return
@@ -187,6 +205,7 @@ def _aggregate(db, parent_id):
                   'partial' if counts['complete'] or counts['partial'] else
                   'failed' if counts['failed'] else 'cancelled')
         _terminal(db, parent_id, status, counts)
+        _emit_post_jobs(db, parent, status)
 
 
 def cancel(job_id, user_id):

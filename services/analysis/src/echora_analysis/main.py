@@ -25,6 +25,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import joinedload
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, HttpUrl, SecretStr
 from starlette.concurrency import run_in_threadpool
@@ -56,6 +57,16 @@ from .navidrome import NavidromeClient, media_navidrome_client
 from .representations import configure_representations
 
 app = FastAPI(title="Echora analysis", version="0.3.0")
+# Browser-facing media (covers, streams) is served cross-origin from the web app
+# when NEXT_PUBLIC_ANALYSIS_ORIGIN is set; canvas palette extraction needs CORS.
+# Origins are explicit: reflecting arbitrary origins with credentials would let
+# any site read responses using the visitor's session cookie.
+_cors_origins = [origin.strip() for origin in os.getenv("ECHORA_CORS_ORIGINS", "").split(",") if origin.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware, allow_origins=_cors_origins, allow_credentials=True,
+        allow_methods=["*"], allow_headers=["*"],
+    )
 app.add_middleware(
     SessionMiddleware, secret_key=os.environ.get("OIDC_SESSION_SECRET", secrets.token_urlsafe(48)),
     session_cookie="echora_oidc_state", same_site="lax",
@@ -872,6 +883,50 @@ def start_karaoke_backfill(
     connection_id: str, echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     return _enqueue_connection_job("karaoke_backfill", connection_id, _session_user(echora_session))
+
+
+@app.post("/library/semantic-fusion/rebuild", status_code=202, dependencies=[Depends(require_user)])
+def start_semantic_fusion_build(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    return jobs.enqueue("semantic_fusion_build", "analysis", _session_user(echora_session)["id"],
+                        dedupe_key="semantic_fusion_build")
+
+
+@app.get("/library/semantic-fusion/status", dependencies=[Depends(require_user)])
+def semantic_fusion_status(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    _session_user(echora_session)
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT count(*) AS fused,
+                      (SELECT count(*) FROM current_embeddings l WHERE l.embedding_type='lyrics'
+                        AND l.window_index IS NULL) AS lyrics,
+                      (SELECT count(*) FROM current_embeddings a WHERE a.embedding_type='audio-track'
+                        AND a.window_index IS NULL) AS audio
+               FROM current_embeddings e WHERE e.embedding_type='semantic_fusion'""")
+        return cursor.fetchone()
+
+
+@app.get("/library/tracks/{track_id}/similar", dependencies=[Depends(require_user)])
+def similar_tracks(
+    track_id: uuid.UUID, limit: int = 20, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    _session_user(echora_session)
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT e.embedding FROM current_embeddings e
+               WHERE e.track_id=%s AND e.embedding_type='semantic_fusion'""", (track_id,))
+        seed = cursor.fetchone()
+        if seed is None:
+            raise HTTPException(status_code=404, detail="Track has no semantic fusion vector")
+        cursor.execute(
+            """SELECT t.id, t.title, t.artist, t.album,
+                      1 - (e.embedding <=> %s::vector) AS similarity
+               FROM current_embeddings e
+               JOIN tracks t ON t.id=e.track_id
+               WHERE e.embedding_type='semantic_fusion' AND e.track_id != %s
+               ORDER BY e.embedding <=> %s::vector LIMIT %s""",
+            (seed["embedding"], track_id, seed["embedding"], max(1, min(limit, 100))),
+        )
+        return {"track_id": str(track_id), "mode": "semantic_fusion", "results": cursor.fetchall()}
 
 
 @app.get("/library/tracks/{track_id}/recording-group", dependencies=[Depends(require_user)])
