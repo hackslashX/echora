@@ -24,6 +24,7 @@ ENV PATH="/opt/venv/bin:$PATH" \
     TORCH_HOME="/models/torch" \
     LID_MODEL_PATH="/models/lid.176.bin" \
     NLTK_DATA="/usr/local/share/nltk_data"
-RUN mkdir -p /models/huggingface && chown -R echora /models
+RUN mkdir -p /models/huggingface /home/echora \
+    && chown -R echora /models /home/echora
 EXPOSE 8000
 CMD ["sh", "-c", "chown -R echora /models && runuser -u echora -- python -m echora_analysis.download_models --prune-only && runuser -u echora -- alembic upgrade head && exec runuser -u echora -- uvicorn echora_analysis.main:app --host 0.0.0.0 --port 8000"]

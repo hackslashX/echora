@@ -434,7 +434,8 @@ def _run_worker_job(worker: subprocess.Popen[str], argv: list[str], timeout: int
 
 
 def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
-                 source_lines: list[dict[str, object]] | None = None) -> dict[str, object]:
+                 source_lines: list[dict[str, object]] | None = None,
+                 separate_vocals: bool | None = None) -> dict[str, object]:
     vendor = Path(__file__).resolve().parents[2] / "vendor" / "fa_kara"
     model_id = os.environ.get("FA_KARA_MODEL_ID", DEFAULT_MODEL_ID)
     model_revision = os.environ.get("FA_KARA_REVISION", DEFAULT_MODEL_REVISION)
@@ -445,7 +446,8 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
         work = Path(directory)
         audio_path = work / "i.audio"
         audio_path.write_bytes(audio)
-        separate_vocals = os.environ.get("FA_KARA_VOCAL_SEPARATION", "false").lower() == "true"
+        if separate_vocals is None:
+            separate_vocals = os.environ.get("FA_KARA_VOCAL_SEPARATION", "false").lower() == "true"
         timeline = _anchored_source_lines(source_lines or [])
         input_text = "\n".join(str(line["text"]) for line in timeline) if timeline else lyrics_text.rstrip("\r\n")
         (work / "i.txt").write_text(input_text + "\n", encoding="utf-8")

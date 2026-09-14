@@ -495,7 +495,7 @@ def settings(echora_session: str | None = Cookie(default=None)) -> dict[str, obj
         if stored_user is None or preference is None:
             raise HTTPException(status_code=404, detail="User settings are unavailable")
         model_settings = session.execute(text(
-            """SELECT karaoke_processing_enabled, hum_processing_enabled
+            """SELECT karaoke_processing_enabled, hum_processing_enabled, transcription_processing_enabled
                FROM analysis_settings WHERE singleton=true"""
         )).one_or_none()
         karaoke_enabled = True if model_settings is None else bool(model_settings[0])
@@ -505,6 +505,7 @@ def settings(echora_session: str | None = Cookie(default=None)) -> dict[str, obj
             "models": {
                 "karaoke_processing_enabled": karaoke_enabled,
                 "hum_processing_enabled": hum_enabled,
+                "transcription_processing_enabled": bool(model_settings and model_settings[2]),
             },
             "timezone": preference.timezone,
             "navidrome": None if connection is None else {
@@ -542,6 +543,22 @@ def update_karaoke_processing_settings(
             )
             pending = int(cursor.fetchone()["pending"])
     return {"enabled": request.enabled, "pending": pending}
+
+
+@app.put("/settings/models/transcription")
+def update_transcription_processing_settings(
+    request: KaraokeProcessingSettingsRequest, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    if not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Administrator access required")
+    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """INSERT INTO analysis_settings (singleton, transcription_processing_enabled, updated_at)
+               VALUES (true,%s,now()) ON CONFLICT (singleton) DO UPDATE
+               SET transcription_processing_enabled=EXCLUDED.transcription_processing_enabled,
+                   updated_at=now()""", (request.enabled,))
+    return {"enabled": request.enabled}
 
 
 @app.put("/settings/models/hum")

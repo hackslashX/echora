@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import hashlib
 import json
+import logging
 import os
 import platform
 import uuid
@@ -40,10 +41,10 @@ def _create_run(connection: psycopg.Connection, model: LyricsEmbeddingModel) -> 
         return cursor.fetchone()[0]
 
 
-def _store_lyrics(connection: psycopg.Connection, track_id: uuid.UUID, result: dict[str, object]) -> uuid.UUID:
+def _store_lyrics(connection: psycopg.Connection, track_id: uuid.UUID, result: dict[str, object]) -> uuid.UUID | None:
     text = result.get("text")
     status = str(result.get("status") or "unavailable")
-    source = "embedded" if text else "none"
+    source = "transcribed" if result.get("ai_generated") else "embedded" if text else "none"
     language_distribution = detect_distribution(str(text) if text else None)
     language = language_distribution.get("primary_language") or result.get("language")
     if language == "xxx":
@@ -55,14 +56,19 @@ def _store_lyrics(connection: psycopg.Connection, track_id: uuid.UUID, result: d
                ON CONFLICT (track_id) DO UPDATE SET source=EXCLUDED.source, text=EXCLUDED.text,
                  language=EXCLUDED.language, provenance=EXCLUDED.provenance,
                  availability_status=EXCLUDED.availability_status, created_at=now()
+               WHERE (EXCLUDED.source != 'transcribed' AND EXCLUDED.text IS NOT NULL)
+                  OR NULLIF(btrim(lyrics.text), '') IS NULL
                RETURNING id""",
             (track_id, source, text, language, Jsonb({
-                "provider": "navidrome", "endpoint": result.get("source"),
+                "provider": "moss" if result.get("ai_generated") else "navidrome", "endpoint": result.get("source"),
+                "ai_generated": bool(result.get("ai_generated")),
+                **({"transcription": result["transcription"]} if result.get("transcription") else {}),
                 "synced": result.get("synced"), "lines": result.get("lines") or [],
                 **({"languages": language_distribution} if language_distribution else {}),
             }), status),
         )
-        return cursor.fetchone()[0]
+        row = cursor.fetchone()
+        return row[0] if row else None
 
 
 def _store_embeddings(connection: psycopg.Connection, track_id: uuid.UUID, run_id: uuid.UUID, result) -> None:
@@ -113,7 +119,41 @@ def backfill_lyrics(
         for index, (track_id, external_id, title) in enumerate(tracks):
             try:
                 lyrics = client.lyrics(external_id)
-                _store_lyrics(connection, track_id, lyrics)
+                stored = None
+                # A retrieval miss must not erase a previous AI transcript or lyrics
+                # that merely need embedding with a newer embedding model.
+                if not str(lyrics.get('text') or '').strip():
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT text, provenance, availability_status FROM lyrics WHERE track_id=%s AND (NULLIF(btrim(text),'') IS NOT NULL OR availability_status='instrumental')", (track_id,))
+                        stored = cursor.fetchone()
+                    if stored:
+                        lyrics = {'text':stored[0], 'status':stored[2], **(stored[1] or {})}
+                    elif lyrics.get('status') != 'instrumental':
+                        from .transcription_config import transcription_model, transcription_enabled
+                        config = transcription_model() if transcription_enabled(connection) else None
+                        if config:
+                            from .song_transcription import SongTranscriber
+                            from .transcription_recovery import diagnostic_writer
+                            report({'phase':'transcription','message':f'Transcribing lyrics for {title}',
+                                    'completed':index,'total':len(tracks),'unit':'tracks'})
+                            with connection.cursor() as cursor:
+                                cursor.execute("""SELECT a.activity FROM track_vocal_activity a
+                                    JOIN current_embeddings e ON e.track_id=a.track_id AND e.run_id=a.run_id
+                                    WHERE a.track_id=%s AND e.embedding_type='voice-gender'
+                                    ORDER BY a.created_at DESC LIMIT 1""", (track_id,))
+                                activity_row = cursor.fetchone()
+                            lyrics = SongTranscriber(*config).transcribe(client.audio_bytes(external_id),
+                                check=lambda: report({'phase':'transcription'}),
+                                progress=lambda detail: report({'phase':'transcription','message':f'{title}: {detail}'}),
+                                diagnostic_sink=diagnostic_writer(track_id),
+                                vocal_activity=activity_row[0] if activity_row else None)
+                if not stored:
+                    stored_id = _store_lyrics(connection, track_id, lyrics)
+                    if stored_id is None:
+                        # Another writer supplied lyrics while inference was running.
+                        # Do not embed the discarded candidate.
+                        connection.commit()
+                        continue
                 status = str(lyrics.get("status") or "unavailable")
                 summary[status] = summary.get(status, 0) + 1
                 if lyrics.get("text"):
@@ -121,6 +161,7 @@ def backfill_lyrics(
                 connection.commit()
             except Exception:
                 connection.rollback()
+                logging.getLogger(__name__).exception('Lyrics retrieval/transcription failed for %s', track_id)
                 summary["failed"] += 1
             report({"phase": "lyrics", "message": f"Retrieving lyrics for {title}",
                     "completed": index + 1, "total": len(tracks), "unit": "tracks",

@@ -151,7 +151,7 @@ def execute(job: dict, context) -> dict | None:
                     'completed': 0, 'total': 1, 'unit': 'builds'})
             return build_semantic_fusion(progress=report)
         if kind != 'analysis_batch':
-            size = int(os.getenv('ECHORA_BATCH_SIZE', '32'))
+            size = int(os.getenv('ECHORA_BATCH_SIZE', '128'))
             if size <= 0:
                 raise ValueError('ECHORA_BATCH_SIZE must be positive')
             ids = payload.get('track_ids')
@@ -223,7 +223,7 @@ def execute(job: dict, context) -> dict | None:
             summary['linked'] = _add_links(user_id, credentials[0], ids)
             canonical = list({row[1] for row in _source_rows(user_id, credentials[0], ids)})
             summary['audio_profiles'] = _profiles(canonical, report)
-        if operation in {'navidrome_sync', 'import', 'lyrics_backfill'}:
+        if operation in {'navidrome_sync', 'import', 'lyrics_backfill', 'karaoke_backfill'}:
             from .lyrics_pipeline import backfill_lyrics
             summary['lyrics'] = backfill_lyrics(*credentials, progress=report, external_ids=ids, only_missing=True)
         if operation in {'navidrome_sync', 'import', 'lyrics_backfill', 'karaoke_backfill'}:

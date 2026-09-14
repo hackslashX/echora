@@ -11,9 +11,11 @@ import styles from "./FullscreenPlayer.module.css";
 import motionStyles from "./FullscreenMotion.module.css";
 import WaveformSeek from "./WaveformSeek";
 import LyricsGlow from "./LyricsGlow";
+import AiLyricsNotice from "./AiLyricsNotice";
 import { defaultPlaybackPreferences, readPlaybackPreferences, type PlaybackPreferences } from "./playbackPreferences";
 import { useDialogFocus } from "../shell/useDialogFocus";
 
+const DESKTOP_INSET = 80;
 const stamp = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 
 function FullscreenMarquee({ children }: { children: ReactNode }) {
@@ -99,6 +101,7 @@ export default function FullscreenPlayer() {
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
   }, [player.track]);
   const currentLyrics = player.lyrics?.trackId === player.track?.id ? player.lyrics : null;
+  const aiLyrics = currentLyrics?.provenance?.ai_generated === true;
   const karaokeAvailable = Boolean(currentLyrics?.karaoke && currentLyrics.lines?.length);
   const karaokeLines = currentLyrics?.lines || [];
   const timedLines = ((karaokeMode && karaokeAvailable ? karaokeLines : currentLyrics?.provenance?.lines) || []).filter(line => Number.isFinite(line.start_ms));
@@ -106,14 +109,15 @@ export default function FullscreenPlayer() {
   if (!player.track) return null;
   const mobileCover = player.track.coverUrl ? sizedPlayerCoverArtUrl(player.track.coverUrl, 800) : "";
   const fullCover = player.track.coverUrl ? sizedPlayerCoverArtUrl(player.track.coverUrl, 1200) : "";
-  const innerWidth = Math.max(1, viewport.width - 360);
-  const innerHeight = Math.max(1, viewport.height - 304);
+  const innerWidth = Math.max(1, viewport.width - DESKTOP_INSET * 2);
+  const innerHeight = Math.max(1, viewport.height - DESKTOP_INSET * 2);
   const playbackHeight = Math.min(innerHeight * .46, Math.max(148, playbackContentHeight));
   const playbackWeight = playbackHeight / innerHeight;
   const rows = [1 - playbackWeight, playbackWeight];
   const artworkWeight = playbackHeight / innerWidth;
   const spacerWeight = Math.min(.08, Math.max(.045, 72 / innerWidth), (1 - artworkWeight) * .2);
-  const columns = [artworkWeight, spacerWeight, 1 - artworkWeight - spacerWeight];
+  const playbackWidth = Math.min(.9, Math.max(.64, artworkWeight + spacerWeight + .2));
+  const columns = [artworkWeight, spacerWeight, playbackWidth - artworkWeight - spacerWeight, 1 - playbackWidth];
   const mobileLyricsLayout = timedLines.length > 0 || player.lyricsLoading;
   function karaokeLine(line: LyricsLine, active: boolean) {
     if (!karaokeMode || !currentLyrics?.karaoke || !line.syllables?.length) return line.text || "...";
@@ -163,14 +167,15 @@ export default function FullscreenPlayer() {
     <section className={`${styles.mobilePlayer} ${motionStyles.content}`} aria-label="Mobile now playing">
       <header className={styles.mobileTrack}><div className={styles.mobileHeaderArt}>{mobileCover ? <LoadingImage sizes="260px" src={mobileCover} alt="" priority /> : <Disc3 />}</div><div><span>NOW PLAYING</span><h1><FullscreenMarquee>{player.track.title}</FullscreenMarquee></h1><strong>{player.track.artist || "Unknown artist"}</strong><p><FullscreenMarquee>{player.track.album || "Unknown album"}</FullscreenMarquee></p></div></header>
       <section className={styles.mobileStage}>
-        {timedLines.length ? <div className={styles.mobileLyricsStage}> 
+        {timedLines.length ? <div className={`${styles.mobileLyricsStage} ${aiLyrics ? styles.withAiNotice : ""}`}>
           {karaokeAvailable && <div className={styles.mobileLyricsMode} role="group" aria-label="Lyrics timing mode"><button className={karaokeMode ? styles.selectedMobileView : ""} onClick={() => setKaraokeMode(true)} aria-label="Karaoke timing"><MicVocal /></button><button className={!karaokeMode ? styles.selectedMobileView : ""} onClick={() => setKaraokeMode(false)} aria-label="Synced lyrics"><ListMusic /></button></div>}
           <div className={`${styles.mobileLyricsLines} ${lyricsSizeClasses[lyricsTextSize]}`}>{(() => { const index = activeLine >= 0 ? activeLine : 0, line = timedLines[index]; return line ? <button dir={isRtlText(line.text) ? "rtl" : "ltr"} className={styles.activeLine} data-lyric-singing={!karaokeMode && activeLine >= 0 ? "true" : undefined} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, true)}</button> : null; })()}</div>
+          {aiLyrics && <div className={styles.mobileAiNotice}><AiLyricsNotice /></div>}
         </div> : player.lyricsLoading ? <div className={styles.mobileLyricsPlaceholder} /> : <div className={styles.mobileArtwork}>{mobileCover ? <LoadingImage sizes="min(100vw, 340px)" src={mobileCover} alt="" priority /> : <Disc3 />}</div>}
       </section>
       <section className={styles.mobileDock}><div className={styles.mobileTimeline}><WaveformSeek /><div><time>{stamp(player.currentTime)}</time><time>{stamp(player.duration)}</time></div></div><div className={styles.mobileControls}><button onClick={player.previous} aria-label="Previous track"><SkipBack /></button><button className={styles.mobilePlay} onClick={player.toggle} aria-label={player.playing ? "Pause" : "Play"}>{player.playing ? <Pause /> : <Play />}</button><button onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1} aria-label="Next track"><SkipForward /></button><button onClick={player.toggleMute} aria-label={player.muted ? "Unmute" : "Mute"}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div></section>
     </section>
-    <section className={`${styles.grid} ${motionStyles.content}`} style={{ gridTemplateColumns: trackTemplate(columns, 160), gridTemplateRows: trackTemplate(rows, 88) }}>
+    <section className={`${styles.grid} ${motionStyles.content}`} style={{ gridTemplateColumns: trackTemplate(columns, DESKTOP_INSET), gridTemplateRows: trackTemplate(rows, DESKTOP_INSET) }}>
       <section className={styles.playbackPanel}>
         <div className={styles.art}>{fullCover ? <LoadingImage sizes="520px" src={fullCover} alt="" priority /> : <Disc3 />}</div>
         <div className={styles.details}><div className={styles.detailsContent} ref={detailsContent}><div className={styles.trackIdentity}><span>NOW PLAYING</span><h1><FullscreenMarquee>{player.track.title}</FullscreenMarquee></h1><strong>{player.track.artist || "Unknown artist"}</strong><p className={styles.metadata}>{player.track.album || "Unknown album"}<span>{audioQualityLabel(player.audioQuality)}</span></p></div>
@@ -181,6 +186,7 @@ export default function FullscreenPlayer() {
       {timedLines.length > 0 && <aside className={`${styles.lyrics} ${styles.mobileLyricsVisible} ${lyricsSizeClasses[lyricsTextSize]}`} key={`${activeLine}-${karaokeMode}`}>
         {[-1, 0, 1].map(offset => { const index = activeLine + offset, line = timedLines[index]; return line ? <button dir={isRtlText(line.text) ? "rtl" : "ltr"} className={offset === 0 ? styles.activeLine : offset < 0 ? styles.pastLine : styles.nextLine} key={`${line.start_ms}-${index}`} data-lyric-singing={offset === 0 && !karaokeMode ? "true" : undefined} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, offset === 0)}</button> : null; })}
       </aside>}
+      {aiLyrics && timedLines.length > 0 && <div className={styles.desktopAiNotice}><AiLyricsNotice /></div>}
     </section>
   </main>;
 }
