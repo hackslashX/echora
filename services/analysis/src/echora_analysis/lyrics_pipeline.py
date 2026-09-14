@@ -133,10 +133,12 @@ def backfill_lyrics(
                         config = transcription_model()
                         if config:
                             from .song_transcription import SongTranscriber
+                            from .transcription_recovery import diagnostic_writer
                             report({'phase':'transcription','message':f'Transcribing lyrics for {title}',
                                     'completed':index,'total':len(tracks),'unit':'tracks'})
                             lyrics = SongTranscriber(*config).transcribe(client.audio_bytes(external_id),
-                                check=lambda: report({'phase':'transcription','message':f'Transcribing lyrics for {title}'}))
+                                check=lambda: report({'phase':'transcription','message':f'Transcribing lyrics for {title}'}),
+                                diagnostic_sink=diagnostic_writer(track_id))
                 if not stored:
                     stored_id = _store_lyrics(connection, track_id, lyrics)
                     if stored_id is None:

@@ -29,7 +29,9 @@ Library import/sync and lyrics backfill retrieve source lyrics first. For tracks
 - Process 60-second windows with 12-second overlaps through the entire song.
 - Apply segment-local lexical repetition protection. Preserve Sxx and MULTI tags without claiming real speaker identities.
 - Merge by segment midpoint ownership. No global text deduplication that would erase repeated choruses.
-- Reject incomplete formatting, invalid intervals and token-limit outputs rather than publish partial lyrics.
+- Retry incomplete formatting, invalid intervals and token-limit outputs as shorter overlapping windows. Stop identical stalled-timestamp loops early.
+- After bounded retries, omit unresolved windows and retain usable regions. Store `partial=true` and `unresolved_windows` in transcription provenance rather than claim complete coverage. If no usable lines remain, fail the track.
+- Save failed-window raw output in private container-local `/tmp/echora-transcription-*.json` files; paths are logged. These diagnostic files disappear when the container is replaced.
 - Store successful text as `source=transcribed`, with millisecond source lines, `synced=true`, `ai_generated=true`, model revision and decoding provenance.
 
 Provider misses do not erase existing lyrics. AI candidates cannot overwrite existing nonempty lyrics. The karaoke stage merges its own provenance and retains the AI flag. The fullscreen player shows a notice in both synced and karaoke views, on desktop and mobile.
@@ -38,6 +40,6 @@ The job batch default is 128 tracks, not a GPU inference batch of 128. Inference
 
 ## Limitations
 
-Window boundary predictions may disagree, and the midpoint merge can miss or duplicate a line. Valid formatting is not proof of lyric accuracy. MULTI semantics are not verified. Vocal separation can introduce artifacts. Instrumentals incorrectly labeled as missing may produce hallucinations. No confidence score or accuracy guarantee is presented to users.
+Window boundary predictions may disagree, and the midpoint merge can miss or duplicate a line. Valid formatting is not proof of lyric accuracy. Partial recovery does not detect every hallucination: MOSS can emit plausible, well-formatted words during instrumentals. Unresolved-window ranges describe failed attempts and may overlap neighboring accepted windows. MULTI semantics are not verified. Vocal separation can introduce artifacts. Instrumentals incorrectly labeled as missing may produce hallucinations. No confidence score or accuracy guarantee is presented to users.
 
 Provision the pinned snapshot through the shared downloader before starting workers with transcription enabled. An end-to-end worker/player smoke test remains required before release; unit and frontend build checks do not replace it.

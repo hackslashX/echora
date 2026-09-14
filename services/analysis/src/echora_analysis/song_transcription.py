@@ -3,10 +3,11 @@ import re
 import tempfile
 from contextlib import nullcontext
 from pathlib import Path
+from .transcription_recovery import recover_window, WindowDecodeError, stalled_segments
 
 PROMPT = 'Transcribe the audio. For each segment, start with the timestamp and speaker ID ([S01], [S02], [S03], ...), then the spoken text, and end with the segment timestamp.'
 PATTERN = re.compile(r'\[(\d+(?:\.\d+)?)\]\[(S\d+|MULTI)\]([^\[\]]*)\[(\d+(?:\.\d+)?)\]')
-PIPELINE_REVISION = 'demucs-htdemucs-moss-w60-o12-v1'
+PIPELINE_REVISION = 'demucs-htdemucs-moss-w60-o12-partial-v3'
 
 
 def windows(duration):
@@ -40,13 +41,13 @@ class SongTranscriber:
     def __init__(self, model_id, revision):
         self.model_id, self.revision = model_id, revision
 
-    def transcribe(self, audio_bytes, check=lambda: None):
+    def transcribe(self, audio_bytes, check=lambda: None, diagnostic_sink=lambda _: None):
         import numpy as np
         import torch
         import soxr
         from demucs.api import Separator
         from huggingface_hub import snapshot_download
-        from transformers import AutoModelForCausalLM, LogitsProcessorList
+        from transformers import AutoModelForCausalLM, LogitsProcessorList, StoppingCriteriaList
         from .vendor.moss.processor import MossTranscribeDiarizeProcessor
         from .transcription_guard import SegmentGuard
 
@@ -69,36 +70,59 @@ class SongTranscriber:
         if device == 'cuda': torch.cuda.empty_cache()
         check()
         snapshot = snapshot_download(self.model_id, revision=self.revision, local_files_only=True)
-        processor = MossTranscribeDiarizeProcessor.from_pretrained(snapshot, local_files_only=True)
+        processor = MossTranscribeDiarizeProcessor.from_pretrained(
+            snapshot, local_files_only=True, trust_remote_code=True)
         sr = int(processor.feature_extractor.sampling_rate)
         vocals = soxr.resample(vocals, sample_rate, sr).astype(np.float32)
         duration = len(vocals)/sr
         ranges = list(windows(duration))
         model = AutoModelForCausalLM.from_pretrained(snapshot, trust_remote_code=True,
                     local_files_only=True, dtype=dtype, attn_implementation='sdpa').to(device).eval()
-        result = []; diagnostics = []
+        result = []; diagnostics = []; unresolved = []
         try:
             messages = [{'role':'user','content':[{'type':'audio','audio':'in-memory'}, {'type':'text','text':PROMPT}]}]
             prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            for i,(start,end) in enumerate(ranges):
+            def decode(start, end):
                 check()
                 with torch.inference_mode(), (torch.autocast('cuda', dtype=dtype) if device == 'cuda' else nullcontext()):
                     inputs = processor(text=prompt, audio=[vocals[round(start*sr):round(end*sr)]],
                         audio_kwargs={'device':device}, return_tensors='pt').to(device)
                     plen = inputs['input_ids'].shape[1]
                     guard = SegmentGuard(processor.tokenizer, plen)
+                    def stop_stall(input_ids, scores, **kwargs):
+                        generated = input_ids.shape[1]-plen
+                        if generated % 64 == 0:
+                            check()
+                        if generated % 16:
+                            return False
+                        return stalled_segments(processor.tokenizer.decode(input_ids[0,plen:].tolist(), skip_special_tokens=True))
                     output = model.generate(**inputs, max_new_tokens=2048, do_sample=False,
+                        stopping_criteria=StoppingCriteriaList([stop_stall]),
                         repetition_penalty=1.0, no_repeat_ngram_size=0,
                         logits_processor=LogitsProcessorList([guard]))
                 ids = output[0,plen:]
-                if len(ids) >= 2048: raise ValueError('MOSS hit token limit')
                 text = processor.tokenizer.decode(ids, skip_special_tokens=True).strip()
-                segments = parse_window(text, start, end-start)
+                attempt = {'start':start,'end':end,'tokens':len(ids),'guard_events':guard.events}
+                # Release decode tensors before recursive retries.
+                del inputs, output, ids
+                try:
+                    if stalled_segments(text): raise WindowDecodeError('MOSS repeated a segment without advancing timestamps')
+                    if attempt['tokens'] >= 2048: raise WindowDecodeError('MOSS hit token limit')
+                    segments = parse_window(text, start, end-start)
+                except ValueError as error:
+                    attempt['error'] = str(error)
+                    diagnostics.append(attempt)
+                    diagnostic_sink({**attempt, 'raw_output':text})
+                    raise WindowDecodeError(f'{start:.2f}-{end:.2f}s: {error}') from error
+                diagnostics.append(attempt)
+                diagnostic_sink({**attempt, 'raw_output':text})
+                return segments
+
+            for i,(start,end) in enumerate(ranges):
+                segments = recover_window(decode, start, end, check, on_unresolved=unresolved.append)
                 left = 0 if i == 0 else (ranges[i-1][1]+start)/2
                 right = duration if i == len(ranges)-1 else (end+ranges[i+1][0])/2
                 result.extend(s for s in segments if left <= (s['start_ms']+s['end_ms'])/2000 < right)
-                diagnostics.append({'start':start,'end':end,'tokens':len(ids),'guard_events':guard.events})
-                del inputs, output, ids
             check()
         finally:
             model.to('cpu')
@@ -110,4 +134,7 @@ class SongTranscriber:
                 'synced':True, 'lines':result, 'ai_generated':True,
                 'transcription':{'model':self.model_id,'revision':self.revision,
                     'pipeline_revision':PIPELINE_REVISION,'separator':'htdemucs',
-                    'windows':diagnostics,'speaker_policy':'Sxx/MULTI labels are unverified'}}
+                    'windows':diagnostics, 'partial':bool(unresolved),
+                    'unresolved_windows':unresolved,
+                    'recovery_policy':'Omit unresolved retry windows, never globally deduplicate repeated lyrics',
+                    'speaker_policy':'Sxx/MULTI labels are unverified'}}
