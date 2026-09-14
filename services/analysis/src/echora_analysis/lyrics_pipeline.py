@@ -129,16 +129,24 @@ def backfill_lyrics(
                     if stored:
                         lyrics = {'text':stored[0], 'status':stored[2], **(stored[1] or {})}
                     elif lyrics.get('status') != 'instrumental':
-                        from .transcription_config import transcription_model
-                        config = transcription_model()
+                        from .transcription_config import transcription_model, transcription_enabled
+                        config = transcription_model() if transcription_enabled(connection) else None
                         if config:
                             from .song_transcription import SongTranscriber
                             from .transcription_recovery import diagnostic_writer
                             report({'phase':'transcription','message':f'Transcribing lyrics for {title}',
                                     'completed':index,'total':len(tracks),'unit':'tracks'})
+                            with connection.cursor() as cursor:
+                                cursor.execute("""SELECT a.activity FROM track_vocal_activity a
+                                    JOIN current_embeddings e ON e.track_id=a.track_id AND e.run_id=a.run_id
+                                    WHERE a.track_id=%s AND e.embedding_type='voice-gender'
+                                    ORDER BY a.created_at DESC LIMIT 1""", (track_id,))
+                                activity_row = cursor.fetchone()
                             lyrics = SongTranscriber(*config).transcribe(client.audio_bytes(external_id),
-                                check=lambda: report({'phase':'transcription','message':f'Transcribing lyrics for {title}'}),
-                                diagnostic_sink=diagnostic_writer(track_id))
+                                check=lambda: report({'phase':'transcription'}),
+                                progress=lambda detail: report({'phase':'transcription','message':f'{title}: {detail}'}),
+                                diagnostic_sink=diagnostic_writer(track_id),
+                                vocal_activity=activity_row[0] if activity_row else None)
                 if not stored:
                     stored_id = _store_lyrics(connection, track_id, lyrics)
                     if stored_id is None:

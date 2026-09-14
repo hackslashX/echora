@@ -57,8 +57,8 @@ def select_sync_tracks(connection, url: str, external_ids: list[str], mode: str 
             )""", (library_id, ids))
         selected.update(row[0] for row in cursor.fetchall())
 
-    from .transcription_config import transcription_model
-    if transcription_model():
+    from .transcription_config import transcription_model, transcription_enabled
+    if transcription_model() and transcription_enabled(connection):
         with connection.cursor() as cursor:
             cursor.execute("""SELECT DISTINCT ts.external_id FROM track_sources ts
                 LEFT JOIN lyrics l ON l.track_id=ts.track_id

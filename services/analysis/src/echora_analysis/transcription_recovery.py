@@ -28,10 +28,12 @@ def stalled_segments(text):
 
 
 class WindowDecodeError(ValueError):
-    pass
+    def __init__(self, message, tokens=0):
+        super().__init__(message)
+        self.tokens = tokens
 
 
-def recover_window(decode, start, end, check=lambda: None, depth=0, on_unresolved=None):
+def recover_window(decode, start, end, check=lambda: None, depth=0, on_unresolved=None, retry_policy=None):
     """Retry failed windows as overlapping halves, down to 7.5 seconds.
 
     Never treat a decoding failure as silence. An optional callback records
@@ -42,6 +44,11 @@ def recover_window(decode, start, end, check=lambda: None, depth=0, on_unresolve
     try:
         return decode(start, end)
     except WindowDecodeError as error:
+        evidence = retry_policy(start, end) if retry_policy is not None else None
+        if evidence and on_unresolved is not None:
+            on_unresolved({'start_ms':round(start*1000), 'end_ms':round(end*1000),
+                           'reason':str(error), 'status':'unresolved', 'retry_evidence':evidence})
+            return []
         if end-start <= 7.5 or depth >= 4:
             if on_unresolved is None:
                 raise
@@ -50,7 +57,7 @@ def recover_window(decode, start, end, check=lambda: None, depth=0, on_unresolve
             return []
     middle = (start+end)/2
     context = min(2.0, (end-start)/10)
-    left = recover_window(decode, start, middle+context, check, depth+1, on_unresolved)
-    right = recover_window(decode, middle-context, end, check, depth+1, on_unresolved)
+    left = recover_window(decode, start, middle+context, check, depth+1, on_unresolved, retry_policy)
+    right = recover_window(decode, middle-context, end, check, depth+1, on_unresolved, retry_policy)
     return ([s for s in left if (s['start_ms']+s['end_ms'])/2000 < middle]
             + [s for s in right if (s['start_ms']+s['end_ms'])/2000 >= middle])
