@@ -38,7 +38,9 @@ def required_models() -> tuple[tuple[str, str, bool], ...]:
         "FA_KARA_MODEL_ID", "hcX02/echora-mms-300m-multilingual-lyrics-forced-aligner"
     )
     fa_revision = os.environ.get("FA_KARA_REVISION", "b46485a5d814dc26e3511cece3ccc98ebba2e9d0")
-    return (*MODELS, (fa_model, fa_revision, False))
+    from .transcription_config import transcription_model
+    moss = transcription_model()
+    return (*MODELS, (fa_model, fa_revision, False), *(((*moss, False),) if moss else ()))
 
 
 def _pin_main_ref(snapshot_path: str) -> None:
@@ -79,6 +81,9 @@ def _prune_huggingface_cache(required: tuple[tuple[str, str, bool], ...]) -> Non
 def _download_demucs() -> None:
     """Preload required separators, then remove known checkpoints no longer used."""
     required_models = {MELODY_DEMUCS_MODEL}
+    from .transcription_config import transcription_model
+    if transcription_model():
+        required_models.add('htdemucs')
     if os.environ.get("FA_KARA_VOCAL_SEPARATION", "false").lower() == "true":
         karaoke_model = os.environ.get("FA_KARA_DEMUCS_MODEL", "htdemucs_ft").strip()
         if karaoke_model not in {"htdemucs", "htdemucs_ft"}:

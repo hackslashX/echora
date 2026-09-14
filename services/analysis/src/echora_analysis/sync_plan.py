@@ -57,6 +57,16 @@ def select_sync_tracks(connection, url: str, external_ids: list[str], mode: str 
             )""", (library_id, ids))
         selected.update(row[0] for row in cursor.fetchall())
 
+    from .transcription_config import transcription_model
+    if transcription_model():
+        with connection.cursor() as cursor:
+            cursor.execute("""SELECT DISTINCT ts.external_id FROM track_sources ts
+                LEFT JOIN lyrics l ON l.track_id=ts.track_id
+                WHERE ts.library_id=%s AND ts.source_type='subsonic' AND ts.external_id=ANY(%s)
+                  AND NULLIF(btrim(l.text),'') IS NULL
+                  AND coalesce(l.availability_status,'missing') != 'instrumental'""", (library_id, ids))
+            selected.update(row[0] for row in cursor.fetchall())
+
     # Share the exact karaoke compatibility contract with the executing pipeline.
     from .karaoke_pipeline import KARAOKE_PIPELINE_REVISION, DEFAULT_MODEL_REVISION, _stored_model_revision
     karaoke = plan_karaoke(connection, KARAOKE_PIPELINE_REVISION, ids,

@@ -1,0 +1,13 @@
+.notice {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  max-width: 100%;
+  padding: 8px 12px;
+  color: #c1ccc7;
+  background: rgba(7, 13, 19, .9);
+  border: 1px solid var(--glass-stroke);
+  font: 400 var(--type-caption, 12px)/1.5 "DM Mono", monospace;
+  text-align: right;
+}

@@ -60,6 +60,8 @@ services:
       FA_KARA_REVISION: ${FA_KARA_REVISION:-b46485a5d814dc26e3511cece3ccc98ebba2e9d0}
       FA_KARA_VOCAL_SEPARATION: ${FA_KARA_VOCAL_SEPARATION:-true}
       FA_KARA_DEMUCS_MODEL: ${FA_KARA_DEMUCS_MODEL:-htdemucs_ft}
+      MOSS_MODEL_ID: ${MOSS_MODEL_ID-hcX02/echora-moss-0.9b-multilingual-lyrics-transcriber}
+      MOSS_REVISION: ${MOSS_REVISION-1cf9dc6d910a6c90c82d8ddc86b83e1533f39f4e}
       HF_HOME: /models/huggingface
       HF_HUB_OFFLINE: "1"
     volumes: &analysis-volumes
@@ -86,7 +88,7 @@ services:
       dockerfile: services/analysis/docker/Dockerfile.gpu
     environment:
       <<: *analysis-environment
-      ECHORA_BATCH_SIZE: ${ECHORA_BATCH_SIZE:-32}
+      ECHORA_BATCH_SIZE: ${ECHORA_BATCH_SIZE:-128}
     volumes: *analysis-volumes
     user: "1001"
     command: ["python", "-m", "echora_analysis.worker", "analysis"]

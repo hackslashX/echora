@@ -11,6 +11,7 @@ import styles from "./FullscreenPlayer.module.css";
 import motionStyles from "./FullscreenMotion.module.css";
 import WaveformSeek from "./WaveformSeek";
 import LyricsGlow from "./LyricsGlow";
+import AiLyricsNotice from "./AiLyricsNotice";
 import { defaultPlaybackPreferences, readPlaybackPreferences, type PlaybackPreferences } from "./playbackPreferences";
 import { useDialogFocus } from "../shell/useDialogFocus";
 
@@ -99,6 +100,7 @@ export default function FullscreenPlayer() {
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
   }, [player.track]);
   const currentLyrics = player.lyrics?.trackId === player.track?.id ? player.lyrics : null;
+  const aiLyrics = currentLyrics?.provenance?.ai_generated === true;
   const karaokeAvailable = Boolean(currentLyrics?.karaoke && currentLyrics.lines?.length);
   const karaokeLines = currentLyrics?.lines || [];
   const timedLines = ((karaokeMode && karaokeAvailable ? karaokeLines : currentLyrics?.provenance?.lines) || []).filter(line => Number.isFinite(line.start_ms));
@@ -163,9 +165,10 @@ export default function FullscreenPlayer() {
     <section className={`${styles.mobilePlayer} ${motionStyles.content}`} aria-label="Mobile now playing">
       <header className={styles.mobileTrack}><div className={styles.mobileHeaderArt}>{mobileCover ? <LoadingImage sizes="260px" src={mobileCover} alt="" priority /> : <Disc3 />}</div><div><span>NOW PLAYING</span><h1><FullscreenMarquee>{player.track.title}</FullscreenMarquee></h1><strong>{player.track.artist || "Unknown artist"}</strong><p><FullscreenMarquee>{player.track.album || "Unknown album"}</FullscreenMarquee></p></div></header>
       <section className={styles.mobileStage}>
-        {timedLines.length ? <div className={styles.mobileLyricsStage}> 
+        {timedLines.length ? <div className={`${styles.mobileLyricsStage} ${aiLyrics ? styles.withAiNotice : ""}`}>
           {karaokeAvailable && <div className={styles.mobileLyricsMode} role="group" aria-label="Lyrics timing mode"><button className={karaokeMode ? styles.selectedMobileView : ""} onClick={() => setKaraokeMode(true)} aria-label="Karaoke timing"><MicVocal /></button><button className={!karaokeMode ? styles.selectedMobileView : ""} onClick={() => setKaraokeMode(false)} aria-label="Synced lyrics"><ListMusic /></button></div>}
           <div className={`${styles.mobileLyricsLines} ${lyricsSizeClasses[lyricsTextSize]}`}>{(() => { const index = activeLine >= 0 ? activeLine : 0, line = timedLines[index]; return line ? <button dir={isRtlText(line.text) ? "rtl" : "ltr"} className={styles.activeLine} data-lyric-singing={!karaokeMode && activeLine >= 0 ? "true" : undefined} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, true)}</button> : null; })()}</div>
+          {aiLyrics && <AiLyricsNotice />}
         </div> : player.lyricsLoading ? <div className={styles.mobileLyricsPlaceholder} /> : <div className={styles.mobileArtwork}>{mobileCover ? <LoadingImage sizes="min(100vw, 340px)" src={mobileCover} alt="" priority /> : <Disc3 />}</div>}
       </section>
       <section className={styles.mobileDock}><div className={styles.mobileTimeline}><WaveformSeek /><div><time>{stamp(player.currentTime)}</time><time>{stamp(player.duration)}</time></div></div><div className={styles.mobileControls}><button onClick={player.previous} aria-label="Previous track"><SkipBack /></button><button className={styles.mobilePlay} onClick={player.toggle} aria-label={player.playing ? "Pause" : "Play"}>{player.playing ? <Pause /> : <Play />}</button><button onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1} aria-label="Next track"><SkipForward /></button><button onClick={player.toggleMute} aria-label={player.muted ? "Unmute" : "Mute"}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div></section>
@@ -178,8 +181,9 @@ export default function FullscreenPlayer() {
           <div className={styles.controls}><button aria-label="Previous track" onClick={player.previous}><SkipBack /></button><button aria-label={player.playing ? "Pause" : "Play"} className={styles.play} onClick={player.toggle}>{player.playing ? <Pause /> : <Play />}</button><button aria-label="Next track" onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1}><SkipForward /></button><button aria-label={player.muted ? "Unmute" : "Mute"} onClick={player.toggleMute}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div>
         </div></div>
       </section>
-      {timedLines.length > 0 && <aside className={`${styles.lyrics} ${styles.mobileLyricsVisible} ${lyricsSizeClasses[lyricsTextSize]}`} key={`${activeLine}-${karaokeMode}`}>
+      {timedLines.length > 0 && <aside className={`${styles.lyrics} ${styles.mobileLyricsVisible} ${lyricsSizeClasses[lyricsTextSize]} ${aiLyrics ? styles.withAiNotice : ""}`} key={`${activeLine}-${karaokeMode}`}>
         {[-1, 0, 1].map(offset => { const index = activeLine + offset, line = timedLines[index]; return line ? <button dir={isRtlText(line.text) ? "rtl" : "ltr"} className={offset === 0 ? styles.activeLine : offset < 0 ? styles.pastLine : styles.nextLine} key={`${line.start_ms}-${index}`} data-lyric-singing={offset === 0 && !karaokeMode ? "true" : undefined} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, offset === 0)}</button> : null; })}
+        {aiLyrics && <AiLyricsNotice />}
       </aside>}
     </section>
   </main>;
