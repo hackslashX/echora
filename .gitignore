@@ -23,9 +23,7 @@ build/
 htmlcov/
 
 # Runtime data and downloaded models
-data/**
-!data/**/
-!data/**/.gitkeep
+data/
 testdata/music/**
 !testdata/music/.gitkeep
 

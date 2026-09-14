@@ -24,7 +24,7 @@ Echora stores MuQ-MuLan semantic audio, MERT acoustic audio, and BGE-M3 lyrics r
 
 Readers select an exact model revision, configuration hash, and dimension through the current-representation views. Committed per-track artifacts remain visible while other tracks are processing. Separate attempt records retain audio and lyrics embedding failures. See [ranking and representation contracts](analysis-correctness.md).
 
-Measured loudness, rhythm, key, and energy descriptors remain separate from embeddings and do not affect curation scoring. See [audio descriptors](audio-descriptors.md).
+Measured descriptors remain separate from embeddings. Curation sound profiles use library-relative pace, energy, brightness, motion, vocal-presence, and dynamics targets as a soft ranking signal. Key and beat data do not affect curation scoring. See [audio descriptors](audio-descriptors.md).
 
 Pinned Hugging Face snapshots live outside the image. Production downloads missing snapshots into a persistent volume before analysis starts. The running service uses offline mode so a repository update cannot change inference without a configured revision change.
 

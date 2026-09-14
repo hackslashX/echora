@@ -371,3 +371,87 @@ def test_remaining_familiar_matches_are_labeled_as_familiar(fake_text_embeddings
     )
     assert len(selected) == 2
     assert {track["evidence"]["selection_pool"] for track in selected} == {"familiar"}
+
+
+def test_sound_profile_uses_library_relative_measured_descriptors():
+    rows = [
+        {"id": "slow", "title": "Slow", "artist": "A", "sound_descriptors": {"pace": 80.0, "energy": -22.0}},
+        {"id": "target", "title": "Target", "artist": "B", "sound_descriptors": {"pace": 120.0, "energy": -14.0}},
+        {"id": "fast", "title": "Fast", "artist": "C", "sound_descriptors": {"pace": 150.0, "energy": -7.0}},
+    ]
+    selected, _ = rank_curation(
+        rows, np.eye(3, dtype=np.float32), "", "", track_limit=3, refresh_mode="fresh",
+        sound_profile={"pace": .5, "energy": .5}, shuffle_seed=1, minimum_match_percentile=0,
+    )
+    by_id = {track["id"]: track for track in selected}
+    assert by_id["target"]["score"] > by_id["slow"]["score"]
+    assert by_id["target"]["score"] > by_id["fast"]["score"]
+    assert by_id["target"]["evidence"]["sound_profile"]["pace"]["value"] == 120.0
+
+
+def test_sound_profile_ignores_unavailable_axes_per_track():
+    rows = [
+        {"id": "measured", "title": "Measured", "artist": "A", "sound_descriptors": {"pace": 100.0}},
+        {"id": "missing", "title": "Missing", "artist": "B", "sound_descriptors": {}},
+        {"id": "other", "title": "Other", "artist": "C", "sound_descriptors": {"pace": 140.0}},
+    ]
+    selected, _ = rank_curation(
+        rows, np.eye(3, dtype=np.float32), "", "", track_limit=3, refresh_mode="fresh",
+        sound_profile={"pace": .0}, shuffle_seed=1, minimum_match_percentile=0,
+    )
+    by_id = {track["id"]: track for track in selected}
+    assert by_id["missing"]["score"] == .5
+    assert by_id["missing"]["evidence"]["sound_profile"] == {}
+
+
+def test_sound_profile_blends_library_percentiles_for_matching(fake_text_embeddings):
+    rows = [
+        {"id": "missing-profile", "title": "Missing", "artist": "A", "sound_descriptors": {}},
+        {"id": "middle", "title": "Middle", "artist": "B", "sound_descriptors": {"pace": 100.0}},
+        {"id": "opposite-profile", "title": "Opposite", "artist": "C", "sound_descriptors": {"pace": 200.0}},
+    ]
+    matrix = np.asarray([[.8, .6], [.6, .8], [0, 1]], dtype=np.float32)
+
+    selected, _ = rank_curation(
+        rows, matrix, "pop", "", track_limit=3, refresh_mode="fresh",
+        sound_profile={"pace": 0}, shuffle_seed=1, minimum_match_percentile=.8,
+    )
+
+    assert [track["id"] for track in selected] == ["missing-profile"]
+    assert selected[0]["percentile"] == 1.0
+
+
+def test_sound_profile_vocals_blends_vocal_and_instrumental_rankings():
+    rows = [
+        {"id": "instrumental", "title": "Instrumental", "artist": "A", "sound_descriptors": {"vocals": 0.05}},
+        {"id": "mixed", "title": "Mixed", "artist": "B", "sound_descriptors": {"vocals": 0.5}},
+        {"id": "vocal", "title": "Vocal", "artist": "C", "sound_descriptors": {"vocals": 0.95}},
+    ]
+
+    def scores(target: float) -> dict[str, float]:
+        selected, _ = rank_curation(
+            rows, np.eye(3, dtype=np.float32), "", "", track_limit=3, refresh_mode="fresh",
+            sound_profile={"vocals": target}, shuffle_seed=1, minimum_match_percentile=0,
+        )
+        return {track["id"]: track["score"] for track in selected}
+
+    instrumental = scores(0)
+    vocal = scores(1)
+    assert instrumental["instrumental"] > instrumental["vocal"]
+    assert vocal["vocal"] > vocal["instrumental"]
+
+
+def test_instrumental_only_is_a_hard_voice_classifier_filter():
+    rows = [
+        {"id": "instrumental", "title": "Instrumental", "artist": "A"},
+        {"id": "low-vocals", "title": "Low vocals", "artist": "B"},
+        {"id": "vocal", "title": "Vocal", "artist": "C"},
+    ]
+    selected, _ = rank_curation(
+        rows, np.eye(3, dtype=np.float32), "", "", track_limit=3, refresh_mode="fresh",
+        voice_matrix=np.asarray([[.9, .05, .05], [.49, .25, .26], [.05, .5, .45]], dtype=np.float32),
+        voice_available=np.asarray([True, True, True]), instrumental_only=True,
+        shuffle_seed=1, minimum_match_percentile=0,
+    )
+    assert [track["id"] for track in selected] == ["instrumental"]
+    assert selected[0]["evidence"]["instrumental_only"] == {"threshold": .5, "confidence": .9}

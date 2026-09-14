@@ -99,13 +99,21 @@ def embed_texts(texts: list[str]) -> np.ndarray:
         if _model is None:
             from muq import MuQMuLan
 
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            _model = MuQMuLan.from_pretrained(
+            model = MuQMuLan.from_pretrained(
                 os.environ.get("MUQ_MODEL_ID", "OpenMuQ/MuQ-MuLan-large"),
                 revision=os.environ.get(
                     "MUQ_REVISION", "2e01c796b71dca71b45251384c04cd7b237c9020",
                 ),
-            ).to(device).eval()
+            )
+            if torch.cuda.is_available():
+                try:
+                    model = model.to("cuda")
+                except torch.OutOfMemoryError:
+                    # Inference workers can temporarily occupy the GPU. Text
+                    # queries must remain available instead of returning 500.
+                    torch.cuda.empty_cache()
+                    model = model.to("cpu")
+            _model = model.eval()
         with torch.inference_mode():
             vectors = _model(texts=texts).detach().float().cpu().numpy()
     return _normalize_rows(vectors)
