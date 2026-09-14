@@ -422,3 +422,19 @@ def test_sound_profile_vocals_blends_vocal_and_instrumental_rankings():
     vocal = scores(1)
     assert instrumental["instrumental"] > instrumental["vocal"]
     assert vocal["vocal"] > vocal["instrumental"]
+
+
+def test_instrumental_only_is_a_hard_voice_classifier_filter():
+    rows = [
+        {"id": "instrumental", "title": "Instrumental", "artist": "A"},
+        {"id": "low-vocals", "title": "Low vocals", "artist": "B"},
+        {"id": "vocal", "title": "Vocal", "artist": "C"},
+    ]
+    selected, _ = rank_curation(
+        rows, np.eye(3, dtype=np.float32), "", "", track_limit=3, refresh_mode="fresh",
+        voice_matrix=np.asarray([[.9, .05, .05], [.49, .25, .26], [.05, .5, .45]], dtype=np.float32),
+        voice_available=np.asarray([True, True, True]), instrumental_only=True,
+        shuffle_seed=1, minimum_match_percentile=0,
+    )
+    assert [track["id"] for track in selected] == ["instrumental"]
+    assert selected[0]["evidence"]["instrumental_only"] == {"threshold": .5, "confidence": .9}

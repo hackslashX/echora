@@ -145,7 +145,7 @@ def _prepare(curation, user_id, connection):
         "sound_negative_prompts": request.sound_negative_prompts,
         "themes_negative_prompts": request.themes_negative_prompts,
         "sound_weight": request.sound_weight,
-        "sound_profile": request.sound_profile.model_dump(exclude_none=True),
+        "sound_profile": request.sound_profile.model_dump(exclude_none=True, exclude_defaults=True),
         "positive_track_ids": [str(value) for value in request.positive_track_ids],
         "negative_track_ids": [str(value) for value in request.negative_track_ids],
         "familiarity_percent": request.familiarity_percent,

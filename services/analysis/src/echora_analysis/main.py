@@ -173,6 +173,7 @@ class SoundProfileRequest(BaseModel):
     motion: float | None = Field(default=None, ge=0, le=1)
     vocals: float | None = Field(default=None, ge=0, le=1)
     dynamics: float | None = Field(default=None, ge=0, le=1)
+    instrumental_only: bool = False
 
 
 class CurationPreviewRequest(BaseModel):
@@ -1861,6 +1862,8 @@ def _preview_curation(
             raise HTTPException(status_code=502, detail=f"Could not read Last.fm listening history: {error}") from error
     elif time_of_day_enabled:
         raise HTTPException(status_code=409, detail="Connect Last.fm in Settings before creating a time-of-day curation")
+    sound_profile = request.sound_profile.model_dump(exclude_none=True, exclude_defaults=True)
+    instrumental_only = bool(sound_profile.pop("instrumental_only", False))
     effective_positive_ids = list(request.positive_track_ids)
     time_of_day_track_ids: list[uuid.UUID] = []
     if time_of_day_enabled:
@@ -1876,7 +1879,7 @@ def _preview_curation(
     theme_prompts = theme_tags if structured else ([request.positive_prompt] if request.positive_prompt.strip() else [])
     visible_ids = {str(row["id"]) for row in rows}
     has_language_constraint = bool(request.target_language)
-    if not has_language_constraint and not semantic_prompts and not theme_prompts and not request.sound_profile.model_dump(exclude_none=True) and not any(
+    if not has_language_constraint and not semantic_prompts and not theme_prompts and not sound_profile and not instrumental_only and not any(
         str(value) in visible_ids for value in [*effective_positive_ids, *time_of_day_track_ids]
     ):
         raise HTTPException(status_code=422, detail="None of the Songs like tracks are available in this library")
@@ -1913,7 +1916,7 @@ def _preview_curation(
     rank_limit = len(rows) if language_mode and language_eligible_ids is None else request.track_limit
     expanded_sound_prompts = expand_tag_groups(sound_tags) if structured and sound_tags else None
     expanded_sound_negatives = expand_tag_groups(sound_negatives) if structured and sound_negatives else None
-    has_sound_profile = bool(request.sound_profile.model_dump(exclude_none=True))
+    has_sound_profile = bool(sound_profile)
     tracks, references = rank_curation(
         rows, matrix, request.positive_prompt, request.negative_prompt,
         rank_limit, request.refresh_mode, [str(value) for value in request.existing_track_ids],
@@ -1927,7 +1930,8 @@ def _preview_curation(
         sound_negative_prompts=expanded_sound_negatives,
         themes_negative_prompts=expand_tag_groups(theme_negatives) if structured and theme_negatives else None,
         sound_weight=request.sound_weight if structured else None,
-        sound_profile=request.sound_profile.model_dump(exclude_none=True),
+        sound_profile=sound_profile,
+        instrumental_only=instrumental_only,
         semantic_modes=semantic_modes,
         acoustic_matrix=acoustic_matrix, acoustic_available=acoustic_available,
         acoustic_modes=acoustic_modes,
@@ -1937,7 +1941,7 @@ def _preview_curation(
         # A profile-only recipe therefore ranks the measured library without
         # applying the embedding match cutoff intended for text and examples.
         minimum_match_percentile=(
-            0.0 if has_sound_profile and not (semantic_prompts or theme_prompts or effective_positive_ids or time_of_day_track_ids)
+            0.0 if (has_sound_profile or instrumental_only) and not (semantic_prompts or theme_prompts or effective_positive_ids or time_of_day_track_ids)
             else MATCH_PERCENTILE
         ),
     )
@@ -1993,6 +1997,8 @@ def _preview_curation(
         signal_weights["time_of_day"] = 1.0
     if has_sound_profile:
         signal_weights["sound_profile"] = 1.0
+    if instrumental_only:
+        signal_weights["instrumental_only"] = 1.0
     signal_total = sum(signal_weights.values())
     if signal_total:
         signal_weights = {
@@ -2100,7 +2106,7 @@ def create_curation(request: CurationCreateRequest, echora_session: str | None =
             sound_negative_prompts=request.sound_negative_prompts,
             themes_negative_prompts=request.themes_negative_prompts,
             sound_weight=request.sound_weight,
-            sound_profile=request.sound_profile.model_dump(exclude_none=True),
+            sound_profile=request.sound_profile.model_dump(exclude_none=True, exclude_defaults=True),
             positive_track_ids=request.positive_track_ids, negative_track_ids=request.negative_track_ids,
             familiarity_percent=request.familiarity_percent, period_start=request.period_start,
             period_end=request.period_end, lookback_days=request.lookback_days,

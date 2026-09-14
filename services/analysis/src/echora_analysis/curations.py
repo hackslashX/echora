@@ -13,7 +13,8 @@ from .concepts import combine_concept_percentiles, empirical_percentiles
 # promotion and the discovery pool both draw from inside this pool; anything
 # below it only appears when the pool cannot fill the playlist.
 MATCH_PERCENTILE = 0.75
-CURATION_SCORING_REVISION = 5
+CURATION_SCORING_REVISION = 6
+INSTRUMENTAL_ONLY_THRESHOLD = 0.5
 EXAMPLE_COMPONENT_WEIGHTS = {
     "muq_global": 0.50,
     "muq_modes": 0.20,
@@ -178,6 +179,7 @@ def rank_curation(
     context_track_ids: list[str] | None = None,
     eligible_track_ids: set[str] | None = None,
     sound_profile: dict[str, float] | None = None,
+    instrumental_only: bool = False,
     minimum_match_percentile: float = MATCH_PERCENTILE,
 ) -> tuple[list[dict[str, object]], dict[str, list[dict[str, str]]]]:
     """Rank a curation corpus across the sound (semantic) and themes (lyrics) channels.
@@ -207,7 +209,7 @@ def rank_curation(
         sound_negative_prompts, themes_negative_prompts,
         lyrics_positive_queries is not None and len(lyrics_positive_queries) > 0,
         lyrics_negative_queries is not None and len(lyrics_negative_queries) > 0,
-        sound_profile,
+        sound_profile, instrumental_only,
     ))
     structured = any(value is not None for value in (
         sound_prompts, themes_prompts, sound_negative_prompts, themes_negative_prompts,
@@ -507,6 +509,18 @@ def rank_curation(
 
     counts = listen_counts or {}
     eligible = eligible_track_ids
+    if instrumental_only:
+        # This is deliberately a hard classifier filter, unlike the vocals
+        # profile axis, which only softly ranks vocal activity relative to the
+        # user's library. Unknown classifications do not qualify.
+        classified_instrumentals = {
+            str(rows[index]["id"])
+            for index in range(len(rows))
+            if voice_matrix is not None and voice_available is not None
+            and bool(voice_available[index])
+            and float(voice_matrix[index, 0]) >= INSTRUMENTAL_ONLY_THRESHOLD
+        }
+        eligible = classified_instrumentals if eligible is None else eligible & classified_instrumentals
     # Embedding score filters first; Last.fm only promotes within the high scorers.
     matching_order = [int(index) for index in np.argsort(adjusted, kind="stable")[::-1]
                       if (not musical_requirement or float(percentiles[index]) >= minimum_match_percentile)
@@ -560,6 +574,10 @@ def rank_curation(
                 "listen_count": count, "selection_pool": "familiar" if familiar else "discovery",
                 "tag_percentiles": tag_evidence.get(str(row["id"]), []),
                 "sound_profile": profile_evidence[index],
+                "instrumental_only": ({
+                    "threshold": INSTRUMENTAL_ONLY_THRESHOLD,
+                    "confidence": float(voice_matrix[index, 0]),
+                } if instrumental_only and voice_matrix is not None else None),
                 "example_similarity": example_evidence[index],
             },
         })
