@@ -497,7 +497,7 @@ def rank_curation(
             profile_available = np.isfinite(profile_score)
             # An unavailable descriptor removes this signal for that track;
             # it is not evidence that the track is a poor match.
-            score = np.where(profile_available, (score + profile_score) / 2, score)
+            score = np.where(profile_available, (percentiles + profile_score) / 2, percentiles)
             percentiles = np.asarray(score, dtype=np.float32)
 
     adjusted = score.copy()

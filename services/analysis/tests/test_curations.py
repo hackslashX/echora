@@ -404,6 +404,23 @@ def test_sound_profile_ignores_unavailable_axes_per_track():
     assert by_id["missing"]["evidence"]["sound_profile"] == {}
 
 
+def test_sound_profile_blends_library_percentiles_for_matching(fake_text_embeddings):
+    rows = [
+        {"id": "missing-profile", "title": "Missing", "artist": "A", "sound_descriptors": {}},
+        {"id": "middle", "title": "Middle", "artist": "B", "sound_descriptors": {"pace": 100.0}},
+        {"id": "opposite-profile", "title": "Opposite", "artist": "C", "sound_descriptors": {"pace": 200.0}},
+    ]
+    matrix = np.asarray([[.8, .6], [.6, .8], [0, 1]], dtype=np.float32)
+
+    selected, _ = rank_curation(
+        rows, matrix, "pop", "", track_limit=3, refresh_mode="fresh",
+        sound_profile={"pace": 0}, shuffle_seed=1, minimum_match_percentile=.8,
+    )
+
+    assert [track["id"] for track in selected] == ["missing-profile"]
+    assert selected[0]["percentile"] == 1.0
+
+
 def test_sound_profile_vocals_blends_vocal_and_instrumental_rankings():
     rows = [
         {"id": "instrumental", "title": "Instrumental", "artist": "A", "sound_descriptors": {"vocals": 0.05}},
