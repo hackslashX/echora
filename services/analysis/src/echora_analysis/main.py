@@ -22,6 +22,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from sklearn.metrics import adjusted_rand_score, silhouette_score
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
@@ -2097,31 +2098,91 @@ def create_curation(request: CurationCreateRequest, echora_session: str | None =
     connection_id = user.get("navidrome_connection_id")
     if connection_id is None:
         raise HTTPException(status_code=409, detail="No Navidrome connection is configured")
-    with session_scope() as session:
-        curation = Curation(
-            user_id=user["id"], navidrome_connection_id=connection_id, name=request.name.strip(),
-            curation_type=request.curation_type,
-            positive_prompt=request.positive_prompt.strip(), negative_prompt=request.negative_prompt.strip(),
-            sound_prompts=request.sound_prompts, themes_prompts=request.themes_prompts,
-            sound_negative_prompts=request.sound_negative_prompts,
-            themes_negative_prompts=request.themes_negative_prompts,
-            sound_weight=request.sound_weight,
-            sound_profile=request.sound_profile.model_dump(exclude_none=True, exclude_defaults=True),
-            positive_track_ids=request.positive_track_ids, negative_track_ids=request.negative_track_ids,
-            familiarity_percent=request.familiarity_percent, period_start=request.period_start,
-            period_end=request.period_end, lookback_days=request.lookback_days,
-            time_of_day_enabled=request.time_of_day_enabled,
-            track_limit=request.track_limit, refresh_mode=request.refresh_mode,
-            target_language=request.target_language, language_strictness=request.language_strictness,
-            journey_start_track_id=request.journey_start_track_id,
-            journey_stop_track_ids=request.journey_stop_track_ids,
-            journey_end_track_id=request.journey_end_track_id,
-            journey_lyrics_weight=request.journey_lyrics_weight,
-            refresh_enabled=request.refresh_enabled,
-        )
-        session.add(curation)
-        session.flush()
-        curation_id = curation.id
+    try:
+        with session_scope() as session:
+            curation = Curation(
+                user_id=user["id"], navidrome_connection_id=connection_id, name=request.name.strip(),
+                curation_type=request.curation_type,
+                positive_prompt=request.positive_prompt.strip(), negative_prompt=request.negative_prompt.strip(),
+                sound_prompts=request.sound_prompts, themes_prompts=request.themes_prompts,
+                sound_negative_prompts=request.sound_negative_prompts,
+                themes_negative_prompts=request.themes_negative_prompts,
+                sound_weight=request.sound_weight,
+                sound_profile=request.sound_profile.model_dump(exclude_none=True, exclude_defaults=True),
+                positive_track_ids=request.positive_track_ids, negative_track_ids=request.negative_track_ids,
+                familiarity_percent=request.familiarity_percent, period_start=request.period_start,
+                period_end=request.period_end, lookback_days=request.lookback_days,
+                time_of_day_enabled=request.time_of_day_enabled,
+                track_limit=request.track_limit, refresh_mode=request.refresh_mode,
+                target_language=request.target_language, language_strictness=request.language_strictness,
+                journey_start_track_id=request.journey_start_track_id,
+                journey_stop_track_ids=request.journey_stop_track_ids,
+                journey_end_track_id=request.journey_end_track_id,
+                journey_lyrics_weight=request.journey_lyrics_weight,
+                refresh_enabled=request.refresh_enabled,
+            )
+            session.add(curation)
+            session.flush()
+            curation_id = curation.id
+    except IntegrityError as error:
+        if "curations_user_name_idx" in str(error.orig):
+            raise HTTPException(status_code=409, detail="A curation with this name already exists") from error
+        raise
+    queued = _refresh_curation(curation_id, user["id"])
+    return {**request.model_dump(mode="json"), "id": str(curation_id), "tracks": [], **queued}
+
+
+@app.put("/library/curations/{curation_id}", status_code=202)
+def replace_curation(
+    curation_id: uuid.UUID, request: CurationCreateRequest,
+    echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    """Replace a saved recipe and generate a new playlist revision."""
+    user = _session_user(echora_session)
+    from . import curation_jobs
+
+    with curation_jobs.locked(curation_id) as lock_connection:
+        try:
+            with session_scope() as session:
+                curation = session.scalar(select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"]))
+                if curation is None:
+                    raise HTTPException(status_code=404, detail="Curation not found")
+                curation_jobs.assert_mutable(lock_connection, curation_id)
+                curation.name = request.name.strip()
+                curation.curation_type = request.curation_type
+                curation.positive_prompt = request.positive_prompt.strip()
+                curation.negative_prompt = request.negative_prompt.strip()
+                curation.sound_prompts = request.sound_prompts
+                curation.themes_prompts = request.themes_prompts
+                curation.sound_negative_prompts = request.sound_negative_prompts
+                curation.themes_negative_prompts = request.themes_negative_prompts
+                curation.sound_weight = request.sound_weight
+                curation.sound_profile = request.sound_profile.model_dump(exclude_none=True, exclude_defaults=True)
+                curation.positive_track_ids = request.positive_track_ids
+                curation.negative_track_ids = request.negative_track_ids
+                curation.familiarity_percent = request.familiarity_percent
+                curation.period_start = request.period_start
+                curation.period_end = request.period_end
+                curation.time_of_day_enabled = request.time_of_day_enabled
+                curation.lookback_days = request.lookback_days
+                curation.track_limit = request.track_limit
+                curation.refresh_mode = request.refresh_mode
+                curation.target_language = request.target_language
+                curation.language_strictness = request.language_strictness
+                curation.journey_start_track_id = request.journey_start_track_id
+                curation.journey_stop_track_ids = request.journey_stop_track_ids
+                curation.journey_end_track_id = request.journey_end_track_id
+                curation.journey_lyrics_weight = request.journey_lyrics_weight
+                curation.refresh_enabled = request.refresh_enabled
+                curation.next_refresh_at = (
+                    datetime.now(timezone.utc) + timedelta(hours=curation.refresh_interval_hours)
+                    if request.refresh_enabled else None
+                )
+                curation.updated_at = datetime.now(timezone.utc)
+        except IntegrityError as error:
+            if "curations_user_name_idx" in str(error.orig):
+                raise HTTPException(status_code=409, detail="A curation with this name already exists") from error
+            raise
     queued = _refresh_curation(curation_id, user["id"])
     return {**request.model_dump(mode="json"), "id": str(curation_id), "tracks": [], **queued}
 

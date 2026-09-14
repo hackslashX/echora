@@ -116,7 +116,7 @@ export default function CurateLibrary() {
     if (!name.trim()) { setError("Give the curation a name before saving it"); return; }
     setBusyAction("save"); setError("");
     try {
-      const result = await api<{ job_id?: string }>("/library/curations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...recipe, name, refresh_enabled: refreshEnabled }) });
+      const result = await api<{ job_id?: string }>(selectedCurationId ? `/library/curations/${selectedCurationId}` : "/library/curations", { method: selectedCurationId ? "PUT" : "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...recipe, name, refresh_enabled: refreshEnabled }) });
       curationJobs.track(result?.job_id);
       await loadCurations();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save the curation"); }
