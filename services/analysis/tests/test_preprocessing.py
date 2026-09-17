@@ -212,3 +212,15 @@ def test_melody_reuses_shared_vocals_and_caches_residual(monkeypatch, tmp_path):
         p.melody_waveforms(b"song")
     assert separate.call_count == 2
     assert decode.call_count == 1
+
+
+def test_prune_stops_checking_once_remaining_entries_are_retained(tmp_path):
+    check = Mock()
+    c = cache(tmp_path, check=check)
+    for index in range(100):
+        np.save(tmp_path / f"{index:064x}.npy", np.ones(10, dtype=np.float32))
+    c.prune()
+    assert len(list(tmp_path.glob("*.npy"))) == 100
+    # The callback can perform a database heartbeat; its cost must not grow
+    # with the number of artifacts when no eviction is necessary.
+    assert check.call_count <= 3

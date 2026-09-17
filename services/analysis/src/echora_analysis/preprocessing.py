@@ -153,7 +153,10 @@ class AudioArtifactCache:
             for modified, size, path in sorted(entries):
                 self.check()
                 if total <= self.max_bytes and now - modified <= self.ttl_seconds:
-                    continue
+                    # Entries are oldest-first: every remaining entry is also
+                    # within TTL and budget. Avoid a database-backed cancellation
+                    # check per retained artifact on every cache publication.
+                    break
                 with self._lock(path.stem, blocking=False) as free:
                     if not free:
                         continue
