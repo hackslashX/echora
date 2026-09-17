@@ -46,6 +46,7 @@ const isRtlText = (text: string) => {
   return false;
 };
 type LyricsLine = { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] };
+type KaraokeSyllable = NonNullable<LyricsLine["syllables"]>[number];
 type LyricsTextSize = "small" | "normal" | "large";
 const lyricsSizeStorageKey = "echora:lyrics-text-size";
 const lyricsSizeClasses: Record<LyricsTextSize, string> = {
@@ -53,6 +54,20 @@ const lyricsSizeClasses: Record<LyricsTextSize, string> = {
   normal: styles.lyricsNormal,
   large: styles.lyricsLarge,
 };
+
+function groupSyllablesByWord(syllables: KaraokeSyllable[]) {
+  const words: { syllable: KaraokeSyllable; index: number }[][] = [];
+  let word: { syllable: KaraokeSyllable; index: number }[] = [];
+  syllables.forEach((syllable, index) => {
+    word.push({ syllable, index });
+    if (/\s$/u.test(syllable.text)) {
+      words.push(word);
+      word = [];
+    }
+  });
+  if (word.length) words.push(word);
+  return words;
+}
 
 export default function FullscreenPlayer() {
   const player = usePlayer();
@@ -123,11 +138,11 @@ export default function FullscreenPlayer() {
     if (!karaokeMode || !currentLyrics?.karaoke || !line.syllables?.length) return line.text || "...";
     const now = playbackTime * 1000;
     const rtl = isRtlText(line.text);
-    return <span className={styles.syllables} dir={rtl ? "rtl" : "ltr"}>{line.syllables.map((syllable, index) => {
+    return <span className={styles.syllables} dir={rtl ? "rtl" : "ltr"}>{groupSyllablesByWord(line.syllables).map((word, wordIndex) => <span key={wordIndex} style={{ display: "inline-block", whiteSpace: "pre" }}>{word.map(({ syllable, index }) => {
       const singing = active && now >= syllable.start_ms && now < syllable.end_ms;
       const state = now >= syllable.end_ms ? styles.syllablePast : singing ? styles.syllableActive : styles.syllableNext;
       if (highlightStyle === "syllable") return <span key={`${syllable.start_ms}-${index}`} className={state}
-        style={{ position: "relative", display: "inline-block" }} data-lyric-singing={singing ? "true" : undefined}>{syllable.text}</span>;
+        style={{ position: "relative", display: "inline-block", color: "transparent", WebkitBackgroundClip: "text", backgroundClip: "text" }} data-lyric-singing={singing ? "true" : undefined}>{syllable.text}</span>;
       const progress = Math.min(100, Math.max(0, (now - syllable.start_ms) / Math.max(1, syllable.end_ms - syllable.start_ms) * 100));
       // A curved mask clips a second copy of the glyph, rather than layering
       // decorative bubbles over a straight gradient boundary.
@@ -149,11 +164,11 @@ export default function FullscreenPlayer() {
         pointerEvents: "none",
       };
       return <span key={`${syllable.start_ms}-${index}`} className={state}
-        style={{ position: "relative", display: "inline-block", ...(singing ? { background: "none", color: "#fff", textShadow: "none" } : {}) }}
+        style={{ position: "relative", display: "inline-block", color: "transparent", WebkitBackgroundClip: "text", backgroundClip: "text", ...(singing ? { background: "none", color: "#fff", textShadow: "none" } : {}) }}
         data-lyric-singing={singing ? "true" : undefined}>{syllable.text}
         {singing && <span aria-hidden="true" style={liquid}>{syllable.text}</span>}
       </span>;
-    })}</span>;
+    })}</span>)}</span>;
   }
   function chooseLyricsTextSize(size: LyricsTextSize) { localStorage.setItem(lyricsSizeStorageKey, size); setLyricsTextSize(size); }
   function close() { if (closing) return; document.body.classList.add("echora-fullscreen-player-closing"); setClosing(true); const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches; window.setTimeout(() => player.setExpanded(false), reduced ? 0 : 280); }
@@ -169,7 +184,7 @@ export default function FullscreenPlayer() {
       <section className={styles.mobileStage}>
         {timedLines.length ? <div className={`${styles.mobileLyricsStage} ${aiLyrics ? styles.withAiNotice : ""}`}>
           {karaokeAvailable && <div className={styles.mobileLyricsMode} role="group" aria-label="Lyrics timing mode"><button className={karaokeMode ? styles.selectedMobileView : ""} onClick={() => setKaraokeMode(true)} aria-label="Karaoke timing"><MicVocal /></button><button className={!karaokeMode ? styles.selectedMobileView : ""} onClick={() => setKaraokeMode(false)} aria-label="Synced lyrics"><ListMusic /></button></div>}
-          <div className={`${styles.mobileLyricsLines} ${lyricsSizeClasses[lyricsTextSize]}`}>{(() => { const index = activeLine >= 0 ? activeLine : 0, line = timedLines[index]; return line ? <button dir={isRtlText(line.text) ? "rtl" : "ltr"} className={styles.activeLine} data-lyric-singing={!karaokeMode && activeLine >= 0 ? "true" : undefined} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, true)}</button> : null; })()}</div>
+          <div className={`${styles.mobileLyricsLines} ${lyricsSizeClasses[lyricsTextSize]}`}>{(() => { const index = activeLine >= 0 ? activeLine : 0, line = timedLines[index]; return line ? <button dir={isRtlText(line.text) ? "rtl" : "ltr"} className={styles.activeLine} style={{ paddingBottom: ".14em", overflow: "visible" }} data-lyric-singing={!karaokeMode && activeLine >= 0 ? "true" : undefined} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, true)}</button> : null; })()}</div>
           {aiLyrics && <div className={styles.mobileAiNotice}><AiLyricsNotice /></div>}
         </div> : player.lyricsLoading ? <div className={styles.mobileLyricsPlaceholder} /> : <div className={styles.mobileArtwork}>{mobileCover ? <LoadingImage sizes="min(100vw, 340px)" src={mobileCover} alt="" priority /> : <Disc3 />}</div>}
       </section>
