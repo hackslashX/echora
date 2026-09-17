@@ -8,12 +8,18 @@ The package initializer, production adapter and tests are Echora additions.
 The adapter's model configuration and overlap algorithm derive from this
 commit's configs/config_vocals_mel_band_roformer.yaml and utils.py.
 
-No upstream license file was present at this source revision. This notice is
-source attribution only: it does not grant or assert permission to use, modify,
-or redistribute this code or model weights. Licensing must be resolved before
-redistribution/deployment. Model weights are separate, not included here:
+No upstream license file was present at this GitHub source revision. This
+notice attributes the copied architecture code but does not grant permission
+to redistribute it. Resolve the architecture source license before distribution.
+
+The separate model repository declares MIT in its model card at the pinned
+revision. Model weights are not included here:
 KimberleyJSN/melbandroformer @ ac9b0614ab3cd7f77219e18ba494dfd93956c348,
 MelBandRoformer.ckpt.
+License declaration:
+https://huggingface.co/KimberleyJSN/melbandroformer/blob/ac9b0614ab3cd7f77219e18ba494dfd93956c348/README.md
+This model-card declaration does not establish the license of the architecture
+code copied from the separate GitHub repository.
 
 Runtime imports beyond numpy/torch/huggingface-hub: librosa, packaging, einops
 (pack/unpack required), beartype, rotary-embedding-torch. No ml-collections,
