@@ -123,3 +123,79 @@ def test_unrelated_contour_scores_worse():
     unrelated_cost, _ = match_contour(query, query_mask, unrelated, unrelated_mask)
 
     assert related_cost < unrelated_cost
+
+
+def test_melody_sources_use_shared_roformer_audio(monkeypatch):
+    from unittest.mock import Mock
+    from echora_analysis import hum_search as h
+    vocals = np.ones(100, dtype=np.float32)
+    accompaniment = np.full(100, .5, dtype=np.float32)
+    prepare = Mock(return_value=(vocals, accompaniment))
+    monkeypatch.setattr(h, "melody_waveforms", prepare)
+    result = h.separate_melody_sources(b"mix")
+    assert result["vocals"][0] is vocals
+    assert result["accompaniment"][0] is accompaniment
+    assert result["vocals"][1] == result["accompaniment"][1] == 44100
+    prepare.assert_called_once()
+    assert prepare.call_args.args == (b"mix",)
+    assert callable(prepare.call_args.kwargs["check"])
+
+
+def test_separation_failure_does_not_publish_incomplete_recipe(monkeypatch):
+    from unittest.mock import Mock
+    import pytest
+    from echora_analysis import hum_search as h
+    monkeypatch.setattr(h, "extract_catalog_contour", Mock(return_value=_melody([60] * 10)))
+    monkeypatch.setattr(h, "separate_melody_sources", Mock(side_effect=ValueError("no cached weights")))
+    connection = Mock()
+    with pytest.raises(ValueError, match="no cached weights"):
+        h.store_track_contours(connection, "track", "run", b"mix")
+    connection.cursor.assert_not_called()
+
+
+def test_melody_cancellation_propagates(monkeypatch):
+    from unittest.mock import Mock
+    import pytest
+    from echora_analysis import hum_search as h
+    class Cancel(BaseException):
+        pass
+    monkeypatch.setattr(h, "extract_catalog_contour", Mock(return_value=_melody([60] * 10)))
+    monkeypatch.setattr(h, "separate_melody_sources", Mock(side_effect=Cancel()))
+    connection = Mock()
+    with pytest.raises(Cancel):
+        h.store_track_contours(connection, "track", "run", b"mix")
+    connection.cursor.assert_not_called()
+
+
+def test_runs_record_roformer_and_residual_provenance():
+    from unittest.mock import MagicMock
+    from echora_analysis import hum_search as h
+    connection = MagicMock()
+    cursor = connection.cursor.return_value.__enter__.return_value
+    cursor.fetchone.return_value = {"id": "run"}
+    for create in (lambda: h.create_sync_run(connection), lambda: h._create_run(connection, "corpus")):
+        assert create() == "run"
+        sql, params = cursor.execute.call_args.args
+        assert params[0] == h.MELODY_CONTOUR_REVISION
+        config = params[2].obj
+        assert config["separator_model"] == "KimberleyJSN/melbandroformer"
+        assert "overlap2" in config["separator_revision"]
+        assert config["accompaniment"] == "stereo-mix-minus-vocals-then-mean-v1"
+        assert "'mixed'" in sql
+
+
+def test_search_loads_only_current_recipe_and_owned_tracks(monkeypatch):
+    from unittest.mock import MagicMock
+    from echora_analysis import hum_search as h
+    connection = MagicMock()
+    cursor = connection.cursor.return_value.__enter__.return_value
+    cursor.fetchone.return_value = (0, "")
+    cursor.fetchall.return_value = []
+    monkeypatch.setattr(h, "_CONTOUR_CACHE", {"key": None, "contours": ()})
+    assert h._load_contours(connection, "owner") == []
+    for call in cursor.execute.call_args_list:
+        sql, params = call.args
+        assert "ar.model_revision=%s" in sql
+        assert "utl.user_id=%s" in sql
+        assert params == (h.MELODY_CONTOUR_REVISION, "owner")
+    assert h.MELODY_CONTOUR_REVISION in h._CONTOUR_CACHE["key"][0]

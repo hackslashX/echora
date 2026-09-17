@@ -36,6 +36,11 @@ def full_coverage_window_ranges(
 
 
 def decode_audio(data: bytes, sample_rate: int = 24_000) -> np.ndarray:
+    from .preprocessing import cached_decode
+    return cached_decode(data, sample_rate, 1, lambda: _decode_audio(data, sample_rate))
+
+
+def _decode_audio(data: bytes, sample_rate: int) -> np.ndarray:
     process = subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0",
@@ -56,6 +61,14 @@ def decode_audio(data: bytes, sample_rate: int = 24_000) -> np.ndarray:
 
 
 def decode_audio_channels(data: bytes, sample_rate: int = 44_100, channels: int = 2) -> np.ndarray:
+    from .preprocessing import cached_decode
+    if channels == 1:
+        return decode_audio(data, sample_rate).reshape(-1, 1)
+    return cached_decode(data, sample_rate, channels,
+                         lambda: _decode_audio_channels(data, sample_rate, channels))
+
+
+def _decode_audio_channels(data: bytes, sample_rate: int, channels: int) -> np.ndarray:
     process = subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0",

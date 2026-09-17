@@ -29,4 +29,6 @@ This experiment samples 50 tracks from the signed-in user's Navidrome catalog. E
 
 ## Known experimental limits
 
-MELODIA may follow a vocal, guitar, synth, or another salient line instead of the tune a listener remembers. The first contour version uses the full mix and does not yet compare a Demucs vocal contour. Matching scans the 50-track corpus directly. Rebuilding creates a new corpus and leaves older corpora available for provenance until explicitly cleaned up.
+MELODIA may follow a vocal, guitar, synth, or another salient line instead of the tune a listener remembers. Current indexing extracts contours from the full mix, shared Roformer overlap-2 vocals and accompaniment derived as mix minus vocals. It no longer runs Demucs. Matching still needs evaluation with real humming queries; preferred separation audio does not establish better search recall.
+
+Melody source preparation shares the persistent cache used by transcription and karaoke. A new contour revision identifies the Roformer/residual recipe, and active search excludes earlier revisions. Refresh the index through a melody-index job or an enabled entire-library sync after deployment. Earlier contours stay in storage for provenance. No automatic deletion or library-wide reprocessing runs at startup. See [shared audio preprocessing](audio-preprocessing.md).

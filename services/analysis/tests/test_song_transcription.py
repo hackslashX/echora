@@ -29,3 +29,29 @@ def test_model_config_requires_pinned_revision(monkeypatch):
     with pytest.raises(ValueError): transcription_model()
     monkeypatch.setenv('MOSS_REVISION','a'*40)
     assert transcription_model() == ('example/model','a'*40)
+
+
+def test_transcription_uses_shared_vocals_before_loading_asr(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    import huggingface_hub
+    import transformers
+    from echora_analysis import song_transcription as st
+    from echora_analysis.vendor.moss.processor import MossTranscribeDiarizeProcessor
+
+    class PreparedBoundary(Exception):
+        pass
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", Mock(return_value="/local/model"))
+    processor = SimpleNamespace(feature_extractor=SimpleNamespace(sampling_rate=24000))
+    monkeypatch.setattr(MossTranscribeDiarizeProcessor, "from_pretrained", Mock(return_value=processor))
+    prepare = Mock(side_effect=PreparedBoundary())
+    monkeypatch.setattr(st, "vocal_waveform", prepare)
+    load_model = Mock()
+    monkeypatch.setattr(transformers.AutoModelForCausalLM, "from_pretrained", load_model)
+    check = Mock()
+    with pytest.raises(PreparedBoundary):
+        st.SongTranscriber("model", "revision").transcribe(b"original", check=check)
+    prepare.assert_called_once_with(b"original", sample_rate=24000, check=check)
+    load_model.assert_not_called()
+    assert "overlap2" in st.PIPELINE_REVISION

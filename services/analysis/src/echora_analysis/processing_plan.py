@@ -58,6 +58,30 @@ class AudioProcessingPlan:
                 | self.melody_external_ids | self.descriptor_external_ids | self.waveform_external_ids)
 
 
+@dataclass(frozen=True)
+class AudioPrerequisites:
+    """Exact decoded formats shared by the pending mix-analysis tasks."""
+    mono_rates: tuple[int, ...] = ()
+    stereo_rates: tuple[int, ...] = ()
+    melody: bool = False
+
+
+def audio_prerequisites(plan: AudioProcessingPlan, external_id: str) -> AudioPrerequisites:
+    mono, stereo = set(), set()
+    if external_id in plan.muq_external_ids | plan.mert_external_ids:
+        mono.add(24_000)
+    if external_id in plan.melody_external_ids:
+        mono.add(44_100)
+        stereo.add(44_100)
+    if external_id in plan.descriptor_external_ids:
+        stereo.add(44_100)
+    if external_id in plan.waveform_external_ids:
+        stereo.add(24_000)
+    # Chromaprint decodes independently; changing its input may change fingerprints.
+    return AudioPrerequisites(tuple(sorted(mono)), tuple(sorted(stereo)),
+                              external_id in plan.melody_external_ids)
+
+
 def _id_filter(external_ids: Iterable[str] | None) -> tuple[str, list[object]]:
     if external_ids is None:
         return "", []

@@ -58,8 +58,10 @@ services:
       LYRICS_REVISION: ${LYRICS_REVISION:-5617a9f61b028005a4858fdac845db406aefb181}
       FA_KARA_MODEL_ID: ${FA_KARA_MODEL_ID:-hcX02/echora-mms-300m-multilingual-lyrics-forced-aligner}
       FA_KARA_REVISION: ${FA_KARA_REVISION:-b46485a5d814dc26e3511cece3ccc98ebba2e9d0}
-      FA_KARA_VOCAL_SEPARATION: ${FA_KARA_VOCAL_SEPARATION:-true}
-      FA_KARA_DEMUCS_MODEL: ${FA_KARA_DEMUCS_MODEL:-htdemucs_ft}
+      # Vocal-only analysis always uses the pinned Roformer overlap-2 recipe.
+      ECHORA_PREPROCESS_DIR: /data/preprocessed
+      ECHORA_PREPROCESS_MAX_BYTES: ${ECHORA_PREPROCESS_MAX_BYTES:-21474836480}
+      ECHORA_PREPROCESS_TTL_SECONDS: ${ECHORA_PREPROCESS_TTL_SECONDS:-604800}
       MOSS_MODEL_ID: ${MOSS_MODEL_ID-hcX02/echora-moss-0.9b-multilingual-lyrics-transcriber}
       MOSS_REVISION: ${MOSS_REVISION-1cf9dc6d910a6c90c82d8ddc86b83e1533f39f4e}
       HF_HOME: /models/huggingface

@@ -19,6 +19,7 @@ from .navidrome import NavidromeClient
 from .processing_plan import plan_lyrics, resolve_library_id
 from .representations import configure_representations, embedding_config
 from .analysis_attempts import start_attempt, record_track, finish_attempt
+from .preprocessing import prepare_audio, get_check
 
 
 def _vector_literal(vector) -> str:
@@ -116,6 +117,21 @@ def backfill_lyrics(
             tracks = cursor.fetchall()
         summary["total"] = len(tracks)
         embeddable: list[tuple[uuid.UUID, str, dict[str, object]]] = []
+        transcriptions = []
+
+        def accept_lyrics(track_id, title, lyrics, stored=False):
+            if not stored:
+                stored_id = _store_lyrics(connection, track_id, lyrics)
+                if stored_id is None:
+                    # A concurrent writer supplied text. Never embed our discarded candidate.
+                    connection.commit()
+                    return
+            status = str(lyrics.get("status") or "unavailable")
+            summary[status] = summary.get(status, 0) + 1
+            if lyrics.get("text"):
+                embeddable.append((track_id, title, lyrics))
+            connection.commit()
+
         for index, (track_id, external_id, title) in enumerate(tracks):
             try:
                 lyrics = client.lyrics(external_id)
@@ -132,33 +148,12 @@ def backfill_lyrics(
                         from .transcription_config import transcription_model, transcription_enabled
                         config = transcription_model() if transcription_enabled(connection) else None
                         if config:
-                            from .song_transcription import SongTranscriber
-                            from .transcription_recovery import diagnostic_writer
-                            report({'phase':'transcription','message':f'Transcribing lyrics for {title}',
-                                    'completed':index,'total':len(tracks),'unit':'tracks'})
-                            with connection.cursor() as cursor:
-                                cursor.execute("""SELECT a.activity FROM track_vocal_activity a
-                                    JOIN current_embeddings e ON e.track_id=a.track_id AND e.run_id=a.run_id
-                                    WHERE a.track_id=%s AND e.embedding_type='voice-gender'
-                                    ORDER BY a.created_at DESC LIMIT 1""", (track_id,))
-                                activity_row = cursor.fetchone()
-                            lyrics = SongTranscriber(*config).transcribe(client.audio_bytes(external_id),
-                                check=lambda: report({'phase':'transcription'}),
-                                progress=lambda detail: report({'phase':'transcription','message':f'{title}: {detail}'}),
-                                diagnostic_sink=diagnostic_writer(track_id),
-                                vocal_activity=activity_row[0] if activity_row else None)
-                if not stored:
-                    stored_id = _store_lyrics(connection, track_id, lyrics)
-                    if stored_id is None:
-                        # Another writer supplied lyrics while inference was running.
-                        # Do not embed the discarded candidate.
-                        connection.commit()
-                        continue
-                status = str(lyrics.get("status") or "unavailable")
-                summary[status] = summary.get(status, 0) + 1
-                if lyrics.get("text"):
-                    embeddable.append((track_id, title, lyrics))
-                connection.commit()
+                            transcriptions.append((track_id, external_id, title, config, lyrics))
+                            connection.commit()
+                            report({"phase": "lyrics", "message": f"Lyrics need transcription for {title}",
+                                    "completed": index + 1, "total": len(tracks), "unit": "tracks"})
+                            continue
+                accept_lyrics(track_id, title, lyrics, stored=bool(stored))
             except Exception:
                 connection.rollback()
                 logging.getLogger(__name__).exception('Lyrics retrieval/transcription failed for %s', track_id)
@@ -166,6 +161,57 @@ def backfill_lyrics(
             report({"phase": "lyrics", "message": f"Retrieving lyrics for {title}",
                     "completed": index + 1, "total": len(tracks), "unit": "tracks",
                     "summary": summary})
+
+        # Only genuine fallbacks reach this stage. Never separate songs solely
+        # because their supplied lyrics need a new embedding.
+        ready = []
+        for index, candidate in enumerate(transcriptions):
+            track_id, external_id, title, config, missing = candidate
+            report({"phase": "preprocess", "message": f"Preparing vocals for {title}",
+                    "completed": index, "total": len(transcriptions), "unit": "tracks"})
+            try:
+                from .transcription_config import transcription_enabled
+                if not transcription_enabled(connection):
+                    accept_lyrics(track_id, title, missing)
+                    continue
+                prepare_audio(client.audio_bytes(external_id), vocals=True, check=get_check())
+                ready.append(candidate)
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                summary["failed"] += 1
+                logging.getLogger(__name__).exception('Vocal preparation failed for %s', track_id)
+            report({"phase": "preprocess", "completed": index + 1,
+                    "total": len(transcriptions), "unit": "tracks", "summary": summary})
+
+        for index, (track_id, external_id, title, config, missing) in enumerate(ready):
+            try:
+                from .transcription_config import transcription_enabled
+                if not transcription_enabled(connection):
+                    accept_lyrics(track_id, title, missing)
+                    continue
+                from .song_transcription import SongTranscriber
+                from .transcription_recovery import diagnostic_writer
+                report({'phase': 'transcription', 'message': f'Transcribing lyrics for {title}',
+                        'completed': index, 'total': len(ready), 'unit': 'tracks'})
+                with connection.cursor() as cursor:
+                    cursor.execute("""SELECT a.activity FROM track_vocal_activity a
+                        JOIN current_embeddings e ON e.track_id=a.track_id AND e.run_id=a.run_id
+                        WHERE a.track_id=%s AND e.embedding_type='voice-gender'
+                        ORDER BY a.created_at DESC LIMIT 1""", (track_id,))
+                    activity_row = cursor.fetchone()
+                lyrics = SongTranscriber(*config).transcribe(client.audio_bytes(external_id),
+                    check=lambda: report({'phase': 'transcription'}),
+                    progress=lambda detail: report({'phase': 'transcription', 'message': f'{title}: {detail}'}),
+                    diagnostic_sink=diagnostic_writer(track_id),
+                    vocal_activity=activity_row[0] if activity_row else None)
+                accept_lyrics(track_id, title, lyrics)
+            except Exception:
+                connection.rollback()
+                summary["failed"] += 1
+                logging.getLogger(__name__).exception('Lyrics transcription failed for %s', track_id)
+            report({"phase": "transcription", "message": f"Processed lyrics for {title}",
+                    "completed": index + 1, "total": len(ready), "unit": "tracks", "summary": summary})
 
         if not embeddable:
             return summary

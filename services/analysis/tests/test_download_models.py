@@ -1,8 +1,6 @@
 from unittest.mock import Mock
 
-import pytest
-
-from echora_analysis.download_models import _download_demucs, _pin_main_ref
+from echora_analysis.download_models import _pin_main_ref
 
 
 def test_pin_main_ref_points_to_snapshot_commit(tmp_path) -> None:
@@ -14,35 +12,25 @@ def test_pin_main_ref_points_to_snapshot_commit(tmp_path) -> None:
     assert (tmp_path / "models--example" / "refs" / "main").read_text() == "abc123"
 
 
-def test_download_demucs_defaults_to_fine_tuned_model(monkeypatch, tmp_path) -> None:
-    get_model = Mock()
-    monkeypatch.setenv("FA_KARA_VOCAL_SEPARATION", "true")
-    monkeypatch.delenv("FA_KARA_DEMUCS_MODEL", raising=False)
-    monkeypatch.setenv("TORCH_HOME", str(tmp_path))
-    monkeypatch.setattr("echora_analysis.download_models.pretrained.get_model", get_model)
-
-    _download_demucs()
-
-    get_model.assert_called_once_with("htdemucs_ft")
+def test_required_models_include_pinned_roformer(monkeypatch):
+    from echora_analysis.download_models import required_models
+    from echora_analysis.roformer import MODEL_ID, MODEL_REVISION
+    monkeypatch.delenv("MOSS_MODEL_ID", raising=False)
+    monkeypatch.delenv("MOSS_REVISION", raising=False)
+    assert (MODEL_ID, MODEL_REVISION, False) in required_models()
 
 
-def test_download_demucs_removes_unused_standard_checkpoint(monkeypatch, tmp_path) -> None:
-    checkpoint = tmp_path / "hub" / "checkpoints" / "955717e8-8726e21a.th"
+def test_provisioning_leaves_legacy_demucs_weights_untouched(monkeypatch, tmp_path):
+    from echora_analysis import download_models as d
+    checkpoint = tmp_path / "torch/hub/checkpoints/955717e8-8726e21a.th"
     checkpoint.parent.mkdir(parents=True)
-    checkpoint.write_bytes(b"obsolete")
-    monkeypatch.setenv("FA_KARA_VOCAL_SEPARATION", "false")
-    monkeypatch.setenv("TORCH_HOME", str(tmp_path))
-    monkeypatch.setattr("echora_analysis.download_models.pretrained.get_model", Mock())
-
-    _download_demucs()
-
-    assert not checkpoint.exists()
-
-
-def test_download_demucs_rejects_unknown_model(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("FA_KARA_VOCAL_SEPARATION", "true")
-    monkeypatch.setenv("FA_KARA_DEMUCS_MODEL", "unknown")
-    monkeypatch.setenv("TORCH_HOME", str(tmp_path))
-
-    with pytest.raises(ValueError, match="FA_KARA_DEMUCS_MODEL"):
-        _download_demucs()
+    checkpoint.write_bytes(b"preserve existing experiment weights")
+    monkeypatch.setenv("TORCH_HOME", str(tmp_path / "torch"))
+    monkeypatch.setattr(d, "required_models", Mock(return_value=((d.ROFORMER_MODEL_ID, d.ROFORMER_REVISION, False),)))
+    download = Mock()
+    monkeypatch.setattr(d, "snapshot_download", download)
+    monkeypatch.setattr(d, "_prune_huggingface_cache", Mock())
+    monkeypatch.setattr(d, "_download_essentia", Mock())
+    d.main()
+    download.assert_called_once_with(repo_id=d.ROFORMER_MODEL_ID, revision=d.ROFORMER_REVISION)
+    assert checkpoint.read_bytes() == b"preserve existing experiment weights"

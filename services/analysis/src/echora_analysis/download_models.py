@@ -4,11 +4,9 @@ import os
 from pathlib import Path
 import urllib.request
 
-import torch
-from demucs import pretrained
 from huggingface_hub import scan_cache_dir, snapshot_download
 
-from .melody_config import MELODY_DEMUCS_MODEL
+from .roformer import MODEL_ID as ROFORMER_MODEL_ID, MODEL_REVISION as ROFORMER_REVISION
 
 ESSENTIA_MODELS = (
     ("https://essentia.upf.edu/models/feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx",
@@ -40,7 +38,9 @@ def required_models() -> tuple[tuple[str, str, bool], ...]:
     fa_revision = os.environ.get("FA_KARA_REVISION", "b46485a5d814dc26e3511cece3ccc98ebba2e9d0")
     from .transcription_config import transcription_model
     moss = transcription_model()
-    return (*MODELS, (fa_model, fa_revision, False), *(((*moss, False),) if moss else ()))
+    return (*MODELS, (fa_model, fa_revision, False),
+            (ROFORMER_MODEL_ID, ROFORMER_REVISION, False),
+            *(((*moss, False),) if moss else ()))
 
 
 def _pin_main_ref(snapshot_path: str) -> None:
@@ -78,39 +78,6 @@ def _prune_huggingface_cache(required: tuple[tuple[str, str, bool], ...]) -> Non
     print(f"Pruned {len(stale)} superseded Hugging Face model snapshot(s).", flush=True)
 
 
-def _download_demucs() -> None:
-    """Preload required separators, then remove known checkpoints no longer used."""
-    required_models = {MELODY_DEMUCS_MODEL}
-    from .transcription_config import transcription_model
-    if transcription_model():
-        required_models.add('htdemucs')
-    if os.environ.get("FA_KARA_VOCAL_SEPARATION", "false").lower() == "true":
-        karaoke_model = os.environ.get("FA_KARA_DEMUCS_MODEL", "htdemucs_ft").strip()
-        if karaoke_model not in {"htdemucs", "htdemucs_ft"}:
-            raise ValueError("FA_KARA_DEMUCS_MODEL must be 'htdemucs' or 'htdemucs_ft'")
-        required_models.add(karaoke_model)
-    torch_home = Path(os.environ.get("TORCH_HOME", "/models/torch"))
-    torch_home.mkdir(parents=True, exist_ok=True)
-    os.environ["TORCH_HOME"] = str(torch_home)
-    for model_name in sorted(required_models):
-        print(f"Downloading demucs {model_name} checkpoints into TORCH_HOME", flush=True)
-        pretrained.get_model(model_name)
-        print(f"demucs {model_name} checkpoints are available.", flush=True)
-
-    obsolete_checkpoints = {
-        "htdemucs": ("955717e8-8726e21a.th",),
-    }
-    checkpoint_directory = torch_home / "hub" / "checkpoints"
-    for model_name, filenames in obsolete_checkpoints.items():
-        if model_name in required_models:
-            continue
-        for filename in filenames:
-            checkpoint = checkpoint_directory / filename
-            if checkpoint.exists():
-                checkpoint.unlink()
-                print(f"Removed unused demucs checkpoint {checkpoint}", flush=True)
-
-
 def _download_essentia() -> None:
     """Fetch the MTG-Jamendo voice/gender classifier files used by voice_pipeline."""
     directory = Path(os.environ.get("ESSENTIA_MODELS_DIR", "/data/models/essentia"))
@@ -144,7 +111,6 @@ def main(*, prune_only: bool = False) -> None:
                 _pin_main_ref(snapshot)
     _prune_huggingface_cache(required)
     if not prune_only:
-        _download_demucs()
         _download_essentia()
         print("All model snapshots are available.", flush=True)
 

@@ -17,10 +17,11 @@ import torch
 from .audio import decode_audio, full_coverage_window_ranges
 from .audio_descriptors import store_audio_descriptors
 from .waveforms import store_waveform
-from .hum_search import create_sync_run, release_separator, store_track_contours
+from .hum_search import create_sync_run, store_track_contours
 from .models import AudioEmbeddingModel, MertModel, MuQMuLanModel, release_model
 from .navidrome import NavidromeClient, NavidromeTrack
-from .processing_plan import plan_audio
+from .processing_plan import plan_audio, audio_prerequisites
+from .preprocessing import active_cache, prepare_audio, get_check
 from .representations import configure_representations, embedding_config
 from .analysis_attempts import start_attempt, record_track, finish_attempt
 from .recordings import store_and_match_fingerprint
@@ -249,6 +250,30 @@ def ingest_navidrome(
                     summary.inserted += 1
             return audio, track_id
 
+        # Prepare only the formats requested by outstanding tasks, before loading
+        # GPU models. Same-format consumers and later batches read the disk cache.
+        if active_cache() is not None:
+            preparing = [(song, audio_prerequisites(plan, song.id)) for song in songs]
+            preparing = [(song, needs) for song, needs in preparing
+                         if needs.mono_rates or needs.stereo_rates]
+            for index, (song, needs) in enumerate(preparing):
+                report({"phase": "preprocess", "message": f"Preparing audio for {song.title}",
+                        "completed": index, "total": len(preparing), "unit": "tracks"})
+                try:
+                    audio, _ = audio_track(song)
+                    prepare_audio(audio, mono_rates=needs.mono_rates,
+                                  stereo_rates=needs.stereo_rates, melody=needs.melody,
+                                  check=get_check())
+                    del audio
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    # Individual consumers retain their existing failure accounting
+                    # and may retry; one bad source must not stop the whole batch.
+                    logger.exception("Could not prepare audio for Navidrome song %s", song.id)
+                report({"phase": "preprocess", "message": f"Prepared audio for {song.title}",
+                        "completed": index + 1, "total": len(preparing), "unit": "tracks"})
+
         def embedding_phase(
             phase: str, label: str, external_ids: frozenset[str], model: AudioEmbeddingModel,
         ) -> None:
@@ -354,28 +379,26 @@ def ingest_navidrome(
         if melody_songs:
             melody_run_id = create_sync_run(connection)
             connection.commit()
-            try:
-                for index, song in enumerate(melody_songs):
-                    report({"phase": "melody", "message": f"Extracting melody from {song.title}",
-                            "completed": index, "total": len(melody_songs), "unit": "tracks",
-                            "summary": summary.__dict__})
-                    try:
-                        audio, track_id = audio_track(song)
-                        summary.melody_contours += store_track_contours(connection, track_id, melody_run_id, audio)
-                        summary.melody_indexed += 1
-                        connection.commit()
-                    except Exception:
-                        connection.rollback()
-                        summary.failed += 1
-                        logger.exception("Could not extract melody for Navidrome song %s", song.id)
-                    report({"phase": "melody", "message": f"Extracting melody from {song.title}",
-                            "completed": index + 1, "total": len(melody_songs), "unit": "tracks",
-                            "summary": summary.__dict__})
-                with connection.cursor() as cursor:
-                    cursor.execute("UPDATE analysis_runs SET status='complete',finished_at=now() WHERE id=%s", (melody_run_id,))
-                connection.commit()
-            finally:
-                release_separator()
+            for index, song in enumerate(melody_songs):
+                report({"phase": "melody", "message": f"Extracting melody from {song.title}",
+                        "completed": index, "total": len(melody_songs), "unit": "tracks",
+                        "summary": summary.__dict__})
+                try:
+                    audio, track_id = audio_track(song)
+                    summary.melody_contours += store_track_contours(connection, track_id, melody_run_id, audio)
+                    summary.melody_indexed += 1
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    summary.failed += 1
+                    logger.exception("Could not extract melody for Navidrome song %s", song.id)
+                report({"phase": "melody", "message": f"Extracting melody from {song.title}",
+                        "completed": index + 1, "total": len(melody_songs), "unit": "tracks",
+                        "summary": summary.__dict__})
+            with connection.cursor() as cursor:
+                cursor.execute("UPDATE analysis_runs SET status='complete',finished_at=now() WHERE id=%s", (melody_run_id,))
+            connection.commit()
+
 
         fingerprint_songs = [song for song in songs if song.id in plan.fingerprint_external_ids]
         for index, song in enumerate(fingerprint_songs):

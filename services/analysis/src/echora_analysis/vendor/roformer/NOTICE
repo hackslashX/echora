@@ -1,0 +1,25 @@
+Source: https://github.com/KimberleyJensen/Mel-Band-Roformer-Vocal-Model
+Commit: 25f44ffb55ee3c301281bba21b2d6d311cb69ae2
+Copied from: models/mel_band_roformer/{mel_band_roformer.py,attend.py}
+Local source: data/experiments/Mel-Band-Roformer-Vocal-Model
+
+Architecture files are unchanged except the Attend import is package-relative.
+The package initializer, production adapter and tests are Echora additions.
+The adapter's model configuration and overlap algorithm derive from this
+commit's configs/config_vocals_mel_band_roformer.yaml and utils.py.
+
+No upstream license file was present at this source revision. This notice is
+source attribution only: it does not grant or assert permission to use, modify,
+or redistribute this code or model weights. Licensing must be resolved before
+redistribution/deployment. Model weights are separate, not included here:
+KimberleyJSN/melbandroformer @ ac9b0614ab3cd7f77219e18ba494dfd93956c348,
+MelBandRoformer.ckpt.
+
+Runtime imports beyond numpy/torch/huggingface-hub: librosa, packaging, einops
+(pack/unpack required), beartype, rotary-embedding-torch. No ml-collections,
+PyYAML, external flash-attn, or training/CLI dependencies are needed.
+Use PyTorch >=2 with scaled_dot_product_attention, weights_only loading,
+torch.autocast and the legacy torch.backends.cuda.sdp_kernel context API.
+RotaryEmbedding must support dim= and rotate_queries_or_keys; einops must
+support pack/unpack (introduced in 0.6). These are API requirements, not new
+version pins. Echora's runtime pins live in services/analysis/pyproject.toml.
