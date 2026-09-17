@@ -56,14 +56,16 @@ const lyricsSizeClasses: Record<LyricsTextSize, string> = {
 };
 
 function groupSyllablesByWord(syllables: KaraokeSyllable[]) {
-  const words: { syllable: KaraokeSyllable; index: number }[][] = [];
-  let word: { syllable: KaraokeSyllable; index: number }[] = [];
+  const words: { syllable: KaraokeSyllable; index: number; text: string; fragmentIndex: number }[][] = [];
+  let word: { syllable: KaraokeSyllable; index: number; text: string; fragmentIndex: number }[] = [];
   syllables.forEach((syllable, index) => {
-    word.push({ syllable, index });
-    if (/\s$/u.test(syllable.text)) {
-      words.push(word);
-      word = [];
-    }
+    syllable.text.split(/(\s+)/u).filter(Boolean).forEach((text, fragmentIndex) => {
+      word.push({ syllable, index, text, fragmentIndex });
+      if (/^\s+$/u.test(text)) {
+        words.push(word);
+        word = [];
+      }
+    });
   });
   if (word.length) words.push(word);
   return words;
@@ -138,11 +140,11 @@ export default function FullscreenPlayer() {
     if (!karaokeMode || !currentLyrics?.karaoke || !line.syllables?.length) return line.text || "...";
     const now = playbackTime * 1000;
     const rtl = isRtlText(line.text);
-    return <span className={styles.syllables} dir={rtl ? "rtl" : "ltr"}>{groupSyllablesByWord(line.syllables).map((word, wordIndex) => <span key={wordIndex} style={{ display: "inline-block", whiteSpace: "pre" }}>{word.map(({ syllable, index }) => {
+    return <span className={styles.syllables} dir={rtl ? "rtl" : "ltr"}>{groupSyllablesByWord(line.syllables).map((word, wordIndex) => <span key={wordIndex} style={{ display: "inline-block", whiteSpace: "pre" }}>{word.map(({ syllable, index, text, fragmentIndex }) => {
       const singing = active && now >= syllable.start_ms && now < syllable.end_ms;
       const state = now >= syllable.end_ms ? styles.syllablePast : singing ? styles.syllableActive : styles.syllableNext;
-      if (highlightStyle === "syllable") return <span key={`${syllable.start_ms}-${index}`} className={state}
-        style={{ position: "relative", display: "inline-block", color: "transparent", WebkitBackgroundClip: "text", backgroundClip: "text" }} data-lyric-singing={singing ? "true" : undefined}>{syllable.text}</span>;
+      if (highlightStyle === "syllable") return <span key={`${syllable.start_ms}-${index}-${fragmentIndex}`} className={state}
+        style={{ position: "relative", display: "inline-block", color: "transparent", WebkitBackgroundClip: "text", backgroundClip: "text" }} data-lyric-singing={singing ? "true" : undefined}>{text}</span>;
       const progress = Math.min(100, Math.max(0, (now - syllable.start_ms) / Math.max(1, syllable.end_ms - syllable.start_ms) * 100));
       // A curved mask clips a second copy of the glyph, rather than layering
       // decorative bubbles over a straight gradient boundary.
@@ -163,10 +165,10 @@ export default function FullscreenPlayer() {
         maskRepeat: "no-repeat", WebkitMaskRepeat: "no-repeat",
         pointerEvents: "none",
       };
-      return <span key={`${syllable.start_ms}-${index}`} className={state}
+      return <span key={`${syllable.start_ms}-${index}-${fragmentIndex}`} className={state}
         style={{ position: "relative", display: "inline-block", color: "transparent", WebkitBackgroundClip: "text", backgroundClip: "text", ...(singing ? { background: "none", color: "#fff", textShadow: "none" } : {}) }}
-        data-lyric-singing={singing ? "true" : undefined}>{syllable.text}
-        {singing && <span aria-hidden="true" style={liquid}>{syllable.text}</span>}
+        data-lyric-singing={singing ? "true" : undefined}>{text}
+        {singing && <span aria-hidden="true" style={liquid}>{text}</span>}
       </span>;
     })}</span>)}</span>;
   }
