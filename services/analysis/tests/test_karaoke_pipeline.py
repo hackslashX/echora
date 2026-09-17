@@ -254,10 +254,10 @@ def test_worker_uses_cached_vocals_and_original_reference(monkeypatch, tmp_path,
         return buffer.getvalue()
     monkeypatch.setattr(pipeline, "_stop_fa_kara_worker", lambda: events.append("stop"))
     monkeypatch.setattr(pipeline, "vocal_audio_bytes", vocals)
-    def decode(data, rate):
-        assert data == original and rate == 16000
+    def decode(data, check):
+        assert data == original and callable(check)
         return waveform
-    monkeypatch.setattr(pipeline.audio_utils, "decode_audio", decode)
+    monkeypatch.setattr(pipeline, "vocal_reference_waveform", decode)
     monkeypatch.setattr(pipeline, "_fa_kara_worker", lambda *args: object())
     def job(worker, argv):
         assert "--separate_vocals" not in argv
@@ -310,7 +310,8 @@ def test_backfill_prewarms_before_alignment_and_skips_failed_tracks(monkeypatch,
     events = []
     monkeypatch.setattr(pipeline, "_stop_fa_kara_worker", lambda: events.append("stop"))
     def prepare(data, **kwargs):
-        assert kwargs["mono_rates"] == (16000,)
+        assert kwargs["reference"] is True
+        assert "mono_rates" not in kwargs
         assert kwargs["vocals"] is True
         assert callable(kwargs["check"])
         events.append(data)

@@ -250,6 +250,19 @@ def vocal_waveform(data: bytes, sample_rate=16000, check=lambda: None, *, before
     return cache.array(data, recipe, produce)
 
 
+def vocal_reference_waveform(data: bytes, check=lambda: None):
+    """Original mix on exactly the same sample grid as mono16k Roformer vocals."""
+    import soxr
+    from .audio import decode_audio_channels
+    recipe = {"kind": "vocal-reference-mono", "revision": DECODE_REVISION,
+              "sample_rate": 16000, "channels": 1, "input_rate": 44100,
+              "resampler": f"soxr-{soxr.__version__}-HQ", "downmix": "stereo-mean-v1"}
+    def produce():
+        mix = decode_audio_channels(data, 44100, 2).mean(axis=1)
+        return np.asarray(soxr.resample(mix, 44100, 16000, quality="HQ"), dtype=np.float32)
+    return _cache(check).array(data, recipe, produce)
+
+
 def vocal_audio_bytes(data: bytes, check=lambda: None, *, before_separate=None) -> bytes:
     import soundfile as sf
     waveform = vocal_waveform(data, 16000, check, before_separate=before_separate)
@@ -278,7 +291,7 @@ def melody_waveforms(data: bytes, check=lambda: None):
 
 
 def prepare_audio(data: bytes, *, mono_rates=(), stereo_rates=(), stereo=False, vocals=False,
-                  melody=False, check=lambda: None):
+                  melody=False, reference=False, check=lambda: None):
     from .audio import decode_audio, decode_audio_channels
     check()
     for sample_rate in sorted(set(mono_rates)):
@@ -291,4 +304,6 @@ def prepare_audio(data: bytes, *, mono_rates=(), stereo_rates=(), stereo=False, 
         vocal_waveform(data, 16000, check)
     if melody:
         melody_waveforms(data, check)
+    if reference:
+        vocal_reference_waveform(data, check)
     check()

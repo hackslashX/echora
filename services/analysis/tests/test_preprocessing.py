@@ -224,3 +224,23 @@ def test_prune_stops_checking_once_remaining_entries_are_retained(tmp_path):
     # The callback can perform a database heartbeat; its cost must not grow
     # with the number of artifacts when no eviction is necessary.
     assert check.call_count <= 3
+
+
+@pytest.mark.parametrize("frames", [44099, 44100, 44101, 100003])
+def test_karaoke_reference_matches_vocal_resampling_grid(monkeypatch, tmp_path, frames):
+    from echora_analysis import audio, roformer
+    monkeypatch.setenv("ECHORA_PREPROCESS_DIR", str(tmp_path))
+    mix = np.random.default_rng(frames).uniform(-1, 1, (frames, 2)).astype(np.float32)
+    decode = Mock(return_value=mix)
+    separate = Mock(side_effect=lambda waveform, check: waveform.copy())
+    monkeypatch.setattr(audio, "_decode_audio_channels", decode)
+    monkeypatch.setattr(roformer, "separate_vocals", separate)
+    with p.preprocessing_session():
+        p.prepare_audio(b"song", vocals=True, reference=True)
+        vocals = p.vocal_waveform(b"song")
+        reference = p.vocal_reference_waveform(b"song")
+    np.testing.assert_array_equal(reference, vocals)
+    assert decode.call_count == separate.call_count == 1
+    with p.preprocessing_session():
+        np.testing.assert_array_equal(p.vocal_reference_waveform(b"song"), reference)
+    assert decode.call_count == 1

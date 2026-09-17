@@ -18,8 +18,7 @@ import uuid
 import psycopg
 from psycopg.types.json import Jsonb
 
-from . import audio as audio_utils
-from .preprocessing import get_check, prepare_audio, vocal_audio_bytes
+from .preprocessing import get_check, prepare_audio, vocal_audio_bytes, vocal_reference_waveform
 from .roformer import SEPARATION_REVISION
 from .navidrome import NavidromeClient
 from .processing_plan import plan_karaoke, resolve_library_id
@@ -27,7 +26,7 @@ from .processing_plan import plan_karaoke, resolve_library_id
 logger = logging.getLogger(__name__)
 
 FA_KARA_REVISION = "168ca5f01cecaa1290e31c0ce8dc44af8c7451bb"
-KARAOKE_PIPELINE_REVISION = "v2"
+KARAOKE_PIPELINE_REVISION = "v3-matched-reference-grid"
 DEFAULT_MODEL_ID = "hcX02/echora-mms-300m-multilingual-lyrics-forced-aligner"
 DEFAULT_MODEL_REVISION = "b46485a5d814dc26e3511cece3ccc98ebba2e9d0"
 _DIALOGUE = re.compile(r"^Dialogue: [^,]*,([^,]+),([^,]+),(?:[^,]*,){6}(.*)$")
@@ -471,7 +470,7 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
             prepared = vocal_audio_bytes(audio, check=get_check(),
                                          before_separate=_stop_fa_kara_worker)
             import soundfile as sf
-            sf.write(reference_path, audio_utils.decode_audio(audio, 16000),
+            sf.write(reference_path, vocal_reference_waveform(audio, check=get_check()),
                      16000, format="WAV", subtype="FLOAT")
             audio_path.write_bytes(prepared)
         else:
@@ -595,7 +594,7 @@ def _backfill_karaoke(
             get_check()()
             try:
                 source = client.audio_bytes(external_id)
-                prepare_audio(source, mono_rates=(16000,), vocals=True, check=get_check())
+                prepare_audio(source, vocals=True, reference=True, check=get_check())
                 prepared_sources.add(track_id)
                 del source
             except Exception:

@@ -32,6 +32,8 @@ Melody extraction only needs vocals and combined accompaniment, not separate dru
 
 Chromaprint still receives the original encoded audio because changing its decoding path could alter fingerprint compatibility. Audio profiles consume stored embeddings and need no audio preparation. Window slicing is cheap and remains in each embedding consumer rather than storing duplicate window arrays.
 
+Karaoke's original-mix reference is downmixed from the same cached 44.1 kHz stereo input as the vocal estimate, then resampled with the identical soxr recipe. This keeps both 16 kHz arrays on exactly the same sample grid; independently decoding the reference straight to 16 kHz can round its length differently and fail alignment. The reference remains the original mix, not separated audio.
+
 The existing authenticated source-download cache is still private to one batch. It is not made persistent across users or jobs, because a URL/external ID alone cannot prove that remote bytes are unchanged. Prepared audio becomes reusable only after the caller obtains authorized source bytes and hashes them.
 
 ## Local storage and lifecycle
