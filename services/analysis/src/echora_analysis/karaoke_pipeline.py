@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 
 import psycopg
@@ -350,7 +351,9 @@ def _validate_alignment_document(document: object) -> dict[str, object]:
         if not isinstance(line, dict) or line.get("source_index") != line_index:
             raise RuntimeError("FA-Kara alignment document has invalid source indexes")
         tokens = line.get("tokens")
-        if tokens == [] and not str(line.get("text") or "").strip():
+        display_only = all(c.isspace() or unicodedata.category(c).startswith("P")
+                           for c in str(line.get("text") or ""))
+        if tokens == [] and display_only:
             continue
         if not isinstance(tokens, list) or not tokens:
             raise RuntimeError(f"FA-Kara line {line_index} contains no aligned tokens")
