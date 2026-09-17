@@ -1,7 +1,7 @@
 """Local-only, per-call Mel-Band-Roformer vocal separation at 44.1 kHz stereo.
 
 No resampling, normalization, clipping or network fallback. See vendor/roformer/NOTICE
-for source attribution and unresolved upstream licensing. Full-track buffers stay
+for source attribution, model licensing and author permission references. Full-track buffers stay
 on CPU; only one inference chunk and the model reside on the accelerator.
 """
 
