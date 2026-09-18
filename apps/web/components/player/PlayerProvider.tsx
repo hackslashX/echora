@@ -153,12 +153,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setAction("seekforward", details => seek(player.currentTime + (details.seekOffset || 10)));
       setAction("seekto", details => { if (typeof details.seekTime === "number") seek(details.seekTime); });
     }
+    // Backdrop canvases live outside this provider, so they request the current
+    // state instead of relying on a playback event that may have already fired.
+    const reportPlaybackState = () => window.dispatchEvent(new CustomEvent("echora:playback-state", { detail: !player.paused && Boolean(trackRef.current) }));
+    window.addEventListener("echora:playback-state-request", reportPlaybackState);
     player.addEventListener("timeupdate", time); player.addEventListener("durationchange", metadata);
     player.addEventListener("loadedmetadata", metadata); player.addEventListener("progress", progress); player.addEventListener("ended", ended);
     player.addEventListener("pause", paused); player.addEventListener("play", started);
     player.addEventListener("loadstart", waiting); player.addEventListener("waiting", waiting);
     player.addEventListener("canplay", ready); player.addEventListener("playing", ready);
-    return () => { player.pause(); publishPalette(null); if (hasMediaSession()) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = "none"; ["play", "pause", "previoustrack", "nexttrack", "seekbackward", "seekforward", "seekto"].forEach(action => setAction(action as MediaSessionAction, null)); } cancelAnimationFrame(analysisFrame.current); audioContext.current?.close(); player.remove(); };
+    return () => { window.removeEventListener("echora:playback-state-request", reportPlaybackState); player.pause(); publishPalette(null); if (hasMediaSession()) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = "none"; ["play", "pause", "previoustrack", "nexttrack", "seekbackward", "seekforward", "seekto"].forEach(action => setAction(action as MediaSessionAction, null)); } cancelAnimationFrame(analysisFrame.current); audioContext.current?.close(); player.remove(); };
   }, []);
 
   function startAnalysis() {

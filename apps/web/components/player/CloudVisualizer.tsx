@@ -17,7 +17,7 @@ export default function CloudVisualizer() {
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
     let preferences = readPlaybackPreferences();
     let renderer: THREE.WebGLRenderer | null = null;
-    let active = false, failed = false, playing = true, frame = 0, lastFrame = 0;
+    let active = false, failed = false, playing = false, frame = 0, lastFrame = 0;
     const response = new CloudResponse();
     const targetTint = new THREE.Vector3(.38, .48, .63);
     const scene = new THREE.Scene();
@@ -81,7 +81,8 @@ export default function CloudVisualizer() {
       if (active && playing) response.receive((event as CustomEvent<CloudAudio>).detail, preferences, performance.now() / 1000);
     };
     const receivePalette = (event: Event) => {
-      const palette = (event as CustomEvent<{ palette: { waves: number[][] } | null }>).detail.palette;
+      const detail = (event as CustomEvent<{ active: boolean; palette: { waves: number[][] } | null }>).detail;
+      const palette = detail.active ? detail.palette : null;
       if (palette?.waves[0]) targetTint.fromArray(palette.waves[0]);
       else targetTint.set(.38, .48, .63);
     };
@@ -98,12 +99,16 @@ export default function CloudVisualizer() {
       ["echora:track-change", reset], [compactLayoutEvent, sync], ["resize", resize],
     ];
     events.forEach(([name, handler]) => window.addEventListener(name, handler));
+    // Provider effects register after this sibling backdrop. Defer one turn so
+    // the request can retrieve the current state even when playback began first.
+    const stateRequest = window.setTimeout(() => window.dispatchEvent(new Event("echora:playback-state-request")), 0);
     compact.addEventListener("change", sync); reduced.addEventListener("change", sync);
     document.addEventListener("visibilitychange", sync);
     canvas.addEventListener("webglcontextlost", lost); canvas.addEventListener("webglcontextrestored", restored);
     sync();
     return () => {
       cancelAnimationFrame(frame);
+      window.clearTimeout(stateRequest);
       events.forEach(([name, handler]) => window.removeEventListener(name, handler));
       compact.removeEventListener("change", sync); reduced.removeEventListener("change", sync);
       document.removeEventListener("visibilitychange", sync);
