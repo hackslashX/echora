@@ -39,6 +39,7 @@ def select_sync_tracks(connection, url: str, external_ids: list[str], mode: str 
             WHERE ts.library_id=%s AND ts.source_type='subsonic' AND ts.external_id=ANY(%s)
             AND (
                 l.track_id IS NULL
+                OR (l.provenance->>'manual_status')='missing'
                 OR (l.text IS NOT NULL AND NOT EXISTS (
                     SELECT 1 FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                     WHERE e.track_id=ts.track_id AND e.embedding_type='lyrics'

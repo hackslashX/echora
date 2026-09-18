@@ -134,6 +134,19 @@ class KaraokeProcessingSettingsRequest(BaseModel):
     enabled: bool
 
 
+class LyricsUpdateRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=100_000)
+    language: str | None = Field(default=None, max_length=12)
+
+
+class LyricsStatusRequest(BaseModel):
+    status: str = Field(pattern="^(instrumental|missing)$")
+
+
+class TranscriptionLanguageRequest(BaseModel):
+    language: str = Field(pattern="^[a-z]{2,3}(?:-[A-Z]{2})?$")
+
+
 class HumProcessingSettingsRequest(BaseModel):
     enabled: bool
 
@@ -1085,7 +1098,7 @@ def track_lyrics(track_id: uuid.UUID, echora_session: str | None = Cookie(defaul
     user = _session_user(echora_session)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
-            """SELECT l.text, l.language, l.source, l.provenance,
+            """SELECT l.text, l.language, l.source, l.provenance, l.availability_status,
                       karaoke.lines AS karaoke_lines, karaoke.ass AS karaoke_ass,
                       karaoke.lrc AS karaoke_lrc, karaoke.model AS karaoke_model,
                       karaoke.model_revision AS karaoke_model_revision,
@@ -1105,8 +1118,94 @@ def track_lyrics(track_id: uuid.UUID, echora_session: str | None = Cookie(defaul
     provenance = row.get("provenance") or {}
     source_lines = provenance.get("lines") or []
     karaoke_lines = row.get("karaoke_lines") or []
-    return {"available": bool(row.get("text")), **row,
+    return {"available": bool(row.get("text")), "availability_status": row.get("availability_status"), **row,
             "lines": karaoke_lines or source_lines, "karaoke": bool(karaoke_lines)}
+
+
+@app.put("/library/tracks/{track_id}/lyrics", dependencies=[Depends(require_user)])
+def update_track_lyrics(
+    track_id: uuid.UUID, request: LyricsUpdateRequest, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    lyric_text = request.text.strip()
+    if not lyric_text:
+        raise HTTPException(status_code=422, detail="Lyrics cannot be empty")
+    language = request.language.strip().lower() if request.language else None
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Track is not in your library")
+        cursor.execute("SELECT text, language FROM lyrics WHERE track_id=%s", (track_id,))
+        existing = cursor.fetchone()
+        changed = existing is None or existing["text"] != lyric_text or existing["language"] != language
+        cursor.execute(
+            """INSERT INTO lyrics (track_id, source, text, language, provenance, availability_status)
+               VALUES (%s,'manual',%s,%s,jsonb_build_object('manual',true,'edited_at',now()::text),'available')
+               ON CONFLICT (track_id) DO UPDATE SET source='manual', text=EXCLUDED.text,
+                 language=EXCLUDED.language, provenance=(CASE WHEN lyrics.text IS DISTINCT FROM EXCLUDED.text
+                   OR lyrics.language IS DISTINCT FROM EXCLUDED.language THEN
+                     coalesce(lyrics.provenance,'{}'::jsonb) - 'lines' - 'synced'
+                   ELSE coalesce(lyrics.provenance,'{}'::jsonb) END)
+                   || jsonb_build_object('manual',true,'edited_at',now()::text),
+                 availability_status='available', created_at=now()""",
+            (track_id, lyric_text, language),
+        )
+        if changed:
+            cursor.execute("DELETE FROM karaoke_lyrics_variants WHERE track_id=%s", (track_id,))
+            cursor.execute("DELETE FROM embeddings WHERE track_id=%s AND embedding_type='lyrics'", (track_id,))
+    return {"track_id": str(track_id), "karaoke_pending": changed, "lyrics_embedding_pending": changed}
+
+
+@app.put("/library/tracks/{track_id}/lyrics/transcription-language", dependencies=[Depends(require_user)])
+def force_transcription_language(
+    track_id: uuid.UUID, request: TranscriptionLanguageRequest, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    language = request.language.strip()
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Track is not in your library")
+        cursor.execute("SELECT transcription_processing_enabled FROM analysis_settings WHERE singleton=true")
+        setting = cursor.fetchone()
+        if not setting or not setting["transcription_processing_enabled"]:
+            raise HTTPException(status_code=409, detail="Enable AI lyric generation in Settings before forcing transcription")
+        cursor.execute(
+            """INSERT INTO lyrics (track_id, source, text, provenance, availability_status)
+               VALUES (%s,'none',NULL,jsonb_build_object('transcription_language',%s,'forced_transcription',true),'missing')
+               ON CONFLICT (track_id) DO UPDATE SET source='none', text=NULL, language=NULL,
+                 provenance=(coalesce(lyrics.provenance,'{}'::jsonb) - 'manual' - 'lines' - 'synced')
+                   || jsonb_build_object('transcription_language',%s,'forced_transcription',true),
+                 availability_status='missing', created_at=now()""",
+            (track_id, language, language),
+        )
+        cursor.execute("DELETE FROM karaoke_lyrics_variants WHERE track_id=%s", (track_id,))
+        cursor.execute("DELETE FROM embeddings WHERE track_id=%s AND embedding_type='lyrics'", (track_id,))
+    return {"track_id": str(track_id), "language": language, "transcription_pending": True}
+
+
+@app.put("/library/tracks/{track_id}/lyrics/status", dependencies=[Depends(require_user)])
+def update_track_lyrics_status(
+    track_id: uuid.UUID, request: LyricsStatusRequest, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Track is not in your library")
+        cursor.execute(
+            """INSERT INTO lyrics (track_id, source, text, provenance, availability_status)
+               VALUES (%s,'none',NULL,jsonb_build_object('manual_status',%s,'edited_at',now()::text),%s)
+               ON CONFLICT (track_id) DO UPDATE SET source='none', text=NULL, language=NULL,
+                 provenance=(coalesce(lyrics.provenance,'{}'::jsonb)
+                   - 'manual' - 'lines' - 'synced' - 'forced_transcription' - 'transcription_language')
+                   || jsonb_build_object('manual_status',EXCLUDED.availability_status,'edited_at',now()::text),
+                 availability_status=EXCLUDED.availability_status, created_at=now()""",
+            (track_id, request.status, request.status),
+        )
+        cursor.execute("DELETE FROM karaoke_lyrics_variants WHERE track_id=%s", (track_id,))
+        cursor.execute("DELETE FROM embeddings WHERE track_id=%s AND embedding_type='lyrics'", (track_id,))
+    return {"track_id": str(track_id), "status": request.status}
 
 
 @app.get("/navidrome/connections/{connection_id}/stream/{song_id}", dependencies=[Depends(require_user)])
@@ -1342,11 +1441,12 @@ def library_tracks(
         rows = session.execute(
             text(f"""
             SELECT t.id, t.title, t.artist, t.album, t.year, t.duration_seconds,
-                   t.genres, t.ingested_at,
+                   t.genres, t.ingested_at, l.availability_status AS lyrics_status,
                    (SELECT count(DISTINCT e.run_id) FROM current_embeddings e
                     WHERE e.track_id=t.id AND e.embedding_type='audio-track') AS embedding_runs,
                    source.external_id AS source_id, source.album_id, source.cover_art
             FROM tracks t
+            LEFT JOIN lyrics l ON l.track_id=t.id
             LEFT JOIN LATERAL (
               SELECT ts.external_id, ts.source_data->>'albumId' AS album_id,
                      ts.source_data->>'coverArt' AS cover_art

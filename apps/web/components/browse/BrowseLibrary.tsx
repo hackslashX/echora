@@ -13,9 +13,10 @@ import MobilePivots from "../shell/MobilePivots";
 import { useMobilePane } from "../shell/useMobilePane";
 import CardHeader from "../ui/CardHeader";
 import HumSearchButton from "./HumSearchButton";
+import TrackMenu from "./TrackMenu";
 import styles from "./BrowseLibrary.module.css";
 
-type Track = { id: string; title: string; artist?: string; album?: string; duration_seconds: number; source_id?: string; cover_art?: string; similarity?: number; matched_at_seconds?: number; matched_source?: string };
+type Track = { id: string; title: string; artist?: string; album?: string; duration_seconds: number; source_id?: string; cover_art?: string; similarity?: number; matched_at_seconds?: number; matched_source?: string; lyrics_status?: string };
 type Facet = { name: string; tracks: number };
 const duration = (seconds: number) => {
   const rounded = Math.max(0, Math.round(seconds));
@@ -39,6 +40,7 @@ export default function BrowseLibrary() {
   const [sortBy, setSortBy] = useState<"name" | "artist" | "released">("name");
   const [connectionId, setConnectionId] = useState("");
   const [humResults, setHumResults] = useState(false);
+  const [refreshToken, setRefreshToken] = useState(0);
   const [mobilePane, setMobilePane, paneTransition] = useMobilePane<"tracks" | "filters">("tracks", ["tracks", "filters"]);
   const listRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -61,7 +63,7 @@ export default function BrowseLibrary() {
       }).catch(reason => { if (reason.name !== "AbortError") setError(reason instanceof Error ? reason.message : "Could not load tracks"); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     }, batch === 0 ? 220 : 0);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [album, artist, batch, humResults, query, sortBy]);
+  }, [album, artist, batch, humResults, query, refreshToken, sortBy]);
 
   useEffect(() => {
     const root = listRef.current, sentinel = sentinelRef.current;
@@ -86,15 +88,16 @@ export default function BrowseLibrary() {
     listRef.current?.scrollTo({ top: 0 });
   }
 
-  function play(track: Track) {
-    if (!connectionId || !track.source_id) return;
-    player.play({
+  function playerTrack(track: Track) {
+    if (!connectionId || !track.source_id) return null;
+    return {
       id: track.id, title: track.title, artist: track.artist, album: track.album, durationSeconds: track.duration_seconds,
       streamUrl: mediaUrl(`/navidrome/connections/${connectionId}/stream/${encodeURIComponent(track.source_id)}`),
       connectionId, sourceId: track.source_id,
       coverUrl: track.cover_art ? coverArtUrl(connectionId, track.cover_art) : undefined,
-    });
+    };
   }
+  function play(track: Track) { const next = playerTrack(track); if (next) player.play(next); }
 
   const columns = [0.27, 0.04, 0.69];
   const rows = [1];
@@ -109,10 +112,13 @@ export default function BrowseLibrary() {
       <section className={`${styles.listing} ${mobilePane === "tracks" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
         <CardHeader title={humResults ? "Hum matches" : "Tracks"} count={total} />
         <div className={styles.search}><label><Search /><input value={query} onChange={event => { setQuery(event.target.value); resetResults(); }} placeholder="Search tracks" /></label><HumSearchButton onResults={showHumResults} onError={setError} /><select aria-label="Sort tracks" value={sortBy} onChange={event => { setSortBy(event.target.value as "name" | "artist" | "released"); resetResults(); }}><option value="name">Name</option><option value="artist">Artist</option><option value="released">Date released</option></select></div>
-        <div className={styles.list} ref={listRef}>{loading && tracks.length === 0 ? <div className={styles.empty}>Loading library</div> : error ? <div className={styles.empty}>{error}</div> : tracks.length === 0 ? <div className={styles.empty}>No matching tracks</div> : <>{tracks.map(track => <button type="button" className={`${styles.row} ${player.track?.id === track.id ? styles.current : ""}`} key={track.id} onClick={() => play(track)} disabled={!connectionId || !track.source_id}>
-          <span className={styles.art}>{track.cover_art && connectionId ? <LoadingImage sizes="48px" alt="" src={coverArtUrl(connectionId, track.cover_art, 96)} /> : <Disc3 />}</span>
-          <span className={styles.track}><strong>{track.title}</strong><small>{track.artist || "Unknown artist"}</small></span><span className={styles.album}>{track.similarity == null ? track.album || "Unknown album" : `${Math.round(track.similarity * 100)}% match · ${duration(track.matched_at_seconds || 0)} · ${track.matched_source || "melody"}`}</span><time>{duration(track.duration_seconds)}</time>
-        </button>)}<div ref={sentinelRef} className={styles.sentinel}>{loading ? "Loading more tracks" : tracks.length < total ? "Scroll for more" : `${tracks.length} tracks loaded`}</div></>}</div>
+        <div className={styles.list} ref={listRef}>{loading && tracks.length === 0 ? <div className={styles.empty}>Loading library</div> : error ? <div className={styles.empty}>{error}</div> : tracks.length === 0 ? <div className={styles.empty}>No matching tracks</div> : <>{tracks.map(track => <article className={`${styles.row} ${player.track?.id === track.id ? styles.current : ""}`} key={track.id}>
+          <button type="button" className={styles.playTrack} onClick={() => play(track)} disabled={!connectionId || !track.source_id}>
+            <span className={styles.art}>{track.cover_art && connectionId ? <LoadingImage sizes="48px" alt="" src={coverArtUrl(connectionId, track.cover_art, 96)} /> : <Disc3 />}</span>
+            <span className={styles.track}><strong>{track.title}</strong><small>{track.artist || "Unknown artist"}</small></span><span className={styles.album}>{track.similarity == null ? track.album || "Unknown album" : `${Math.round(track.similarity * 100)}% match · ${duration(track.matched_at_seconds || 0)} · ${track.matched_source || "melody"}`}</span><time>{duration(track.duration_seconds)}</time>
+          </button>
+          <TrackMenu track={{ ...track, connectionId, streamUrl: playerTrack(track)?.streamUrl, coverUrl: playerTrack(track)?.coverUrl }} onSaved={() => { setTracks([]); setTotal(0); setBatch(0); setRefreshToken(value => value + 1); }} />
+        </article>)}<div ref={sentinelRef} className={styles.sentinel}>{loading ? "Loading more tracks" : tracks.length < total ? "Scroll for more" : `${tracks.length} tracks loaded`}</div></>}</div>
       </section>
     </section>
   </AppShell>;
