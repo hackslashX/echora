@@ -23,7 +23,7 @@ type PlayerState = {
   track: PlayerTrack | null; audioQuality: AudioQuality | null; lyrics: PlayerLyrics | null; lyricsLoading: boolean; playing: boolean; buffering: boolean; currentTime: number; duration: number; buffered: number; muted: boolean; expanded: boolean;
   waveform: number[] | null; melody: MelodyPreview | null;
   queue: PlayerTrack[]; queueIndex: number;
-  play: (track: PlayerTrack) => void; playQueue: (tracks: PlayerTrack[], startIndex?: number) => void;
+  play: (track: PlayerTrack) => void; playQueue: (tracks: PlayerTrack[], startIndex?: number) => void; playNext: (track: PlayerTrack) => void;
   next: () => void; previous: () => void; clearQueue: () => void;
   toggle: () => void; seek: (seconds: number) => void; toggleMute: () => void; setExpanded: (value: boolean) => void;
 };
@@ -268,6 +268,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const index = Math.min(Math.max(startIndex, 0), tracks.length - 1);
     queueRef.current = tracks; queueIndexRef.current = index; setQueue(tracks); setQueueIndex(index); load(tracks[index]);
   }
+  function playNext(next: PlayerTrack) {
+    const current = trackRef.current;
+    if (!current || queueIndexRef.current < 0) { play(next); return; }
+    if (current.id === next.id) return;
+    const queue = queueRef.current.filter(item => item.id !== next.id);
+    const currentIndex = queue.findIndex(item => item.id === current.id);
+    const insertAt = currentIndex < 0 ? queue.length : currentIndex + 1;
+    queue.splice(insertAt, 0, next);
+    queueRef.current = queue; setQueue(queue);
+  }
   function next() { if (queueIndexRef.current < queueRef.current.length - 1) activateQueueIndex(queueIndexRef.current + 1); }
   function previous() {
     const player = audio.current; if (!player) return;
@@ -281,7 +291,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   function seek(seconds: number) { const player = audio.current; if (!player || !Number.isFinite(seconds)) return; player.currentTime = seconds; setCurrentTime(seconds); publishMediaPosition(player, trackRef.current?.durationSeconds); }
   function toggleMute() { const player = audio.current; if (!player) return; player.muted = !player.muted; setMuted(player.muted); }
 
-  return <PlayerContext.Provider value={{ track, waveform, melody, audioQuality, lyrics, lyricsLoading, playing, buffering, currentTime, duration, buffered, muted, expanded, queue, queueIndex, play, playQueue, next, previous, clearQueue, toggle, seek, toggleMute, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
+  useEffect(() => {
+    const invalidate = (event: Event) => {
+      const trackId = (event as CustomEvent<string>).detail;
+      if (typeof trackId !== "string") return;
+      lyricsCacheRef.current.delete(trackId);
+      if (trackRef.current?.id === trackId) loadLyrics(trackRef.current);
+    };
+    window.addEventListener("echora:lyrics-update", invalidate);
+    return () => window.removeEventListener("echora:lyrics-update", invalidate);
+  }, []);
+
+  return <PlayerContext.Provider value={{ track, waveform, melody, audioQuality, lyrics, lyricsLoading, playing, buffering, currentTime, duration, buffered, muted, expanded, queue, queueIndex, play, playQueue, playNext, next, previous, clearQueue, toggle, seek, toggleMute, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
 }
 
 export function usePlayer() {
