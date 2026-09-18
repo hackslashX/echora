@@ -141,6 +141,9 @@ export default function FullscreenPlayer() {
     const now = playbackTime * 1000;
     const rtl = isRtlText(line.text);
     return <span className={styles.syllables} dir={rtl ? "rtl" : "ltr"}>{groupSyllablesByWord(line.syllables).map((word, wordIndex) => <span key={wordIndex} style={{ display: "inline-block", whiteSpace: "pre" }}>{word.map(({ syllable, index, text, fragmentIndex }) => {
+      // CSS masks on an inline whitespace box can paint as a solid rectangle
+      // while the fullscreen layer is composited. Spaces need no timing paint.
+      if (/^\s+$/u.test(text)) return text;
       const singing = active && now >= syllable.start_ms && now < syllable.end_ms;
       const state = now >= syllable.end_ms ? styles.syllablePast : singing ? styles.syllableActive : styles.syllableNext;
       if (highlightStyle === "syllable") return <span key={`${syllable.start_ms}-${index}-${fragmentIndex}`} className={state}
