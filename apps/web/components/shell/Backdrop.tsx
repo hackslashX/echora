@@ -13,6 +13,7 @@ import { useEffect, useRef } from "react";
 import { BackdropPreset, PlaybackPreferences, readPlaybackPreferences } from "../player/playbackPreferences";
 import RootVisualizer from "../player/RootVisualizer";
 import SignalVisualizer from "../player/SignalVisualizer";
+import CloudVisualizer from "../player/CloudVisualizer";
 import RetroTrainVisualizer from "../player/RetroTrainVisualizer";
 import styles from "./Backdrop.module.css";
 import { readCompactLayoutPreference } from "./layoutPreference";
@@ -303,7 +304,7 @@ export default function Backdrop() {
         }
         const rootsActive = preferences.wavesEnabled && preferences.backdropPreset === "roots";
         const trainActive = preferences.wavesEnabled && preferences.backdropPreset === "retrotrain";
-        const signalActive = preferences.backdropPreset === "oscilloscope" || preferences.backdropPreset === "void";
+        const signalActive = preferences.backdropPreset === "oscilloscope" || preferences.backdropPreset === "void" || preferences.backdropPreset === "clouds";
         const sceneActive = preferences.wavesEnabled && preferences.backdropPreset !== "waves" && !rootsActive && !trainActive && !signalActive;
         sceneCanvas.style.opacity = sceneActive ? "1" : "0";
         canvas.style.opacity = sceneActive || rootsActive || trainActive || signalActive || (preferences.backdropPreset === "waves" && !preferences.wavesEnabled) ? "0" : "1";
@@ -334,5 +335,5 @@ export default function Backdrop() {
     return () => { cancelled = true; cancelAnimationFrame(animation); removeResize(); window.removeEventListener("echora:audio-reactivity", receiveAudio); window.removeEventListener("echora:backdrop-mode", receiveMode); window.removeEventListener("echora:track-palette", receivePalette); window.removeEventListener("echora:playback-preferences", receivePreferences); };
   }, []);
 
-  return <div className={styles.backdrop} aria-hidden="true"><canvas ref={glRef} /><canvas ref={sceneRef} className={styles.scene} /><RootVisualizer /><SignalVisualizer /><RetroTrainVisualizer /></div>;
+  return <div className={styles.backdrop} aria-hidden="true"><canvas ref={glRef} /><canvas ref={sceneRef} className={styles.scene} /><RootVisualizer /><SignalVisualizer /><CloudVisualizer /><RetroTrainVisualizer /></div>;
 }
