@@ -146,8 +146,7 @@ export default function FullscreenPlayer() {
       if (/^\s+$/u.test(text)) return text;
       const singing = active && now >= syllable.start_ms && now < syllable.end_ms;
       const state = now >= syllable.end_ms ? styles.syllablePast : singing ? styles.syllableActive : styles.syllableNext;
-      if (highlightStyle === "syllable") return <span key={`${syllable.start_ms}-${index}-${fragmentIndex}`} className={state}
-        style={{ position: "relative", display: "inline-block", color: "transparent", WebkitBackgroundClip: "text", backgroundClip: "text" }} data-lyric-singing={singing ? "true" : undefined}>{text}</span>;
+      if (highlightStyle === "syllable") return <span key={`${syllable.start_ms}-${index}-${fragmentIndex}`} className={`${styles.syllable} ${state}`} data-lyric-singing={singing ? "true" : undefined}>{text}</span>;
       const progress = Math.min(100, Math.max(0, (now - syllable.start_ms) / Math.max(1, syllable.end_ms - syllable.start_ms) * 100));
       // A curved mask clips a second copy of the glyph, rather than layering
       // decorative bubbles over a straight gradient boundary.
@@ -168,8 +167,7 @@ export default function FullscreenPlayer() {
         maskRepeat: "no-repeat", WebkitMaskRepeat: "no-repeat",
         pointerEvents: "none",
       };
-      return <span key={`${syllable.start_ms}-${index}-${fragmentIndex}`} className={state}
-        style={{ position: "relative", display: "inline-block", color: "transparent", WebkitBackgroundClip: "text", backgroundClip: "text", ...(singing ? { background: "none", color: "#fff", textShadow: "none" } : {}) }}
+      return <span key={`${syllable.start_ms}-${index}-${fragmentIndex}`} className={`${styles.syllable} ${state} ${singing ? styles.lavaActive : ""}`}
         data-lyric-singing={singing ? "true" : undefined}>{text}
         {singing && <span aria-hidden="true" style={liquid}>{text}</span>}
       </span>;
