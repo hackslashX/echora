@@ -90,7 +90,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const paletteRef = useRef<TrackPalette | null>(null);
   const paletteTrackRef = useRef("");
   const lyricsCacheRef = useRef(new Map<string, PlayerLyrics>());
-  const lyricsRequestsRef = useRef(new Set<string>());
+  const lyricsGenerationRef = useRef(new Map<string, number>());
   const queueIndexRef = useRef(-1);
   const activateQueueIndexRef = useRef<(index: number) => void>(() => {});
   const nextRef = useRef<() => void>(() => {});
@@ -216,17 +216,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const cached = lyricsCacheRef.current.get(next.id);
     if (cached) { setLyrics(cached); setLyricsLoading(false); return; }
     setLyrics(null); setLyricsLoading(true);
-    if (lyricsRequestsRef.current.has(next.id)) return;
-    lyricsRequestsRef.current.add(next.id);
-    fetch(`/analysis/library/tracks/${next.id}/lyrics`).then(response => response.ok ? response.json() : null).then(value => {
-      const resolved: PlayerLyrics = value ? { ...value, trackId: next.id } : { trackId: next.id, available: false };
+    const generation = lyricsGenerationRef.current.get(next.id) || 0;
+    const resolve = (value: unknown) => {
+      // A save may have invalidated this request while it was in flight.
+      if (lyricsGenerationRef.current.get(next.id) !== generation) return;
+      const resolved: PlayerLyrics = value ? { ...(value as PlayerLyrics), trackId: next.id } : { trackId: next.id, available: false };
       lyricsCacheRef.current.set(next.id, resolved);
       if (trackRef.current?.id === next.id) { setLyrics(resolved); setLyricsLoading(false); }
-    }).catch(() => {
-      const resolved: PlayerLyrics = { trackId: next.id, available: false };
-      lyricsCacheRef.current.set(next.id, resolved);
-      if (trackRef.current?.id === next.id) { setLyrics(resolved); setLyricsLoading(false); }
-    }).finally(() => lyricsRequestsRef.current.delete(next.id));
+    };
+    fetch(`/analysis/library/tracks/${next.id}/lyrics`).then(response => response.ok ? response.json() : null).then(resolve).catch(() => resolve(null));
   }
 
   function load(next: PlayerTrack) {
@@ -276,6 +274,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const currentIndex = queue.findIndex(item => item.id === current.id);
     const insertAt = currentIndex < 0 ? queue.length : currentIndex + 1;
     queue.splice(insertAt, 0, next);
+    queueIndexRef.current = currentIndex; setQueueIndex(currentIndex);
     queueRef.current = queue; setQueue(queue);
   }
   function next() { if (queueIndexRef.current < queueRef.current.length - 1) activateQueueIndex(queueIndexRef.current + 1); }
@@ -296,6 +295,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const trackId = (event as CustomEvent<string>).detail;
       if (typeof trackId !== "string") return;
       lyricsCacheRef.current.delete(trackId);
+      lyricsGenerationRef.current.set(trackId, (lyricsGenerationRef.current.get(trackId) || 0) + 1);
       if (trackRef.current?.id === trackId) loadLyrics(trackRef.current);
     };
     window.addEventListener("echora:lyrics-update", invalidate);

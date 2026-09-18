@@ -10,10 +10,14 @@ depends_on = None
 def upgrade():
     op.execute("ALTER TABLE lyrics DROP CONSTRAINT IF EXISTS lyrics_source_check")
     op.execute("""ALTER TABLE lyrics ADD CONSTRAINT lyrics_source_check
-                  CHECK (source IN ('embedded', 'local-file', 'transcribed', 'manual', 'none'))""")
+                  CHECK (source IN ('embedded', 'local-file', 'transcribed', 'manual', 'none')) NOT VALID""")
+    op.execute("ALTER TABLE lyrics VALIDATE CONSTRAINT lyrics_source_check")
 
 
 def downgrade():
+    # Manual overrides have no equivalent source in the previous schema.
+    # Preserve their text while mapping their source to the compatible local-file value.
+    op.execute("UPDATE lyrics SET source='local-file' WHERE source='manual'")
     op.execute("ALTER TABLE lyrics DROP CONSTRAINT IF EXISTS lyrics_source_check")
     op.execute("""ALTER TABLE lyrics ADD CONSTRAINT lyrics_source_check
                   CHECK (source IN ('embedded', 'local-file', 'transcribed', 'none'))""")

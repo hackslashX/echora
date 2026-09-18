@@ -140,7 +140,10 @@ def backfill_lyrics(
                 with connection.cursor() as cursor:
                     cursor.execute("SELECT text, provenance, availability_status, source FROM lyrics WHERE track_id=%s", (track_id,))
                     stored = cursor.fetchone()
-                if stored and stored[3] == 'manual':
+                if stored and (stored[1] or {}).get('manual_status'):
+                    # A user-set status is final, even though these rows use source='none'.
+                    lyrics = {'text': stored[0], 'status': (stored[1] or {})['manual_status'], **(stored[1] or {})}
+                elif stored and stored[3] == 'manual':
                     lyrics = {'text': stored[0], 'status': stored[2], **(stored[1] or {})}
                 elif stored and (stored[1] or {}).get('forced_transcription'):
                     forced_language = str((stored[1] or {}).get('transcription_language') or '')

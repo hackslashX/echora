@@ -1197,7 +1197,8 @@ def update_track_lyrics_status(
             """INSERT INTO lyrics (track_id, source, text, provenance, availability_status)
                VALUES (%s,'none',NULL,jsonb_build_object('manual_status',%s,'edited_at',now()::text),%s)
                ON CONFLICT (track_id) DO UPDATE SET source='none', text=NULL, language=NULL,
-                 provenance=coalesce(lyrics.provenance,'{}'::jsonb)
+                 provenance=(coalesce(lyrics.provenance,'{}'::jsonb)
+                   - 'manual' - 'lines' - 'synced' - 'forced_transcription' - 'transcription_language')
                    || jsonb_build_object('manual_status',EXCLUDED.availability_status,'edited_at',now()::text),
                  availability_status=EXCLUDED.availability_status, created_at=now()""",
             (track_id, request.status, request.status),
