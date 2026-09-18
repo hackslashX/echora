@@ -134,25 +134,33 @@ def backfill_lyrics(
 
         for index, (track_id, external_id, title) in enumerate(tracks):
             try:
-                lyrics = client.lyrics(external_id)
                 stored = None
-                # A retrieval miss must not erase a previous AI transcript or lyrics
-                # that merely need embedding with a newer embedding model.
-                if not str(lyrics.get('text') or '').strip():
-                    with connection.cursor() as cursor:
-                        cursor.execute("SELECT text, provenance, availability_status FROM lyrics WHERE track_id=%s AND (NULLIF(btrim(text),'') IS NOT NULL OR availability_status='instrumental')", (track_id,))
-                        stored = cursor.fetchone()
-                    if stored:
-                        lyrics = {'text':stored[0], 'status':stored[2], **(stored[1] or {})}
-                    elif lyrics.get('status') != 'instrumental':
-                        from .transcription_config import transcription_model, transcription_enabled
-                        config = transcription_model() if transcription_enabled(connection) else None
-                        if config:
-                            transcriptions.append((track_id, external_id, title, config, lyrics))
-                            connection.commit()
-                            report({"phase": "lyrics", "message": f"Lyrics need transcription for {title}",
-                                    "completed": index + 1, "total": len(tracks), "unit": "tracks"})
-                            continue
+                # Manual edits are authoritative. Do not ask a provider or AI model to
+                # replace them when their embedding needs to be rebuilt.
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT text, provenance, availability_status, source FROM lyrics WHERE track_id=%s AND source='manual'", (track_id,))
+                    stored = cursor.fetchone()
+                if stored:
+                    lyrics = {'text': stored[0], 'status': stored[2], **(stored[1] or {})}
+                else:
+                    lyrics = client.lyrics(external_id)
+                    # A retrieval miss must not erase a previous AI transcript or lyrics
+                    # that merely need embedding with a newer embedding model.
+                    if not str(lyrics.get('text') or '').strip():
+                        with connection.cursor() as cursor:
+                            cursor.execute("SELECT text, provenance, availability_status FROM lyrics WHERE track_id=%s AND (NULLIF(btrim(text),'') IS NOT NULL OR availability_status='instrumental')", (track_id,))
+                            stored = cursor.fetchone()
+                        if stored:
+                            lyrics = {'text':stored[0], 'status':stored[2], **(stored[1] or {})}
+                        elif lyrics.get('status') != 'instrumental':
+                            from .transcription_config import transcription_model, transcription_enabled
+                            config = transcription_model() if transcription_enabled(connection) else None
+                            if config:
+                                transcriptions.append((track_id, external_id, title, config, lyrics))
+                                connection.commit()
+                                report({"phase": "lyrics", "message": f"Lyrics need transcription for {title}",
+                                        "completed": index + 1, "total": len(tracks), "unit": "tracks"})
+                                continue
                 accept_lyrics(track_id, title, lyrics, stored=bool(stored))
             except Exception:
                 connection.rollback()
