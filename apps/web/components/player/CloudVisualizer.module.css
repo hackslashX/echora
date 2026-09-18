@@ -1,0 +1,2 @@
+.clouds{position:absolute;inset:0;z-index:1;width:100%;height:100%;display:none;pointer-events:none;background:#101722}
+@media(prefers-reduced-motion:reduce){.clouds{display:none!important}}
