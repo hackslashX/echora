@@ -223,7 +223,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const generation = lyricsGenerationRef.current.get(next.id) || 0;
     const resolve = (value: unknown) => {
       // A save may have invalidated this request while it was in flight.
-      if (lyricsGenerationRef.current.get(next.id) !== generation) return;
+      if ((lyricsGenerationRef.current.get(next.id) || 0) !== generation) return;
       const resolved: PlayerLyrics = value ? { ...(value as PlayerLyrics), trackId: next.id } : { trackId: next.id, available: false };
       lyricsCacheRef.current.set(next.id, resolved);
       if (trackRef.current?.id === next.id) { setLyrics(resolved); setLyricsLoading(false); }
