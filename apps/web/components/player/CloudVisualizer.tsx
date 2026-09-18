@@ -40,9 +40,9 @@ export default function CloudVisualizer() {
     const resize = () => {
       if (!renderer) return;
       const bounds = canvas.getBoundingClientRect();
-      // Smoke is naturally soft. Cap the pixel budget rather than rendering
-      // hundreds of noise evaluations at the device's full retina resolution.
-      const scale = Math.min(.65, 900 / Math.max(1, bounds.width));
+      // The shader stays below native retina resolution, but 1,200 pixels
+      // across retains the smaller cloud folds and lightning branches.
+      const scale = Math.min(.78, 1200 / Math.max(1, bounds.width));
       renderer.setPixelRatio(1);
       renderer.setSize(Math.max(1, Math.round(bounds.width * scale)), Math.max(1, Math.round(bounds.height * scale)), false);
       renderer.getDrawingBufferSize(material.uniforms.resolution.value);
@@ -116,5 +116,7 @@ export default function CloudVisualizer() {
       geometry.dispose(); material.dispose(); renderer?.dispose();
     };
   }, []);
-  return <canvas ref={ref} className={styles.clouds} aria-hidden="true" />;
+  // Backdrop's generic canvas rule is deliberately broad. Start hidden so this
+  // opaque layer cannot cover the existing visualizers before sync enables it.
+  return <canvas ref={ref} className={styles.clouds} style={{ display: "none" }} aria-hidden="true" />;
 }
