@@ -6,6 +6,12 @@ from .roformer import SEPARATION_REVISION
 from .preprocessing import vocal_waveform
 
 PROMPT = 'Transcribe the audio. For each segment, start with the timestamp and speaker ID ([S01], [S02], [S03], ...), then the spoken text, and end with the segment timestamp.'
+
+
+def transcription_prompt(language: str | None) -> str:
+    if not language:
+        return PROMPT
+    return f'Transcribe the audio in {language}. Do not translate it. ' + PROMPT[20:]
 PATTERN = re.compile(r'\[(\d+(?:\.\d+)?)\]\[(S\d+|MULTI)\]([^\[\]]*)\[(\d+(?:\.\d+)?)\]')
 PIPELINE_REVISION = f'roformer-moss-w60-o12-timing-v7:{SEPARATION_REVISION}'
 
@@ -41,7 +47,7 @@ class SongTranscriber:
     def __init__(self, model_id, revision):
         self.model_id, self.revision = model_id, revision
 
-    def transcribe(self, audio_bytes, check=lambda: None, diagnostic_sink=lambda _: None, vocal_activity=None, progress=lambda _: None):
+    def transcribe(self, audio_bytes, language: str | None = None, check=lambda: None, diagnostic_sink=lambda _: None, vocal_activity=None, progress=lambda _: None):
         import numpy as np
         import torch
         from huggingface_hub import snapshot_download
@@ -66,7 +72,7 @@ class SongTranscriber:
         result = []; diagnostics = []; unresolved = []; timing_repairs = []
         timing_worker_used = False
         try:
-            messages = [{'role':'user','content':[{'type':'audio','audio':'in-memory'}, {'type':'text','text':PROMPT}]}]
+            messages = [{'role':'user','content':[{'type':'audio','audio':'in-memory'}, {'type':'text','text':transcription_prompt(language)}]}]
             prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             def decode(start, end, token_limit):
                 check()

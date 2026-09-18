@@ -138,11 +138,24 @@ def backfill_lyrics(
                 # Manual edits are authoritative. Do not ask a provider or AI model to
                 # replace them when their embedding needs to be rebuilt.
                 with connection.cursor() as cursor:
-                    cursor.execute("SELECT text, provenance, availability_status, source FROM lyrics WHERE track_id=%s AND source='manual'", (track_id,))
+                    cursor.execute("SELECT text, provenance, availability_status, source FROM lyrics WHERE track_id=%s", (track_id,))
                     stored = cursor.fetchone()
-                if stored:
+                if stored and stored[3] == 'manual':
                     lyrics = {'text': stored[0], 'status': stored[2], **(stored[1] or {})}
+                elif stored and (stored[1] or {}).get('forced_transcription'):
+                    forced_language = str((stored[1] or {}).get('transcription_language') or '')
+                    from .transcription_config import transcription_model, transcription_enabled
+                    config = transcription_model() if transcription_enabled(connection) else None
+                    if not config:
+                        raise RuntimeError('AI lyric generation is disabled')
+                    transcriptions.append((track_id, external_id, title, config, {'status': 'missing', 'transcription_language': forced_language}))
+                    stored = None
+                    connection.commit()
+                    report({"phase": "lyrics", "message": f"Lyrics need transcription for {title}",
+                            "completed": index + 1, "total": len(tracks), "unit": "tracks"})
+                    continue
                 else:
+                    stored = None
                     lyrics = client.lyrics(external_id)
                     # A retrieval miss must not erase a previous AI transcript or lyrics
                     # that merely need embedding with a newer embedding model.
@@ -209,6 +222,7 @@ def backfill_lyrics(
                         ORDER BY a.created_at DESC LIMIT 1""", (track_id,))
                     activity_row = cursor.fetchone()
                 lyrics = SongTranscriber(*config).transcribe(client.audio_bytes(external_id),
+                    language=str(missing.get('transcription_language') or '') or None,
                     check=lambda: report({'phase': 'transcription'}),
                     progress=lambda detail: report({'phase': 'transcription', 'message': f'{title}: {detail}'}),
                     diagnostic_sink=diagnostic_writer(track_id),

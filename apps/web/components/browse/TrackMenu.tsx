@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, ListPlus, Music2, Play, SquarePen, VolumeX, X } from "lucide-react";
+import { ChevronDown, Languages, ListPlus, Music2, Play, SquarePen, VolumeX, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { PlayerTrack } from "../player/PlayerProvider";
 import { usePlayer } from "../player/PlayerProvider";
@@ -14,6 +14,8 @@ export default function TrackMenu({ track, onSaved }: { track: Track; onSaved: (
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [transcriptionOpen, setTranscriptionOpen] = useState(false);
+  const [transcriptionLanguage, setTranscriptionLanguage] = useState("");
   const [lyrics, setLyrics] = useState("");
   const [language, setLanguage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -50,6 +52,16 @@ export default function TrackMenu({ track, onSaved }: { track: Track; onSaved: (
     finally { setBusy(false); }
   }
 
+  async function forceTranscription() {
+    setBusy(true); setError("");
+    try {
+      const response = await fetch(`/analysis/library/tracks/${encodeURIComponent(track.id)}/lyrics/transcription-language`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ language: transcriptionLanguage }) });
+      const body = await response.json(); if (!response.ok) throw new Error(body.detail || "Could not queue transcription");
+      setTranscriptionOpen(false); window.dispatchEvent(new CustomEvent("echora:lyrics-update", { detail: track.id })); onSaved();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not queue transcription"); }
+    finally { setBusy(false); }
+  }
+
   async function mark(status: "instrumental" | "missing") {
     setOpen(false); setBusy(true); setError("");
     try {
@@ -67,9 +79,11 @@ export default function TrackMenu({ track, onSaved }: { track: Track; onSaved: (
       <button type="button" role="menuitem" disabled={!playerTrack} onClick={() => { if (playerTrack) player.playNext(playerTrack); setOpen(false); }}><ListPlus />Play next</button>
       <hr />
       <button type="button" role="menuitem" disabled={busy} onClick={openEditor}><SquarePen />Edit lyrics</button>
+      <button type="button" role="menuitem" disabled={busy} onClick={() => { setOpen(false); setError(""); setTranscriptionOpen(true); }}><Languages />Transcribe in language</button>
       {track.lyrics_status === "instrumental" ? <button type="button" role="menuitem" disabled={busy} onClick={() => mark("missing")}><Music2 />Mark non-instrumental</button> : <button type="button" role="menuitem" disabled={busy} onClick={() => mark("instrumental")}><VolumeX />Mark instrumental</button>}
     </div>}
     {error && <span className={styles.error} role="alert">{error}</span>}
+    {transcriptionOpen && <div className={styles.scrim} role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) setTranscriptionOpen(false); }}><section className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={`transcription-language-${track.id}`}><header><div><span>Force transcription</span><h2 id={`transcription-language-${track.id}`}>{track.title}</h2></div><button type="button" onClick={() => setTranscriptionOpen(false)} disabled={busy} aria-label="Close transcription dialog"><X /></button></header><label><span>Language code</span><input value={transcriptionLanguage} onChange={event => setTranscriptionLanguage(event.target.value)} placeholder="en or pt-BR" maxLength={5} /></label><p>This replaces the current lyrics and asks MOSS to transcribe in that language during the next sync. AI lyric generation must be enabled in Settings.</p>{error && <strong className={styles.dialogError}>{error}</strong>}<footer><button type="button" onClick={() => setTranscriptionOpen(false)} disabled={busy}>Cancel</button><button type="button" onClick={forceTranscription} disabled={busy || !/^[a-z]{2,3}(?:-[A-Z]{2})?$/.test(transcriptionLanguage)}>{busy ? "Queueing" : "Queue transcription"}</button></footer></section></div>}
     {editorOpen && <div className={styles.scrim} role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) setEditorOpen(false); }}><section className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={`lyrics-editor-${track.id}`}><header><div><span>Lyrics</span><h2 id={`lyrics-editor-${track.id}`}>{track.title}</h2>{track.artist && <small>{track.artist}</small>}</div><button type="button" onClick={() => setEditorOpen(false)} disabled={busy} aria-label="Close lyric editor"><X /></button></header><label><span>Language, optional</span><input value={language} onChange={event => setLanguage(event.target.value)} placeholder="en" maxLength={12} /></label><label><span>Lyrics</span><textarea value={lyrics} onChange={event => setLyrics(event.target.value)} placeholder="Paste or write the lyrics" /></label><p>Saving changed lyrics skips transcription and queues karaoke timing for the next sync.</p>{error && <strong className={styles.dialogError}>{error}</strong>}<footer><button type="button" onClick={() => setEditorOpen(false)} disabled={busy}>Cancel</button><button type="button" onClick={saveLyrics} disabled={busy || !lyrics.trim()}>{busy ? "Saving" : "Save lyrics"}</button></footer></section></div>}
   </div>;
 }

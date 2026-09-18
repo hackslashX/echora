@@ -143,6 +143,10 @@ class LyricsStatusRequest(BaseModel):
     status: str = Field(pattern="^(instrumental|missing)$")
 
 
+class TranscriptionLanguageRequest(BaseModel):
+    language: str = Field(pattern="^[a-z]{2,3}(?:-[A-Z]{2})?$")
+
+
 class HumProcessingSettingsRequest(BaseModel):
     enabled: bool
 
@@ -1150,6 +1154,34 @@ def update_track_lyrics(
             cursor.execute("DELETE FROM karaoke_lyrics_variants WHERE track_id=%s", (track_id,))
             cursor.execute("DELETE FROM embeddings WHERE track_id=%s AND embedding_type='lyrics'", (track_id,))
     return {"track_id": str(track_id), "karaoke_pending": changed, "lyrics_embedding_pending": changed}
+
+
+@app.put("/library/tracks/{track_id}/lyrics/transcription-language", dependencies=[Depends(require_user)])
+def force_transcription_language(
+    track_id: uuid.UUID, request: TranscriptionLanguageRequest, echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    user = _session_user(echora_session)
+    language = request.language.strip()
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Track is not in your library")
+        cursor.execute("SELECT transcription_processing_enabled FROM analysis_settings WHERE singleton=true")
+        setting = cursor.fetchone()
+        if not setting or not setting["transcription_processing_enabled"]:
+            raise HTTPException(status_code=409, detail="Enable AI lyric generation in Settings before forcing transcription")
+        cursor.execute(
+            """INSERT INTO lyrics (track_id, source, text, provenance, availability_status)
+               VALUES (%s,'none',NULL,jsonb_build_object('transcription_language',%s,'forced_transcription',true),'missing')
+               ON CONFLICT (track_id) DO UPDATE SET source='none', text=NULL, language=NULL,
+                 provenance=(coalesce(lyrics.provenance,'{}'::jsonb) - 'manual' - 'lines' - 'synced')
+                   || jsonb_build_object('transcription_language',%s,'forced_transcription',true),
+                 availability_status='missing', created_at=now()""",
+            (track_id, language, language),
+        )
+        cursor.execute("DELETE FROM karaoke_lyrics_variants WHERE track_id=%s", (track_id,))
+        cursor.execute("DELETE FROM embeddings WHERE track_id=%s AND embedding_type='lyrics'", (track_id,))
+    return {"track_id": str(track_id), "language": language, "transcription_pending": True}
 
 
 @app.put("/library/tracks/{track_id}/lyrics/status", dependencies=[Depends(require_user)])
