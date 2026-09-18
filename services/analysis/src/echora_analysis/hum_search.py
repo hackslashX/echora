@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import random
 import threading
 import uuid
 
@@ -23,8 +22,11 @@ import psycopg
 from psycopg.rows import dict_row, tuple_row
 from psycopg.types.json import Jsonb
 
-from .audio import decode_audio, decode_audio_channels
-from .melody_config import MELODY_CONTOUR_REVISION, MELODY_DEMUCS_MODEL, MELODY_EXTRACTOR
+from .audio import decode_audio
+from .melody_config import (
+    MELODY_CONTOUR_REVISION, MELODY_SEPARATOR_MODEL, MELODY_SEPARATOR_REVISION, MELODY_EXTRACTOR,
+)
+from .preprocessing import melody_waveforms, get_check, prepare_audio
 from .navidrome import NavidromeClient
 
 CATALOG_SAMPLE_RATE = 44_100
@@ -32,7 +34,6 @@ QUERY_SAMPLE_RATE = 24_000
 CONTOUR_HZ = 10
 DEFAULT_CORPUS_SIZE = 50
 _TEMPO_RATIOS = (0.75, 0.9, 1.0, 1.1, 1.25, 1.4, 1.5)
-_DEMUCS_MODEL = None
 # Contours only change while a sync or corpus build is running. Caching the
 # parsed arrays removes the per-query array decoding cost.
 _CONTOUR_CACHE: dict[str, object] = {"key": None, "contours": ()}
@@ -103,112 +104,10 @@ def extract_catalog_contour(audio: bytes) -> tuple[np.ndarray, np.ndarray]:
     return extract_waveform_contour(decode_audio(audio, CATALOG_SAMPLE_RATE), CATALOG_SAMPLE_RATE)
 
 
-def _demucs_shift_offsets(model: object, length: int, overlap: float) -> list[int]:
-    """Advance Demucs's shared RNG in the same order as serial bag inference."""
-    offsets = []
-    for submodel in model.models:
-        max_shift = int(0.5 * submodel.samplerate)
-        offset = random.randint(0, max_shift)
-        offsets.append(offset)
-        shifted_length = length + max_shift - offset
-        segment_length = int(submodel.samplerate * submodel.segment)
-        stride = int((1 - overlap) * segment_length)
-        segment_count = (shifted_length + stride - 1) // stride
-        transformer = submodel.crosstransformer
-        for _ in range(segment_count):
-            random.randrange(transformer.sin_random_shift + 1)
-    return offsets
-
-
-def _apply_demucs_checkpoint(submodel, mix, offset: int, device, overlap: float):
-    import torch
-    from demucs.apply import TensorChunk, apply_model
-
-    length = mix.shape[-1]
-    max_shift = int(0.5 * submodel.samplerate)
-    padded_mix = TensorChunk(mix).padded(length + 2 * max_shift)
-    shifted = TensorChunk(padded_mix, offset, length + max_shift - offset)
-    if device.type == "cuda":
-        stream = torch.cuda.Stream(device=device)
-        with torch.cuda.stream(stream), torch.inference_mode():
-            output = apply_model(
-                submodel, shifted, shifts=0, split=True, overlap=overlap,
-                progress=False, device=device,
-            )[..., max_shift - offset:]
-        stream.synchronize()
-        return output
-    with torch.inference_mode():
-        return apply_model(
-            submodel, shifted, shifts=0, split=True, overlap=overlap,
-            progress=False, device=device,
-        )[..., max_shift - offset:]
-
-
-def _apply_demucs_checkpoints(model, mix, device, concurrency: int):
-    import torch
-
-    overlap = 0.25
-    offsets = _demucs_shift_offsets(model, mix.shape[-1], overlap)
-
-    def apply(index: int):
-        return _apply_demucs_checkpoint(
-            model.models[index], mix, offsets[index], device, overlap,
-        )
-
-    with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        outputs = list(executor.map(apply, range(len(model.models))))
-    with torch.inference_mode():
-        estimates = torch.zeros_like(outputs[0])
-        totals = [0.0] * len(model.sources)
-        for output, weights in zip(outputs, model.weights):
-            for source_index, weight in enumerate(weights):
-                output[:, source_index] *= weight
-                totals[source_index] += weight
-            estimates += output
-        for source_index, total in enumerate(totals):
-            estimates[:, source_index] /= total
-    return estimates
-
-
 def separate_melody_sources(audio: bytes) -> dict[str, tuple[np.ndarray, int]]:
-    global _DEMUCS_MODEL
-    import torch
-    from demucs import pretrained
-    from demucs.audio import convert_audio
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if _DEMUCS_MODEL is None:
-        _DEMUCS_MODEL = pretrained.get_model(MELODY_DEMUCS_MODEL).eval().to(device)
-    model = _DEMUCS_MODEL
-    concurrency = int(os.environ.get("MELODY_DEMUCS_CHECKPOINT_CONCURRENCY", "4"))
-    if concurrency not in {1, 2, 4}:
-        raise ValueError("MELODY_DEMUCS_CHECKPOINT_CONCURRENCY must be 1, 2, or 4")
-    channels = decode_audio_channels(audio, CATALOG_SAMPLE_RATE, 2)
-    waveform = torch.as_tensor(channels.T, dtype=torch.float32)
-    waveform = convert_audio(waveform, CATALOG_SAMPLE_RATE, model.samplerate, model.audio_channels)
-    reference = waveform.mean(0)
-    mean, std = reference.mean(), reference.std().clamp_min(1e-8)
-    normalized = ((waveform - mean) / std).unsqueeze(0)
-    sources = _apply_demucs_checkpoints(model, normalized, device, concurrency)[0] * std + mean
-    vocals = sources[model.sources.index("vocals")].mean(0).cpu().numpy()
-    accompaniment = sources[[index for index, name in enumerate(model.sources) if name != "vocals"]].sum(0).mean(0).cpu().numpy()
-    return {
-        "vocals": (np.asarray(vocals, dtype=np.float32), int(model.samplerate)),
-        "accompaniment": (np.asarray(accompaniment, dtype=np.float32), int(model.samplerate)),
-    }
-
-
-def release_separator() -> None:
-    global _DEMUCS_MODEL
-    if _DEMUCS_MODEL is None:
-        return
-    import gc
-    import torch
-    _DEMUCS_MODEL.to("cpu")
-    _DEMUCS_MODEL = None
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    vocals, accompaniment = melody_waveforms(audio, check=get_check())
+    return {"vocals": (vocals, CATALOG_SAMPLE_RATE),
+            "accompaniment": (accompaniment, CATALOG_SAMPLE_RATE)}
 
 
 def extract_hum_contour(audio: bytes) -> tuple[np.ndarray, np.ndarray]:
@@ -488,19 +387,19 @@ def match_contour(query: np.ndarray, query_mask: np.ndarray, target: np.ndarray,
 
 
 def _create_run(connection: psycopg.Connection, corpus_id: uuid.UUID) -> uuid.UUID:
-    config = {"purpose": "hum_search", "corpus_id": str(corpus_id), "extractor": MELODY_EXTRACTOR, "separator_model": MELODY_DEMUCS_MODEL, "sources": ["full-mix", "vocals", "accompaniment"], "contour_hz": CONTOUR_HZ, "matcher": "relative-pitch-subsequence-dtw-v1"}
+    config = {"purpose": "hum_search", "corpus_id": str(corpus_id), "extractor": MELODY_EXTRACTOR, "separator_model": MELODY_SEPARATOR_MODEL, "separator_revision": MELODY_SEPARATOR_REVISION, "accompaniment": "stereo-mix-minus-vocals-then-mean-v1", "sources": ["full-mix", "vocals", "accompaniment"], "contour_hz": CONTOUR_HZ, "matcher": "relative-pitch-subsequence-dtw-v1"}
     config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
     with connection.cursor() as cursor:
         cursor.execute(
             """INSERT INTO analysis_runs (kind,model_name,model_revision,config_hash,config,environment,device,precision,status,started_at)
-               VALUES ('hum_corpus','melody_contour','melodia-2.1',%s,%s,%s,'cpu','float32','running',now()) RETURNING id""",
-            (config_hash, Jsonb(config), Jsonb({"python": platform.python_version()})),
+               VALUES ('hum_corpus','melody_contour',%s,%s,%s,%s,'mixed','float32','running',now()) RETURNING id""",
+            (MELODY_CONTOUR_REVISION, config_hash, Jsonb(config), Jsonb({"python": platform.python_version()})),
         )
         return cursor.fetchone()["id"]
 
 
 def create_sync_run(connection: psycopg.Connection) -> uuid.UUID:
-    config = {"extractor": MELODY_EXTRACTOR, "separator_model": MELODY_DEMUCS_MODEL, "sources": ["full-mix", "vocals", "accompaniment"], "contour_hz": CONTOUR_HZ}
+    config = {"extractor": MELODY_EXTRACTOR, "separator_model": MELODY_SEPARATOR_MODEL, "separator_revision": MELODY_SEPARATOR_REVISION, "accompaniment": "stereo-mix-minus-vocals-then-mean-v1", "sources": ["full-mix", "vocals", "accompaniment"], "contour_hz": CONTOUR_HZ}
     config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
     with connection.cursor() as cursor:
         cursor.execute(
@@ -516,11 +415,11 @@ def create_sync_run(connection: psycopg.Connection) -> uuid.UUID:
 
 def store_track_contours(connection: psycopg.Connection, track_id: uuid.UUID, run_id: uuid.UUID, audio: bytes) -> int:
     sources: dict[str, tuple[np.ndarray, np.ndarray]] = {"full-mix": extract_catalog_contour(audio)}
-    try:
-        for source, (waveform, sample_rate) in separate_melody_sources(audio).items():
-            sources[source] = extract_waveform_contour(waveform, sample_rate)
-    except Exception:
-        pass
+    # A preparation failure must not mark a full-mix-only result as a completed
+    # Roformer recipe. The enclosing track job handles retry/failure accounting.
+    for source, (waveform, sample_rate) in separate_melody_sources(audio).items():
+        get_check()()
+        sources[source] = extract_waveform_contour(waveform, sample_rate)
     usable = {source: contour for source, contour in sources.items() if contour[1].sum() >= 30}
     if not usable:
         raise ValueError("No usable melody source")
@@ -530,7 +429,8 @@ def store_track_contours(connection: psycopg.Connection, track_id: uuid.UUID, ru
                 """INSERT INTO melody_contours (track_id,run_id,source,hop_seconds,pitch,voiced)
                    VALUES (%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (track_id,run_id,source) DO UPDATE
-                   SET hop_seconds=EXCLUDED.hop_seconds,pitch=EXCLUDED.pitch,voiced=EXCLUDED.voiced""",
+                   SET hop_seconds=EXCLUDED.hop_seconds,pitch=EXCLUDED.pitch,voiced=EXCLUDED.voiced,
+                       created_at=clock_timestamp()""",
                 (track_id, run_id, source, 1 / CONTOUR_HZ, pitch.tolist(), voiced.tolist()),
             )
     return len(usable)
@@ -539,58 +439,63 @@ def store_track_contours(connection: psycopg.Connection, track_id: uuid.UUID, ru
 def build_corpus(corpus_id: uuid.UUID, user_id: uuid.UUID, credentials: tuple[str, str, str], track_limit: int = DEFAULT_CORPUS_SIZE, progress: Callable[[dict[str, object]], None] | None = None, track_ids: set[uuid.UUID] | None = None) -> dict[str, int]:
     report = progress or (lambda _: None)
     completed = failed = contours_stored = 0
-    try:
-        with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection:
-            run_id = _create_run(connection, corpus_id)
-            with connection.cursor() as cursor:
-                cursor.execute("UPDATE hum_corpora SET run_id=%s,status='building' WHERE id=%s AND user_id=%s", (run_id, corpus_id, user_id))
-                cursor.execute("""SELECT DISTINCT ON (utl.track_id) utl.track_id,utl.external_id,t.title FROM user_track_links utl JOIN tracks t ON t.id=utl.track_id WHERE utl.user_id=%s ORDER BY utl.track_id""", (user_id,))
-                candidates = cursor.fetchall()
-            if track_ids is not None:
-                tracks = [track for track in candidates if track["track_id"] in track_ids][:track_limit]
-            else:
-                np.random.default_rng().shuffle(candidates)
-                tracks = candidates[:track_limit]
-            connection.commit()
-            with NavidromeClient(*credentials) as client:
-                for index, track in enumerate(tracks):
-                    report({"phase": "melody-index", "completed": index, "total": len(tracks), "message": f"Separating melody sources for {track['title']}"})
-                    try:
-                        audio = client.audio_bytes(track["external_id"])
-                        sources: dict[str, tuple[np.ndarray, np.ndarray]] = {
-                            "full-mix": extract_catalog_contour(audio),
-                        }
-                        try:
-                            for source, (waveform, sample_rate) in separate_melody_sources(audio).items():
-                                sources[source] = extract_waveform_contour(waveform, sample_rate)
-                        except Exception:
-                            # Keep the full-mix contour when separation fails for one recording.
-                            pass
-                        usable = {source: contour for source, contour in sources.items() if contour[1].sum() >= 30}
-                        if not usable:
-                            raise ValueError("No usable melody source")
-                        with connection.cursor() as cursor:
-                            cursor.execute("INSERT INTO hum_corpus_tracks (corpus_id,track_id) VALUES (%s,%s)", (corpus_id, track["track_id"]))
-                            for source, (pitch, voiced) in usable.items():
-                                cursor.execute("""INSERT INTO melody_contours (track_id,run_id,source,hop_seconds,pitch,voiced) VALUES (%s,%s,%s,%s,%s,%s)""", (track["track_id"], run_id, source, 1 / CONTOUR_HZ, pitch.tolist(), voiced.tolist()))
-                        connection.commit(); completed += 1; contours_stored += len(usable)
-                    except Exception:
-                        connection.rollback(); failed += 1
-            with connection.cursor() as cursor:
-                cursor.execute("UPDATE analysis_runs SET status='complete',finished_at=now() WHERE id=%s", (run_id,))
-                cursor.execute("UPDATE hum_corpora SET status='complete',completed_at=now() WHERE id=%s", (corpus_id,))
-            connection.commit()
-        return {"tracks": completed, "failed": failed, "contours": contours_stored}
-    finally:
-        release_separator()
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection:
+        run_id = _create_run(connection, corpus_id)
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE hum_corpora SET run_id=%s,status='building' WHERE id=%s AND user_id=%s", (run_id, corpus_id, user_id))
+            cursor.execute("""SELECT DISTINCT ON (utl.track_id) utl.track_id,utl.external_id,t.title FROM user_track_links utl JOIN tracks t ON t.id=utl.track_id WHERE utl.user_id=%s ORDER BY utl.track_id""", (user_id,))
+            candidates = cursor.fetchall()
+        if track_ids is not None:
+            tracks = [track for track in candidates if track["track_id"] in track_ids][:track_limit]
+        else:
+            np.random.default_rng().shuffle(candidates)
+            tracks = candidates[:track_limit]
+        connection.commit()
+        with NavidromeClient(*credentials) as client:
+            for index, track in enumerate(tracks):
+                report({"phase": "melody-index", "completed": index, "total": len(tracks), "message": f"Separating melody sources for {track['title']}"})
+                try:
+                    report({"phase": "preprocess", "completed": index, "total": len(tracks),
+                            "message": f"Preparing shared melody audio for {track['title']}"})
+                    audio = client.audio_bytes(track["external_id"])
+                    prepare_audio(audio, mono_rates=(44100,), stereo=True, melody=True, check=get_check())
+                    report({"phase": "melody-index", "message": f"Extracting melody from {track['title']}"})
+                    sources: dict[str, tuple[np.ndarray, np.ndarray]] = {
+                        "full-mix": extract_catalog_contour(audio),
+                    }
+                    for source, (waveform, sample_rate) in separate_melody_sources(audio).items():
+                        get_check()()
+                        sources[source] = extract_waveform_contour(waveform, sample_rate)
+                    usable = {source: contour for source, contour in sources.items() if contour[1].sum() >= 30}
+                    if not usable:
+                        raise ValueError("No usable melody source")
+                    with connection.cursor() as cursor:
+                        cursor.execute("INSERT INTO hum_corpus_tracks (corpus_id,track_id) VALUES (%s,%s)", (corpus_id, track["track_id"]))
+                        for source, (pitch, voiced) in usable.items():
+                            cursor.execute("""INSERT INTO melody_contours (track_id,run_id,source,hop_seconds,pitch,voiced) VALUES (%s,%s,%s,%s,%s,%s)""", (track["track_id"], run_id, source, 1 / CONTOUR_HZ, pitch.tolist(), voiced.tolist()))
+                    connection.commit(); completed += 1; contours_stored += len(usable)
+                except Exception:
+                    connection.rollback(); failed += 1
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE analysis_runs SET status='complete',finished_at=now() WHERE id=%s", (run_id,))
+            cursor.execute("UPDATE hum_corpora SET status='complete',completed_at=now() WHERE id=%s", (corpus_id,))
+        connection.commit()
+    return {"tracks": completed, "failed": failed, "contours": contours_stored}
 
 
 def _contour_cache_key(connection: psycopg.Connection, user_id: uuid.UUID) -> tuple[str, int, str]:
     with connection.cursor(row_factory=tuple_row) as cursor:
-        cursor.execute("SELECT count(*),coalesce(max(track_id::text),'') FROM melody_contours")
+        cursor.execute(
+            """SELECT count(*),coalesce(max(mc.created_at)::text,'')
+               FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
+               WHERE ar.model_revision=%s AND ar.status IN ('complete','running')
+                 AND EXISTS (SELECT 1 FROM user_track_links utl
+                             WHERE utl.user_id=%s AND utl.track_id=mc.track_id)""",
+            (MELODY_CONTOUR_REVISION, user_id),
+        )
         row = cursor.fetchone()
     count, latest = row
-    return str(user_id), int(count), str(latest or "")
+    return f"{user_id}:{MELODY_CONTOUR_REVISION}", int(count), str(latest or "")
 
 
 def _load_contours(connection: psycopg.Connection, user_id: uuid.UUID) -> list[dict[str, object]]:
@@ -603,11 +508,11 @@ def _load_contours(connection: psycopg.Connection, user_id: uuid.UUID) -> list[d
                 """SELECT DISTINCT ON (mc.track_id,mc.source)
                           mc.track_id,mc.source,mc.pitch,mc.voiced
                    FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
-                   WHERE ar.status IN ('complete','running')
+                   WHERE ar.status IN ('complete','running') AND ar.model_revision=%s
                      AND EXISTS (SELECT 1 FROM user_track_links utl
                                  WHERE utl.user_id=%s AND utl.track_id=mc.track_id)
                    ORDER BY mc.track_id,mc.source,ar.created_at DESC""",
-                (user_id,),
+                (MELODY_CONTOUR_REVISION, user_id),
             )
             rows = cursor.fetchall()
         contours = [

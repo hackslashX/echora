@@ -26,6 +26,34 @@ class InferenceRegression(unittest.TestCase):
                 self.assertEqual(sum(r['orig'] == '\n' for r in records), len(texts))
                 self.assertFalse(any('\n' in r.get('pron', '') for r in records))
 
+    def test_punctuation_only_lines_preserve_source_boundaries(self):
+        for punctuation in ('...', '…', ' — ', '！？'):
+            with self.subTest(punctuation=punctuation):
+                source = ['one', punctuation, 'two']
+                records, texts = vendor.normalize_source_lines(source, 'en', 0, 1)
+                self.assertEqual(texts, source)
+                self.assertEqual(sum(r['orig'] == '\n' for r in records), 3)
+                lines = [[]]
+                for record in records:
+                    if record['orig'] == '\n':
+                        lines.append([])
+                    elif record.get('pron'):
+                        lines[-1].append(record)
+                self.assertTrue(lines[0])
+                self.assertEqual(lines[1], [])
+                self.assertTrue(lines[2])
+                doc = {'schema_version': 1, 'alignment': {'lines': [
+                    {'source_index': 0, 'text': 'one', 'tokens': [
+                        {'start_ms': 10, 'end_ms': 20, 'ctc_score': .8}]},
+                    {'source_index': 1, 'text': punctuation, 'tokens': []},
+                    {'source_index': 2, 'text': 'two', 'tokens': [
+                        {'start_ms': 30, 'end_ms': 40, 'ctc_score': .8}]},
+                ]}}
+                pipeline._validate_alignment_document(doc)
+                doc['alignment']['lines'][1]['text'] = 'Ж'
+                with self.assertRaises(RuntimeError):
+                    pipeline._validate_alignment_document(doc)
+
     def test_unsupported_line_fails_at_source_index(self):
         with self.assertRaisesRegex(ValueError, 'source index 1'):
             vendor.normalize_source_lines(['hello', 'Ж'], 'en', 0, 1)

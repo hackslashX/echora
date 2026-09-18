@@ -6,6 +6,7 @@ import soundfile as sf
 import re
 import subprocess
 import time
+import unicodedata
 
 # import ass2lrc
 import haruraw2norm as hn
@@ -46,8 +47,11 @@ def normalize_source_lines(lines, language, sokuon_split, hatsuon_split):
     for index, line in enumerate(lines):
         text = line.rstrip('\r\n')
         source_texts.append(text)
-        items = hn.process_haruhi_line(text, language, sokuon_split, hatsuon_split) if text.strip() else []
-        if text.strip() and not any(item.get('pron') for item in items):
+        # Punctuation-only separators are display lines, not acoustic tokens.
+        # Keep their source index/text and boundary without inventing speech.
+        display_only = all(c.isspace() or unicodedata.category(c).startswith('P') for c in text)
+        items = hn.process_haruhi_line(text, language, sokuon_split, hatsuon_split) if not display_only else []
+        if not display_only and not any(item.get('pron') for item in items):
             raise ValueError(f"Unsupported display line at source index {index}: {text!r}")
         records.extend(items)
         records.append({'orig': '\n', 'type': 0, 'pron': ''})

@@ -1,3 +1,6 @@
-MELODY_DEMUCS_MODEL = "htdemucs_ft"
-MELODY_CONTOUR_REVISION = "multi-source-htdemucs-ft-v2"
-MELODY_EXTRACTOR = "demucs-htdemucs-ft-plus-essentia-melodia"
+from .roformer import MODEL_ID, SEPARATION_REVISION
+
+MELODY_SEPARATOR_MODEL = MODEL_ID
+MELODY_SEPARATOR_REVISION = SEPARATION_REVISION
+MELODY_CONTOUR_REVISION = f"multi-source-roformer-residual-v3:{SEPARATION_REVISION}"
+MELODY_EXTRACTOR = "roformer-overlap2-residual-plus-essentia-melodia"

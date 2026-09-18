@@ -12,18 +12,22 @@ import statistics
 import sys
 import tempfile
 import threading
+import time
+import unicodedata
 import uuid
 
 import psycopg
 from psycopg.types.json import Jsonb
 
+from .preprocessing import get_check, prepare_audio, vocal_audio_bytes, vocal_reference_waveform
+from .roformer import SEPARATION_REVISION
 from .navidrome import NavidromeClient
 from .processing_plan import plan_karaoke, resolve_library_id
 
 logger = logging.getLogger(__name__)
 
 FA_KARA_REVISION = "168ca5f01cecaa1290e31c0ce8dc44af8c7451bb"
-KARAOKE_PIPELINE_REVISION = "v1"
+KARAOKE_PIPELINE_REVISION = "v3-matched-reference-grid"
 DEFAULT_MODEL_ID = "hcX02/echora-mms-300m-multilingual-lyrics-forced-aligner"
 DEFAULT_MODEL_REVISION = "b46485a5d814dc26e3511cece3ccc98ebba2e9d0"
 _DIALOGUE = re.compile(r"^Dialogue: [^,]*,([^,]+),([^,]+),(?:[^,]*,){6}(.*)$")
@@ -35,11 +39,7 @@ _FA_KARA_WORKER_KEY: tuple[str, str] | None = None
 
 
 def _stored_model_revision(model_revision: str) -> str:
-    revision = f"{FA_KARA_REVISION}:{model_revision}"
-    if os.environ.get("FA_KARA_VOCAL_SEPARATION", "false").lower() == "true":
-        separator_model = os.environ.get("FA_KARA_DEMUCS_MODEL", "htdemucs_ft")
-        revision += f":demucs:{separator_model}"
-    return revision
+    return f"{FA_KARA_REVISION}:{model_revision}:roformer:{SEPARATION_REVISION}"
 
 
 def _ass_time_ms(value: str) -> int:
@@ -351,7 +351,9 @@ def _validate_alignment_document(document: object) -> dict[str, object]:
         if not isinstance(line, dict) or line.get("source_index") != line_index:
             raise RuntimeError("FA-Kara alignment document has invalid source indexes")
         tokens = line.get("tokens")
-        if tokens == [] and not str(line.get("text") or "").strip():
+        display_only = all(c.isspace() or unicodedata.category(c).startswith("P")
+                           for c in str(line.get("text") or ""))
+        if tokens == [] and display_only:
             continue
         if not isinstance(tokens, list) or not tokens:
             raise RuntimeError(f"FA-Kara line {line_index} contains no aligned tokens")
@@ -418,11 +420,29 @@ def _run_worker_job(worker: subprocess.Popen[str], argv: list[str], timeout: int
     worker.stdin.flush()
     selector = selectors.DefaultSelector()
     selector.register(worker.stdout, selectors.EVENT_READ)
+    deadline = time.monotonic() + timeout
+    response_line = bytearray()
     try:
-        if not selector.select(timeout):
+        # Read bytes rather than blocking on readline after a partial response.
+        while b"\n" not in response_line:
+            get_check()()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("FA-Kara worker timed out")
+            if not selector.select(min(1.0, remaining)):
+                continue
+            chunk = os.read(worker.stdout.fileno(), 65536)
+            if not chunk:
+                break
+            response_line.extend(chunk)
+            if len(response_line) > 64 * 1024**2:
+                raise RuntimeError("FA-Kara response exceeds 64 MiB")
+        get_check()()
+    except BaseException:
+        if worker.poll() is None:
             worker.kill()
-            raise TimeoutError("FA-Kara worker timed out")
-        response_line = worker.stdout.readline()
+        worker.wait(timeout=5)
+        raise
     finally:
         selector.close()
     if not response_line:
@@ -445,9 +465,20 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
     with tempfile.TemporaryDirectory(prefix="echora-fa-kara-") as directory:
         work = Path(directory)
         audio_path = work / "i.audio"
-        audio_path.write_bytes(audio)
-        if separate_vocals is None:
-            separate_vocals = os.environ.get("FA_KARA_VOCAL_SEPARATION", "false").lower() == "true"
+        separate_vocals = separate_vocals is not False
+        reference_path = work / "reference.wav"
+        if separate_vocals:
+            # Keep the aligner resident on cache hits. If eviction caused a miss,
+            # release it under the cache's producer lock before separator loading.
+            prepared = vocal_audio_bytes(audio, check=get_check(),
+                                         before_separate=_stop_fa_kara_worker)
+            import soundfile as sf
+            sf.write(reference_path, vocal_reference_waveform(audio, check=get_check()),
+                     16000, format="WAV", subtype="FLOAT")
+            audio_path.write_bytes(prepared)
+        else:
+            # Timing repair supplies its own audio and must not separate it again.
+            audio_path.write_bytes(audio)
         timeline = _anchored_source_lines(source_lines or [])
         input_text = "\n".join(str(line["text"]) for line in timeline) if timeline else lyrics_text.rstrip("\r\n")
         (work / "i.txt").write_text(input_text + "\n", encoding="utf-8")
@@ -462,7 +493,7 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
         if aligner == "yohane":
             command.extend(["--hf_model_path", str(snapshot)])
         if separate_vocals:
-            command.append("--separate_vocals")
+            command.extend(["--reference_audio", str(reference_path)])
         command.extend(["--head_correct", "0", "--tail_correct", "0"])
         if timeline:
             (work / "timeline.json").write_text(json.dumps(timeline, ensure_ascii=False), encoding="utf-8")
@@ -486,12 +517,11 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
         alignment_document = _validate_alignment_document(
             json.loads((work / "o.alignment.json").read_text(encoding="utf-8"))
         )
-        if separate_vocals:
-            alignment_document.setdefault("diagnostics", {})["audio_source"] = "demucs_vocals"
-            alignment_document["diagnostics"]["separator"] = "demucs"
-            alignment_document["diagnostics"]["separator_model"] = os.environ.get(
-                "FA_KARA_DEMUCS_MODEL", "htdemucs_ft"
-            )
+        diagnostics = alignment_document.setdefault("diagnostics", {})
+        diagnostics["audio_source"] = "roformer_vocals" if separate_vocals else "provided_audio"
+        diagnostics["reference_audio_source"] = "full_mix" if separate_vocals else "provided_audio"
+        diagnostics["separator"] = "roformer" if separate_vocals else None
+        diagnostics["separator_revision"] = SEPARATION_REVISION if separate_vocals else None
         lines = build_lines_from_alignment_document(alignment_document)
         if not lines:
             lines = parse_ass_karaoke(ass)
@@ -513,11 +543,16 @@ def backfill_karaoke(
     external_ids: list[str] | None = None,
 ) -> dict[str, int]:
     """Serialize alignment and release its resident model after the phase."""
-    with _KARAOKE_LOCK:
+    while not _KARAOKE_LOCK.acquire(timeout=0.25):
+        get_check()()
+    try:
+        get_check()()
+        return _backfill_karaoke(url, username, password, progress, external_ids)
+    finally:
         try:
-            return _backfill_karaoke(url, username, password, progress, external_ids)
-        finally:
             _stop_fa_kara_worker()
+        finally:
+            _KARAOKE_LOCK.release()
 
 
 def _backfill_karaoke(
@@ -530,7 +565,8 @@ def _backfill_karaoke(
     """Align only lyrics documents that arrived with line timestamps."""
     report = progress or (lambda _: None)
     summary = {"total": 0, "aligned": 0, "failed": 0}
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, NavidromeClient(url, username, password) as client:
+    with (psycopg.connect(os.environ["DATABASE_URL"]) as connection,
+          NavidromeClient(url, username, password) as client):
         library_id = resolve_library_id(connection, url)
         model_revision = _stored_model_revision(
             os.environ.get("FA_KARA_REVISION", DEFAULT_MODEL_REVISION)
@@ -543,8 +579,6 @@ def _backfill_karaoke(
                     "completed": 0, "total": 0, "unit": "tracks"})
             return summary
         bound_to_source = False
-        report({"phase": "models", "message": "Loading Echora alignment model",
-                "completed": 0, "total": 1, "unit": "models"})
         with connection.cursor() as cursor:
             cursor.execute(
                 f"""SELECT DISTINCT ON (ts.track_id) ts.track_id, ts.external_id, t.title, l.text, l.language, l.provenance->'lines'
@@ -555,7 +589,29 @@ def _backfill_karaoke(
             )
             tracks = cursor.fetchall()
         summary["total"] = len(tracks)
+        _stop_fa_kara_worker()
+        prepared_sources = set()
+        for index, (track_id, external_id, title, *_) in enumerate(tracks):
+            report({"phase": "preprocess", "message": f"Preparing karaoke audio for {title}",
+                    "completed": index, "total": len(tracks), "unit": "tracks"})
+            get_check()()
+            try:
+                source = client.audio_bytes(external_id)
+                prepare_audio(source, vocals=True, reference=True, check=get_check())
+                prepared_sources.add(track_id)
+                del source
+            except Exception:
+                summary["failed"] += 1
+                logger.exception("Karaoke preprocessing failed for %s", track_id)
+            report({"phase": "preprocess", "message": f"Preparing karaoke audio for {title}",
+                    "completed": index + 1, "total": len(tracks), "unit": "tracks",
+                    "summary": summary})
+        if prepared_sources:
+            report({"phase": "models", "message": "Loading Echora alignment model",
+                    "completed": 0, "total": 1, "unit": "models"})
         for index, (track_id, external_id, title, text, language, source_lines) in enumerate(tracks):
+            if track_id not in prepared_sources:
+                continue
             try:
                 result = _run_fa_kara(client.audio_bytes(external_id), text, language, source_lines or [])
                 result["lines"] = guard_pathological_lead_ins(
@@ -566,7 +622,9 @@ def _backfill_karaoke(
                 # first-syllable failures without trusting every source window.
                 karaoke_provenance = {
                     "alignment_mode": "global_ctc_calibrated_source_prior",
-                    "audio_input": "full_mix_with_consecutive_outlier_recovery",
+                    "audio_input": result["diagnostics"]["audio_source"],
+                    "reference_audio_input": result["diagnostics"]["reference_audio_source"],
+                    "separator_revision": result["diagnostics"]["separator_revision"],
                     "model": result["model"],
                     "pipeline_revision": KARAOKE_PIPELINE_REVISION,
                     "inference_passes": result["diagnostics"].get("inference_passes"),

@@ -1,13 +1,13 @@
-"""Demucs + windowed MOSS fallback. Sequential inference, no persistent stems."""
+"""Shared Roformer vocals + windowed MOSS fallback, with sequential GPU inference."""
 import re
-import tempfile
 from contextlib import nullcontext
-from pathlib import Path
 from .transcription_recovery import WindowDecodeError, stalled_segments
+from .roformer import SEPARATION_REVISION
+from .preprocessing import vocal_waveform
 
 PROMPT = 'Transcribe the audio. For each segment, start with the timestamp and speaker ID ([S01], [S02], [S03], ...), then the spoken text, and end with the segment timestamp.'
 PATTERN = re.compile(r'\[(\d+(?:\.\d+)?)\]\[(S\d+|MULTI)\]([^\[\]]*)\[(\d+(?:\.\d+)?)\]')
-PIPELINE_REVISION = 'demucs-htdemucs-moss-w60-o12-timing-v6'
+PIPELINE_REVISION = f'roformer-moss-w60-o12-timing-v7:{SEPARATION_REVISION}'
 
 
 def windows(duration):
@@ -44,8 +44,6 @@ class SongTranscriber:
     def transcribe(self, audio_bytes, check=lambda: None, diagnostic_sink=lambda _: None, vocal_activity=None, progress=lambda _: None):
         import numpy as np
         import torch
-        import soxr
-        from demucs.api import Separator
         from huggingface_hub import snapshot_download
         from transformers import AutoModelForCausalLM, LogitsProcessorList, StoppingCriteriaList
         from .vendor.moss.processor import MossTranscribeDiarizeProcessor
@@ -54,26 +52,13 @@ class SongTranscriber:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         dtype = torch.bfloat16 if device == 'cuda' else torch.float32
         check()
-        # Separation finishes and releases VRAM before loading the ASR model.
-        separator = Separator(model='htdemucs', device=device, shifts=0)
-        try:
-            with tempfile.TemporaryDirectory(prefix='echora-transcribe-') as tmp:
-                path = Path(tmp)/'source.audio'
-                path.write_bytes(audio_bytes)
-                _, stems = separator.separate_audio_file(str(path))
-                vocals = stems['vocals'].mean(dim=0).cpu().numpy()
-                sample_rate = separator.samplerate
-        finally:
-            del separator
-            if device == 'cuda': torch.cuda.empty_cache()
-        del stems, _
-        if device == 'cuda': torch.cuda.empty_cache()
-        check()
         snapshot = snapshot_download(self.model_id, revision=self.revision, local_files_only=True)
         processor = MossTranscribeDiarizeProcessor.from_pretrained(
             snapshot, local_files_only=True, trust_remote_code=True)
         sr = int(processor.feature_extractor.sampling_rate)
-        vocals = soxr.resample(vocals, sample_rate, sr).astype(np.float32)
+        # Reads the prepared stem, or completes separation and releases its model
+        # before ASR loads. Karaoke reuses the same source/configuration artifact.
+        vocals = vocal_waveform(audio_bytes, sample_rate=sr, check=check)
         duration = len(vocals)/sr
         ranges = list(windows(duration))
         model = AutoModelForCausalLM.from_pretrained(snapshot, trust_remote_code=True,
@@ -148,7 +133,8 @@ class SongTranscriber:
                 import soundfile as sf
                 from .karaoke_pipeline import _run_fa_kara
                 buffer = io.BytesIO()
-                sf.write(buffer, vocals[round(start*sr):round(end*sr)], sr, format='FLAC')
+                sf.write(buffer, vocals[round(start*sr):round(end*sr)], sr,
+                         format='WAV', subtype='FLOAT')
                 timing_worker_used = True
                 try:
                     aligned = _run_fa_kara(buffer.getvalue(),
@@ -188,7 +174,8 @@ class SongTranscriber:
         return {'text':'\n'.join(s['text'] for s in result), 'status':'available',
                 'synced':True, 'lines':result, 'ai_generated':True,
                 'transcription':{'model':self.model_id,'revision':self.revision,
-                    'pipeline_revision':PIPELINE_REVISION,'separator':'htdemucs',
+                    'pipeline_revision':PIPELINE_REVISION,'separator':'mel-band-roformer',
+                    'separator_revision':SEPARATION_REVISION,
                     'windows':diagnostics, 'partial':bool(unresolved),
                     'unresolved_windows':unresolved, 'retry_budget':budget,
                     'timing_repairs':timing_repairs,

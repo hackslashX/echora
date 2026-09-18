@@ -189,7 +189,7 @@ Different operations answer different questions:
 | MERT | Acoustic similarity based on the sound of the recording. |
 | BGE-M3 | Lyrics representations for language and thematic matching. |
 | Chromaprint | Evidence that different files contain the same recording. |
-| Demucs and MELODIA | Melody contours for humming search and the optional player pitch line. |
+| Mel-Band Roformer and MELODIA | Shared overlap-2 vocals, mix-minus-vocals accompaniment and melody contours for humming search and the optional player pitch line. |
 | Lyrics forced alignment | Syllable timing when suitable source lyrics are available. |
 | Waveform generation | A whole-track RMS/peak energy envelope, computed during sync. |
 

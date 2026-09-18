@@ -16,6 +16,7 @@ import uuid
 import psycopg
 
 from .navidrome import NavidromeClient, batch_audio_cache
+from .preprocessing import preprocessing_session
 
 OPERATIONS = frozenset({"navidrome_sync", "import", "lyrics_backfill", "voice_backfill",
                         "karaoke_backfill", "recordings_backfill", "audio_profiles", "hum_corpus",
@@ -84,37 +85,38 @@ def _recordings(credentials, user_id, ids, report, check):
 
 
 def _hum(credentials, user_id, payload, report, check):
-    from .hum_search import create_sync_run, store_track_contours, release_separator
+    from .hum_search import create_sync_run, store_track_contours
+    from .preprocessing import prepare_audio
     summary = {"tracks": 0, "contours": 0, "failed": 0}
-    try:
-        with _connect() as connection, connection.cursor() as cursor, NavidromeClient(*credentials) as client:
-            cursor.execute("SELECT id FROM hum_corpora WHERE id=%s AND user_id=%s", (payload['corpus_id'], user_id))
-            if not cursor.fetchone():
-                raise ValueError("Unknown hum corpus")
-            run_id = create_sync_run(connection)
-            cursor.execute("UPDATE hum_corpora SET run_id=%s WHERE id=%s AND user_id=%s",
-                           (run_id, payload['corpus_id'], user_id))
-            connection.commit()
-            for external_id, track_id in _source_rows(user_id, credentials[0], payload['track_ids']):
-                check()
-                cursor.execute("SELECT 1 FROM hum_corpus_tracks WHERE corpus_id=%s AND track_id=%s", (payload['corpus_id'], track_id))
-                if cursor.fetchone():
-                    continue
-                try:
-                    cursor.execute("SELECT count(*) FROM melody_contours WHERE track_id=%s AND run_id=%s", (track_id, run_id))
-                    existing = cursor.fetchone()[0]
-                    if not existing:
-                        summary['contours'] += store_track_contours(connection, track_id, run_id, client.audio_bytes(external_id))
-                    cursor.execute("INSERT INTO hum_corpus_tracks(corpus_id,track_id) VALUES (%s,%s) ON CONFLICT DO NOTHING", (payload['corpus_id'], track_id))
-                    connection.commit()
-                    summary['tracks'] += 1
-                except Exception:
-                    connection.rollback()
-                    summary['failed'] += 1
-                report({"phase": "melody-index", "summary": dict(summary)})
-    finally:
-        release_separator()
+    with _connect() as connection, connection.cursor() as cursor, NavidromeClient(*credentials) as client:
+        cursor.execute("SELECT id FROM hum_corpora WHERE id=%s AND user_id=%s", (payload['corpus_id'], user_id))
+        if not cursor.fetchone():
+            raise ValueError("Unknown hum corpus")
+        run_id = create_sync_run(connection)
+        cursor.execute("UPDATE hum_corpora SET run_id=%s WHERE id=%s AND user_id=%s",
+                       (run_id, payload['corpus_id'], user_id))
+        connection.commit()
+        for external_id, track_id in _source_rows(user_id, credentials[0], payload['track_ids']):
+            check()
+            try:
+                cursor.execute("SELECT count(*) FROM melody_contours WHERE track_id=%s AND run_id=%s", (track_id, run_id))
+                existing = cursor.fetchone()[0]
+                if not existing:
+                    report({"phase": "preprocess", "message": "Preparing shared melody audio"})
+                    audio = client.audio_bytes(external_id)
+                    prepare_audio(audio, mono_rates=(44100,), stereo=True, melody=True, check=check)
+                    report({"phase": "melody-index", "message": "Extracting melody contours"})
+                    summary['contours'] += store_track_contours(connection, track_id, run_id, audio)
+                    del audio
+                cursor.execute("INSERT INTO hum_corpus_tracks(corpus_id,track_id) VALUES (%s,%s) ON CONFLICT DO NOTHING", (payload['corpus_id'], track_id))
+                connection.commit()
+                summary['tracks'] += 1
+            except Exception:
+                connection.rollback()
+                summary['failed'] += 1
+            report({"phase": "melody-index", "summary": dict(summary)})
     return summary
+
 
 
 def execute(job: dict, context) -> dict | None:
@@ -144,7 +146,7 @@ def execute(job: dict, context) -> dict | None:
         credentials = main._load_connection(payload['connection_id'], user_id)
         if credentials is None:
             raise ValueError('Connection unavailable')
-    with batch_audio_cache(context.check):
+    with batch_audio_cache(context.check), preprocessing_session(context.check):
         if operation == 'semantic_fusion_build':
             from .semantic_fusion import build_semantic_fusion
             report({'phase': 'building', 'message': 'Building semantic fusion vectors',

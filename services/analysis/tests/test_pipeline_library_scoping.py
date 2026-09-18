@@ -76,6 +76,7 @@ class LibraryScopingTests(unittest.TestCase):
             os=SimpleNamespace(environ={"DATABASE_URL": "fake"}),
             NavidromeClient=navidrome,
             torch=SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
+            prepare_audio=MagicMock(), get_check=lambda: lambda: None,
         )
         for name in ("resolve_library_id", "configure_representations", "_create_run",
                      "start_attempt", "record_track", "finish_attempt", "_store_lyrics",
@@ -137,7 +138,7 @@ class LibraryScopingTests(unittest.TestCase):
         sql, params = self.cursor.execute.call_args.args
         self.assertIn("ts.library_id=%s", sql)
         self.assertEqual(params, (["shared-id"], self.library_id))
-        ns["_stop_fa_kara_worker"].assert_called_once()
+        self.assertEqual(ns["_stop_fa_kara_worker"].call_count, 2)  # Before prep and finally.
 
     def test_voice_scope_ids_and_cleanup_on_cancellation(self):
         for ids in (None, [], ["shared-id"]):

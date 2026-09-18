@@ -48,6 +48,14 @@ A user's request to add and analyze selected songs without removing other songs 
 
 A bounded selection of songs processed together through the required analysis stages. Finished analysis remains reusable when other songs in the batch fail.
 
+## Prepared audio
+
+A reusable audio input derived from a track for a specific analysis purpose. Prepared audio keeps its source identity and preparation recipe, so different analyses share it only when their input requirements match.
+
+## Vocal stem
+
+An estimate of the singing and speech in a track, separated from its accompaniment. It is not a clean reference recording and may retain instruments or omit vocal details.
+
 ## Recording group
 
 A non-destructive set of tracks believed to contain the same recording. Membership records evidence and confidence. Grouping never deletes or replaces tracks. Members are alternative copies when Echora generates a journey or curation, so one generated selection contains at most one member.
