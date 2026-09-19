@@ -1082,7 +1082,31 @@ def track_visual_features(track_id: uuid.UUID, echora_session: str | None = Cook
             (track_id, VISUAL_FEATURE_REVISION),
         )
         features = cursor.fetchone()
-    return {"track_id": str(track_id), "status": "complete" if features else "pending", "visual_features": features}
+        # Read enrichment at request time: ingest ordering never requires a DSP
+        # rerun, and this authenticated endpoint never schedules model work.
+        cursor.execute(
+            """SELECT revision, status, descriptors, created_at FROM track_audio_descriptors
+               WHERE track_id=%s AND revision=%s""", (track_id, DESCRIPTOR_REVISION),
+        )
+        descriptors = cursor.fetchone()
+        cursor.execute(
+            """SELECT activity.activity, activity.run_id FROM track_vocal_activity activity
+               JOIN current_analysis_runs ar ON ar.id=activity.run_id
+               WHERE activity.track_id=%s AND ar.kind='voice_classification'
+               ORDER BY activity.created_at DESC LIMIT 1""", (track_id,),
+        )
+        vocal = cursor.fetchone()
+        cursor.execute(
+            """SELECT mc.source, mc.pitch, mc.voiced, mc.hop_seconds
+               FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
+               WHERE mc.track_id=%s AND ar.model_revision=%s AND ar.status IN ('complete','running')
+               ORDER BY CASE mc.source WHEN 'full-mix' THEN 0 WHEN 'vocals' THEN 1 ELSE 2 END,
+                        ar.created_at DESC LIMIT 1""", (track_id, MELODY_CONTOUR_REVISION),
+        )
+        contour = cursor.fetchone()
+    melody = melody_preview(contour["source"], contour["pitch"], contour["voiced"], float(contour["hop_seconds"])) if contour else None
+    return {"track_id": str(track_id), "status": "complete" if features else "pending", "visual_features": features,
+            "enrichment": {"descriptors": descriptors, "vocal_activity": vocal, "melody": melody}}
 
 
 @app.get("/library/tracks/{track_id}/audio-quality")

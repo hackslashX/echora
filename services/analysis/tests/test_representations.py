@@ -205,7 +205,18 @@ def test_visual_feature_endpoint_visibility_and_planner(db, visible_track):
         (track, VISUAL_FEATURE_REVISION, '{"bands":[[0.1]],"level":[0.1],"onset":[0]}'),
     )
     assert not plan_audio(db, library, ["song"]).visual_feature_external_ids
-    assert track_visual_features(track, "test")["visual_features"]["features"]["bands"] == [[0.1]]
+    response = track_visual_features(track, "test")
+    assert response["visual_features"]["features"]["bands"] == [[0.1]]
+    assert response["enrichment"] == {"descriptors": None, "vocal_activity": None, "melody": None}
+    # Read-time enrichment appears without a visual-cache rerun.
+    from echora_analysis.audio_descriptors import DESCRIPTOR_REVISION
+    db.execute("INSERT INTO track_audio_descriptors (track_id, revision, status, descriptors) VALUES (%s,%s,'complete',%s)",
+               (track, DESCRIPTOR_REVISION, Jsonb({"rhythm": {"bpm": 120}})))
+    assert track_visual_features(track, "test")["enrichment"]["descriptors"]["descriptors"]["rhythm"]["bpm"] == 120
+    assert not plan_audio(db, library, ["song"]).visual_feature_external_ids
+    db.execute("UPDATE track_visual_features SET revision='1' WHERE track_id=%s", (track,))
+    assert plan_audio(db, library, ["song"]).visual_feature_external_ids == frozenset({"song"})
+    assert track_visual_features(track, "test")["status"] == "pending"
 
 
 def test_job_transition_interrupts_only_its_unfinished_attempts(db, monkeypatch):
