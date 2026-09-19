@@ -1,10 +1,11 @@
 "use client";
 
+import type { VisualFrame } from "./visualFeatures";
 import * as THREE from "three";
 import { useEffect, useRef } from "react";
 import { readPlaybackPreferences, type PlaybackPreferences } from "./playbackPreferences";
 import { compactLayoutEvent, readCompactLayoutPreference } from "../shell/layoutPreference";
-import { CloudResponse, type CloudAudio } from "./cloudResponse";
+import { CloudResponse } from "./cloudResponse";
 import { cloudFragmentShader } from "./cloudShader";
 import styles from "./CloudVisualizer.module.css";
 
@@ -78,7 +79,10 @@ export default function CloudVisualizer() {
     };
     const receivePreferences = (event: Event) => { preferences = (event as CustomEvent<PlaybackPreferences>).detail; sync(); };
     const receiveAudio = (event: Event) => {
-      if (active && playing) response.receive((event as CustomEvent<CloudAudio>).detail, preferences, performance.now() / 1000);
+      const detail = (event as CustomEvent<VisualFrame>).detail;
+      if (!detail.active) { response.reset(); return; }
+      playing = true;
+      if (active) response.receive(detail, preferences, performance.now() / 1000);
     };
     const receivePalette = (event: Event) => {
       const detail = (event as CustomEvent<{ active: boolean; palette: { waves: number[][] } | null }>).detail;
@@ -94,7 +98,7 @@ export default function CloudVisualizer() {
     const lost = (event: Event) => { event.preventDefault(); failed = true; sync(); };
     const restored = () => { failed = false; sync(); };
     const events: [string, EventListener][] = [
-      ["echora:playback-preferences", receivePreferences], ["echora:audio-reactivity", receiveAudio],
+      ["echora:playback-preferences", receivePreferences], ["echora:visual-frame", receiveAudio],
       ["echora:track-palette", receivePalette], ["echora:playback-state", receiveState],
       ["echora:track-change", reset], [compactLayoutEvent, sync], ["resize", resize],
     ];

@@ -1,5 +1,7 @@
 "use client";
 
+import type { VisualFrame } from "./visualFeatures";
+
 import { useEffect, useRef } from "react";
 import { PlaybackPreferences, readPlaybackPreferences } from "./playbackPreferences";
 import styles from "./RetroTrainVisualizer.module.css";
@@ -137,10 +139,11 @@ export default function RetroTrainVisualizer() {
     let mood: "arc" | "bounce" | "still" | "groove" = "arc", moodUntil = 8, bounce = 0, headTilt = 0, beatPhase = 0;
     const target: Reactivity = { bass: 0, mid: 0, treble: 0, level: 0, onset: false, bassAttack: 0, midAttack: 0, trebleAttack: 0 };
     const smooth = { bass: 0, mid: 0, treble: 0, level: 0 };
-    let onsetPulse = 0, trebleFlash = 0, bpm = 112, lastOnsetAt = -Infinity;
+    let onsetPulse = 0, trebleFlash = 0, bpm = 0;
+    let vocalActivation: number | null = null;
     const tubeLevels = new Float32Array(27);
 
-    // Nine tube clusters; each holds one bass, one vocal, one treble tube in a seeded order.
+    // Nine tube clusters; each holds one bass, one mid, one treble tube in a seeded order.
     const clusters = Array.from({ length: 9 }, (_, group) => ({
       order: [0, 1, 2].sort((a, b) => seeded(group * 7 + a) - seeded(group * 7 + b)),
       offset: (seeded(group + 1) - .5) * .12,
@@ -166,15 +169,18 @@ export default function RetroTrainVisualizer() {
     };
     const receivePreferences = (event: Event) => { preferences = (event as CustomEvent<PlaybackPreferences>).detail; enabled = preferences.wavesEnabled && preferences.backdropPreset === "retrotrain"; canvas.classList.toggle(styles.active, enabled); };
     const receiveAudio = (event: Event) => {
-      const detail = (event as CustomEvent<Reactivity>).detail;
+      const detail = (event as CustomEvent<VisualFrame>).detail;
       Object.assign(target, detail);
-      if (detail.onset) {
-        onsetPulse = 1;
-        const at = detail.timestamp ?? performance.now() / 1000;
-        const interval = at - lastOnsetAt;
-        if (interval >= .3 && interval <= 1.4) bpm += ((60 / interval) - bpm) * .14;
-        lastOnsetAt = at;
+      playing = detail.active;
+      bpm = detail.bpm ?? 0;
+      vocalActivation = detail.enrichment?.vocalActivation ?? null;
+      if (!detail.active) {
+        Object.assign(smooth, { bass: 0, mid: 0, treble: 0, level: 0 });
+        onsetPulse = trebleFlash = speed = judder = nod = torsoArc = lean = bounce = headTilt = 0;
+        tubeLevels.fill(0); beatPhase = 100;
+        return;
       }
+      if (detail.beat) onsetPulse = 1;
       trebleFlash = Math.max(trebleFlash, detail.trebleAttack * 4);
     };
     const receiveState = (event: Event) => { playing = Boolean((event as CustomEvent<boolean>).detail); if (!playing) speed = 0; };
@@ -412,7 +418,8 @@ export default function RetroTrainVisualizer() {
         mood = moods[Math.floor(Math.random() * moods.length)];
         moodUntil = clock + 6 + Math.random() * 10;
       }
-      const vocal = clamp(smooth.mid * preferences.vocalReactivity), bassEnergy = clamp(smooth.bass * preferences.bassReactivity);
+      // Model activity is optional and uncalibrated; unknown is not vocal presence.
+      const vocal = clamp((vocalActivation ?? 0) * smooth.level * preferences.vocalReactivity), bassEnergy = clamp(smooth.bass * preferences.bassReactivity);
       if (onsetPulse > .95) beatPhase = 0; beatPhase += delta * 3.2;
       const beat = Math.exp(-beatPhase * 2.2); // decaying pulse from the last onset
       let nodTarget = 0, arcTarget = 0, tiltTarget = 0, bounceTarget = 0;
@@ -445,9 +452,9 @@ export default function RetroTrainVisualizer() {
     };
 
     canvas.classList.toggle(styles.active, enabled); resize();
-    window.addEventListener("resize", resize); window.addEventListener("echora:playback-preferences", receivePreferences); window.addEventListener("echora:audio-reactivity", receiveAudio); window.addEventListener("echora:playback-state", receiveState); window.addEventListener("echora:track-palette", receivePalette);
+    window.addEventListener("resize", resize); window.addEventListener("echora:playback-preferences", receivePreferences); window.addEventListener("echora:visual-frame", receiveAudio); window.addEventListener("echora:playback-state", receiveState); window.addEventListener("echora:track-palette", receivePalette);
     frame = requestAnimationFrame(animate);
-    return () => { cancelAnimationFrame(frame); window.removeEventListener("resize", resize); window.removeEventListener("echora:playback-preferences", receivePreferences); window.removeEventListener("echora:audio-reactivity", receiveAudio); window.removeEventListener("echora:playback-state", receiveState); window.removeEventListener("echora:track-palette", receivePalette); };
+    return () => { cancelAnimationFrame(frame); window.removeEventListener("resize", resize); window.removeEventListener("echora:playback-preferences", receivePreferences); window.removeEventListener("echora:visual-frame", receiveAudio); window.removeEventListener("echora:playback-state", receiveState); window.removeEventListener("echora:track-palette", receivePalette); };
   }, []);
 
   return <canvas ref={mountRef} className={styles.scene} aria-hidden="true" />;
