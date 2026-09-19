@@ -187,6 +187,27 @@ def test_waveform_planner_skips_current_and_retries_old_revision(db, visible_tra
     assert plan_audio(db, library, ["song"]).waveform_external_ids == frozenset({"song"})
 
 
+def test_visual_feature_endpoint_visibility_and_planner(db, visible_track):
+    from fastapi import HTTPException
+    from echora_analysis.main import track_visual_features
+    from echora_analysis.processing_plan import plan_audio
+    from echora_analysis.visual_features import VISUAL_FEATURE_REVISION
+
+    _, _, library, _, track, _ = visible_track
+    assert plan_audio(db, library, ["song"]).visual_feature_external_ids == frozenset({"song"})
+    assert track_visual_features(track, "test")["status"] == "pending"
+    with pytest.raises(HTTPException) as error:
+        track_visual_features(uuid.uuid4(), "test")
+    assert error.value.status_code == 404
+    db.execute(
+        """INSERT INTO track_visual_features (track_id, revision, duration_seconds, hop_seconds, features)
+           VALUES (%s,%s,10,.1,%s)""",
+        (track, VISUAL_FEATURE_REVISION, '{"bands":[[0.1]],"level":[0.1],"onset":[0]}'),
+    )
+    assert not plan_audio(db, library, ["song"]).visual_feature_external_ids
+    assert track_visual_features(track, "test")["visual_features"]["features"]["bands"] == [[0.1]]
+
+
 def test_job_transition_interrupts_only_its_unfinished_attempts(db, monkeypatch):
     job_id = uuid.uuid4()
     db.execute("INSERT INTO jobs(id,kind,worker_type,user_id,status) VALUES (%s,'analysis_batch','analysis',%s,'running')",

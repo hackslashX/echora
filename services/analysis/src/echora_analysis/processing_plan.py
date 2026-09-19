@@ -10,6 +10,7 @@ import psycopg
 from .melody_config import MELODY_CONTOUR_REVISION
 from .audio_descriptors import DESCRIPTOR_REVISION
 from .waveforms import WAVEFORM_REVISION
+from .visual_features import VISUAL_FEATURE_REVISION
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,7 @@ class AudioProcessingPlan:
     descriptor_external_ids: frozenset[str] = frozenset()
 
     waveform_external_ids: frozenset[str] = frozenset()
+    visual_feature_external_ids: frozenset[str] = frozenset()
 
     @property
     def needs_muq(self) -> bool:
@@ -55,7 +57,8 @@ class AudioProcessingPlan:
     @property
     def download_external_ids(self) -> frozenset[str]:
         return (self.muq_external_ids | self.mert_external_ids | self.fingerprint_external_ids
-                | self.melody_external_ids | self.descriptor_external_ids | self.waveform_external_ids)
+                | self.melody_external_ids | self.descriptor_external_ids | self.waveform_external_ids
+                | self.visual_feature_external_ids)
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,8 @@ def audio_prerequisites(plan: AudioProcessingPlan, external_id: str) -> AudioPre
         stereo.add(44_100)
     if external_id in plan.waveform_external_ids:
         stereo.add(24_000)
+    if external_id in plan.visual_feature_external_ids:
+        mono.add(22_050)
     # Chromaprint decodes independently; changing its input may change fingerprints.
     return AudioPrerequisites(tuple(sorted(mono)), tuple(sorted(stereo)),
                               external_id in plan.melody_external_ids)
@@ -201,11 +206,13 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
                               WHERE ad.track_id=ts.track_id AND ad.revision=%s
                                 AND ad.status='complete') AS has_descriptors,
                       EXISTS (SELECT 1 FROM track_waveforms w
-                              WHERE w.track_id=ts.track_id AND w.revision=%s) AS has_waveform
+                              WHERE w.track_id=ts.track_id AND w.revision=%s) AS has_waveform,
+                      EXISTS (SELECT 1 FROM track_visual_features vf
+                              WHERE vf.track_id=ts.track_id AND vf.revision=%s) AS has_visual_features
                FROM unnest(%s::text[]) requested(external_id)
                LEFT JOIN track_sources ts ON ts.library_id=%s AND ts.source_type='subsonic'
                                          AND ts.external_id=requested.external_id""",
-            (muq_revision, mert_revision, MELODY_CONTOUR_REVISION, DESCRIPTOR_REVISION, WAVEFORM_REVISION, ids, library_id),
+            (muq_revision, mert_revision, MELODY_CONTOUR_REVISION, DESCRIPTOR_REVISION, WAVEFORM_REVISION, VISUAL_FEATURE_REVISION, ids, library_id),
         )
         rows = cursor.fetchall()
     return AudioProcessingPlan(
@@ -215,4 +222,5 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
         frozenset(str(row[0]) for row in rows if hum_enabled and not row[5]),
         frozenset(str(row[0]) for row in rows if not row[6]),
         frozenset(str(row[0]) for row in rows if not row[7]),
+        frozenset(str(row[0]) for row in rows if not row[8]),
     )

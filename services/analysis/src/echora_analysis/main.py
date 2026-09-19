@@ -36,6 +36,7 @@ from starlette.responses import RedirectResponse, StreamingResponse
 from .artists import fit_artist_profile, representative_indices, soft_chamfer_similarity, weighted_center
 from .audio_descriptors import DESCRIPTOR_REVISION
 from .waveforms import WAVEFORM_REVISION
+from .visual_features import VISUAL_FEATURE_REVISION
 from .melody_preview import melody_preview
 from .audio_profiles import (
     AUDIO_PROFILE_REVISION,
@@ -1066,6 +1067,22 @@ def track_waveform(track_id: uuid.UUID, echora_session: str | None = Cookie(defa
         contour = cursor.fetchone()
     melody = melody_preview(contour["source"], contour["pitch"], contour["voiced"], float(contour["hop_seconds"])) if contour else None
     return {"track_id": str(track_id), "status": "complete" if waveform else "pending", "waveform": waveform, "melody": melody}
+
+
+@app.get("/library/tracks/{track_id}/visual-features")
+def track_visual_features(track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        cursor.execute(
+            """SELECT revision, duration_seconds, hop_seconds, features, created_at
+               FROM track_visual_features WHERE track_id=%s AND revision=%s""",
+            (track_id, VISUAL_FEATURE_REVISION),
+        )
+        features = cursor.fetchone()
+    return {"track_id": str(track_id), "status": "complete" if features else "pending", "visual_features": features}
 
 
 @app.get("/library/tracks/{track_id}/audio-quality")

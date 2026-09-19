@@ -19,6 +19,7 @@ function scrobble(track: PlayerTrack | null, submission: boolean) {
 export type AudioQuality = { codec?: string; content_type?: string; bit_rate_kbps?: number; bit_depth?: number; sample_rate_hz?: number; channels?: number; lossless?: boolean; streamQuality: "original" | "320" | "120" };
 export type PlayerLyrics = { trackId: string; available: boolean; karaoke?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[]; text?: string; language?: string; provenance?: { ai_generated?: boolean; synced?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[] } };
 export type MelodyPreview = { source: string; points: { time_seconds: number; pitch: number | null }[] };
+type VisualFeatureTimeline = { hop_seconds: number; bands: number[][]; level: number[]; centroid: number[]; flux: number[]; onset: number[]; chroma: number[][] };
 type PlayerState = {
   track: PlayerTrack | null; audioQuality: AudioQuality | null; lyrics: PlayerLyrics | null; lyricsLoading: boolean; playing: boolean; buffering: boolean; currentTime: number; duration: number; buffered: number; muted: boolean; expanded: boolean;
   waveform: number[] | null; melody: MelodyPreview | null;
@@ -82,8 +83,7 @@ async function artworkPalette(url: string): Promise<TrackPalette> {
 
 export function PlayerProvider({ children }: { children: ReactNode }) {
   const audio = useRef<HTMLAudioElement | null>(null);
-  const audioContext = useRef<AudioContext | null>(null);
-  const analyser = useRef<AnalyserNode | null>(null);
+  const visualFeatures = useRef<VisualFeatureTimeline | null>(null);
   const analysisFrame = useRef(0);
   const queueRef = useRef<PlayerTrack[]>([]);
   const trackRef = useRef<PlayerTrack | null>(null);
@@ -104,7 +104,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!track?.id) return;
     const trackId = track.id;
+    visualFeatures.current = null;
     const controller = new AbortController();
+    fetch(`/analysis/library/tracks/${encodeURIComponent(trackId)}/visual-features`, { signal: controller.signal })
+      .then(response => response.ok ? response.json() : null)
+      .then(body => {
+        const value = body?.visual_features?.features;
+        if (!value || !Array.isArray(value.bands) || !Array.isArray(value.level) || !Number.isFinite(value.hop_seconds)) return;
+        const frameCount = value.bands.length;
+        if (!frameCount || value.level.length !== frameCount || !value.bands.every((frame: unknown) => Array.isArray(frame))) return;
+        visualFeatures.current = value as VisualFeatureTimeline;
+      }).catch(() => {});
     fetch(`/analysis/library/tracks/${encodeURIComponent(trackId)}/waveform`, { signal: controller.signal })
       .then(response => response.ok ? response.json() : null)
       .then(body => {
@@ -162,58 +172,50 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     player.addEventListener("pause", paused); player.addEventListener("play", started);
     player.addEventListener("loadstart", waiting); player.addEventListener("waiting", waiting);
     player.addEventListener("canplay", ready); player.addEventListener("playing", ready);
-    return () => { window.removeEventListener("echora:playback-state-request", reportPlaybackState); player.pause(); publishPalette(null); if (hasMediaSession()) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = "none"; ["play", "pause", "previoustrack", "nexttrack", "seekbackward", "seekforward", "seekto"].forEach(action => setAction(action as MediaSessionAction, null)); } cancelAnimationFrame(analysisFrame.current); audioContext.current?.close(); player.remove(); };
+    return () => { window.removeEventListener("echora:playback-state-request", reportPlaybackState); player.pause(); publishPalette(null); if (hasMediaSession()) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = "none"; ["play", "pause", "previoustrack", "nexttrack", "seekbackward", "seekforward", "seekto"].forEach(action => setAction(action as MediaSessionAction, null)); } cancelAnimationFrame(analysisFrame.current); analysisFrame.current = 0; player.remove(); };
   }, []);
 
   function startAnalysis() {
     const player = audio.current;
-    if (!player || analyser.current) { audioContext.current?.resume(); return; }
-    const browser = window as Window & { webkitAudioContext?: typeof AudioContext };
-    const Context = window.AudioContext || browser.webkitAudioContext;
-    if (!Context) return;
-    const context = new Context();
-    const node = context.createAnalyser();
-    node.fftSize = 1024; node.smoothingTimeConstant = 0.55;
-    const source = context.createMediaElementSource(player);
-    source.connect(node); node.connect(context.destination);
-    audioContext.current = context; analyser.current = node;
-    const frequencies = new Uint8Array(node.frequencyBinCount);
-    const waveform = new Uint8Array(node.fftSize);
+    if (!player || analysisFrame.current) return;
+    // The server builds this timeline during library processing. Every visualizer
+    // receives the same bands and onset values, so no visualizer owns an FFT.
     let lastAnalysis = 0;
-    let bassFloor = 0;
-    let lastOnset = -Infinity;
-    let lastBass = 0, lastMid = 0, lastTreble = 0;
-    const average = (from: number, to: number) => {
-      let sum = 0; const end = Math.min(to, frequencies.length);
-      for (let index = from; index < end; index++) sum += frequencies[index];
-      return end > from ? sum / (end - from) / 255 : 0;
-    };
+    let previousIndex = -1;
+    let previousBands: number[] = [];
     const analyze = (now = performance.now()) => {
       analysisFrame.current = requestAnimationFrame(analyze);
       if (now - lastAnalysis < (player.paused ? 500 : 1000 / 30)) return;
       lastAnalysis = now;
-      node.getByteFrequencyData(frequencies);
-      node.getByteTimeDomainData(waveform);
-      window.dispatchEvent(new CustomEvent("echora:audio-spectrum", { detail: new Uint8Array(frequencies) }));
+      const timeline = visualFeatures.current;
+      if (!timeline || player.paused) return;
+      const index = Math.min(timeline.bands.length - 1, Math.max(0, Math.floor(player.currentTime / timeline.hop_seconds)));
+      const bands = timeline.bands[index];
+      if (!bands?.length) return;
+      const band = (from: number, to: number) => {
+        let sum = 0;
+        for (let item = from; item < to; item += 1) sum += bands[item] || 0;
+        return sum / Math.max(1, to - from);
+      };
+      const bass = band(0, 7), mid = band(7, 17), treble = band(17, bands.length);
+      const onset = index !== previousIndex && (timeline.onset[index] || 0) >= .38;
+      const bassAttack = Math.max(0, bass - (previousBands[0] || 0));
+      const midAttack = Math.max(0, mid - (previousBands[1] || 0));
+      const trebleAttack = Math.max(0, treble - (previousBands[2] || 0));
+      previousIndex = index; previousBands = [bass, mid, treble];
+      const spectrum = new Uint8Array(512);
+      for (let item = 0; item < spectrum.length; item += 1) spectrum[item] = Math.round((bands[Math.min(bands.length - 1, Math.floor(item * bands.length / spectrum.length))] || 0) * 255);
+      const waveform = new Uint8Array(256);
+      for (let item = 0; item < waveform.length; item += 1) waveform[item] = Math.round(128 + Math.sin(item / waveform.length * Math.PI * 8) * (timeline.level[index] || 0) * 80);
+      window.dispatchEvent(new CustomEvent("echora:audio-spectrum", { detail: spectrum }));
       window.dispatchEvent(new CustomEvent("echora:audio-waveform", { detail: waveform }));
-      const binHz = context.sampleRate / node.fftSize;
-      const bass = average(Math.floor(35 / binHz), Math.ceil(180 / binHz));
-      const mid = average(Math.floor(180 / binHz), Math.ceil(2200 / binHz));
-      const treble = average(Math.floor(2200 / binHz), Math.ceil(10000 / binHz));
-      bassFloor += (bass - bassFloor) * .045;
-      const onset = !player.paused && now - lastOnset > 220 && bass > Math.max(.16, bassFloor + .075);
-      if (onset) lastOnset = now;
       window.dispatchEvent(new CustomEvent("echora:audio-reactivity", { detail: {
-        bass, mid, treble, onset, timestamp: now / 1000,
-        level: bass * .45 + mid * .4 + treble * .15,
-        bassAttack: Math.max(0, bass - lastBass),
-        midAttack: Math.max(0, mid - lastMid),
-        trebleAttack: Math.max(0, treble - lastTreble),
+        bass, mid, treble, onset, timestamp: player.currentTime,
+        level: timeline.level[index] || 0, bassAttack, midAttack, trebleAttack,
       } }));
-      lastBass = bass; lastMid = mid; lastTreble = treble;
       window.dispatchEvent(new CustomEvent("echora:playback-time", { detail: player.currentTime || 0 }));
     };
-    context.resume(); analyze();
+    analyze();
   }
 
   function loadLyrics(next: PlayerTrack) {

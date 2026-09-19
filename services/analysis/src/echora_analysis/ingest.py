@@ -17,6 +17,7 @@ import torch
 from .audio import decode_audio, full_coverage_window_ranges
 from .audio_descriptors import store_audio_descriptors
 from .waveforms import store_waveform
+from .visual_features import store_visual_features
 from .hum_search import create_sync_run, store_track_contours
 from .models import AudioEmbeddingModel, MertModel, MuQMuLanModel, release_model
 from .navidrome import NavidromeClient, NavidromeTrack
@@ -42,6 +43,7 @@ class IngestSummary:
     embedded_mert: int = 0
     fingerprinted: int = 0
     waveforms_generated: int = 0
+    visual_features_generated: int = 0
     melody_indexed: int = 0
     melody_contours: int = 0
     recording_matches: int = 0
@@ -229,7 +231,8 @@ def ingest_navidrome(
                          "fingerprint": len(plan.fingerprint_external_ids),
                          "melody": len(plan.melody_external_ids),
                          "descriptors": len(plan.descriptor_external_ids),
-                         "waveform": len(plan.waveform_external_ids)}})
+                         "waveform": len(plan.waveform_external_ids),
+                         "visual_features": len(plan.visual_feature_external_ids)}})
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         downloaded_ids: set[str] = set(identity_downloaded)
@@ -343,6 +346,24 @@ def ingest_navidrome(
                 logger.exception("Could not generate waveform for Navidrome song %s", song.id)
             report({"phase": "waveform", "message": f"Generating waveform for {song.title}",
                     "completed": index + 1, "total": len(waveform_songs), "unit": "tracks",
+                    "summary": summary.__dict__})
+
+        visual_feature_songs = [song for song in songs if song.id in plan.visual_feature_external_ids]
+        for index, song in enumerate(visual_feature_songs):
+            report({"phase": "visual_features", "message": f"Preparing visual features for {song.title}",
+                    "completed": index, "total": len(visual_feature_songs), "unit": "tracks"})
+            try:
+                audio, track_id = audio_track(song)
+                store_visual_features(connection, track_id, audio)
+                del audio
+                connection.commit()
+                summary.visual_features_generated += 1
+            except Exception:
+                connection.rollback()
+                summary.failed += 1
+                logger.exception("Could not prepare visual features for Navidrome song %s", song.id)
+            report({"phase": "visual_features", "message": f"Prepared visual features for {song.title}",
+                    "completed": index + 1, "total": len(visual_feature_songs), "unit": "tracks",
                     "summary": summary.__dict__})
 
         loaded = 0
