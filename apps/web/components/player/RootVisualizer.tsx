@@ -1,5 +1,6 @@
 "use client";
 
+import type { VisualFrame } from "./visualFeatures";
 import * as THREE from "three";
 import { useEffect, useRef } from "react";
 import { PlaybackPreferences, readPlaybackPreferences } from "./playbackPreferences";
@@ -87,7 +88,7 @@ export default function RootVisualizer() {
     const segments: Segment[] = [];
     const tips: Tip[] = [];
     const reactivity: Reactivity = { bass: 0, mid: 0, treble: 0, onset: false, bassAttack: 0, midAttack: 0, trebleAttack: 0 };
-    let bpm = 96, lastOnset = -Infinity, beatFlash = 0, travel = 0;
+    let bpm = 0, beatFlash = 0, travel = 0, audioActive = false;
 
     const seed = (bucket: number, parent?: Segment) => {
       const edgeBias = Math.random();
@@ -107,7 +108,7 @@ export default function RootVisualizer() {
     };
 
     const receiveSpectrum = (event: Event) => {
-      const bins = (event as CustomEvent<Uint8Array>).detail;
+      const bins = (event as CustomEvent<VisualFrame>).detail.bands;
       const next = new Float32Array(BUCKETS);
       for (let bucket = 0; bucket < BUCKETS; bucket += 1) {
         const from = Math.max(1, Math.floor(Math.pow(bucket / BUCKETS, 2.15) * bins.length));
@@ -115,19 +116,18 @@ export default function RootVisualizer() {
         let sum = 0;
         for (let index = from; index < Math.min(to, bins.length); index += 1) sum += bins[index];
         const response = bucket < 6 ? preferences.bassReactivity : bucket < 12 ? preferences.vocalReactivity : preferences.trebleReactivity;
-        next[bucket] = Math.min(1, sum / Math.max(1, Math.min(to, bins.length) - from) / 255 * response);
+        next[bucket] = Math.min(1, sum / Math.max(1, Math.min(to, bins.length) - from) * response);
       }
       levels = next;
     };
     const receivePalette = (event: Event) => { const detail = (event as CustomEvent<PaletteEvent>).detail; if (detail.palette) palette = detail.palette.waves; };
     const receiveReactivity = (event: Event) => {
-      const detail = (event as CustomEvent<Reactivity>).detail;
+      const detail = (event as CustomEvent<VisualFrame>).detail;
       Object.assign(reactivity, detail);
-      if (!detail.onset) return;
-      const timestamp = detail.timestamp ?? performance.now() / 1000;
-      const interval = timestamp - lastOnset;
-      if (interval >= .3 && interval <= 1.25) bpm += (60 / interval - bpm) * .18;
-      lastOnset = timestamp; beatFlash = 1;
+      audioActive = detail.active;
+      bpm = detail.bpm ?? 0;
+      if (!detail.active) { levels.fill(0); previous.fill(0); beatFlash = 0; rootMaterial.uniforms.beat.value = 0; }
+      else if (detail.beat) beatFlash = 1;
     };
     const changeTrack = () => { generation += 1; };
     const receivePreferences = (event: Event) => {
@@ -207,7 +207,7 @@ export default function RootVisualizer() {
       if (segments.length > MAX_SEGMENTS) segments.splice(0, segments.length - MAX_SEGMENTS);
       updateRootBuffers();
       // Integrating speed avoids phase jumps when the tempo estimate changes.
-      travel += deltaSeconds * (100 + bpm * 1.5) * animationScale;
+      if (audioActive) travel += deltaSeconds * (100 + bpm * 1.5) * animationScale;
       rootMaterial.uniforms.travel.value = travel;
       rootMaterial.uniforms.beat.value = beatFlash;
       renderer.render(scene, camera);
@@ -215,18 +215,18 @@ export default function RootVisualizer() {
 
     resize();
     window.addEventListener("resize", resize);
-    window.addEventListener("echora:audio-spectrum", receiveSpectrum);
+    window.addEventListener("echora:visual-frame", receiveSpectrum);
     window.addEventListener("echora:track-palette", receivePalette);
-    window.addEventListener("echora:audio-reactivity", receiveReactivity);
+    window.addEventListener("echora:visual-frame", receiveReactivity);
     window.addEventListener("echora:track-change", changeTrack);
     window.addEventListener("echora:playback-preferences", receivePreferences);
     frame = requestAnimationFrame(draw);
     return () => {
       cancelAnimationFrame(frame);
       window.removeEventListener("resize", resize);
-      window.removeEventListener("echora:audio-spectrum", receiveSpectrum);
+      window.removeEventListener("echora:visual-frame", receiveSpectrum);
       window.removeEventListener("echora:track-palette", receivePalette);
-      window.removeEventListener("echora:audio-reactivity", receiveReactivity);
+      window.removeEventListener("echora:visual-frame", receiveReactivity);
       window.removeEventListener("echora:track-change", changeTrack);
       window.removeEventListener("echora:playback-preferences", receivePreferences);
       rootGeometry.dispose(); rootMaterial.dispose(); renderer.dispose();

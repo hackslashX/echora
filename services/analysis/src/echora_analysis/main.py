@@ -36,6 +36,7 @@ from starlette.responses import RedirectResponse, StreamingResponse
 from .artists import fit_artist_profile, representative_indices, soft_chamfer_similarity, weighted_center
 from .audio_descriptors import DESCRIPTOR_REVISION
 from .waveforms import WAVEFORM_REVISION
+from .visual_features import VISUAL_FEATURE_REVISION
 from .melody_preview import melody_preview
 from .audio_profiles import (
     AUDIO_PROFILE_REVISION,
@@ -1066,6 +1067,48 @@ def track_waveform(track_id: uuid.UUID, echora_session: str | None = Cookie(defa
         contour = cursor.fetchone()
     melody = melody_preview(contour["source"], contour["pitch"], contour["voiced"], float(contour["hop_seconds"])) if contour else None
     return {"track_id": str(track_id), "status": "complete" if waveform else "pending", "waveform": waveform, "melody": melody}
+
+
+@app.get("/library/tracks/{track_id}/visual-features")
+def track_visual_features(track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        cursor.execute(
+            """SELECT revision, status, duration_seconds, hop_seconds, features, created_at
+               FROM track_visual_features WHERE track_id=%s AND revision=%s""",
+            (track_id, VISUAL_FEATURE_REVISION),
+        )
+        cache = cursor.fetchone()
+        # Read enrichment at request time: ingest ordering never requires a DSP
+        # rerun, and this authenticated endpoint never schedules model work.
+        cursor.execute(
+            """SELECT revision, status, descriptors, created_at FROM track_audio_descriptors
+               WHERE track_id=%s AND revision=%s""", (track_id, DESCRIPTOR_REVISION),
+        )
+        descriptors = cursor.fetchone()
+        cursor.execute(
+            """SELECT activity.activity, activity.run_id FROM track_vocal_activity activity
+               JOIN current_analysis_runs ar ON ar.id=activity.run_id
+               WHERE activity.track_id=%s AND ar.kind='voice_classification'
+               ORDER BY activity.created_at DESC LIMIT 1""", (track_id,),
+        )
+        vocal = cursor.fetchone()
+        cursor.execute(
+            """SELECT mc.source, mc.pitch, mc.voiced, mc.hop_seconds
+               FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
+               WHERE mc.track_id=%s AND ar.model_revision=%s AND ar.status IN ('complete','running')
+               ORDER BY CASE mc.source WHEN 'full-mix' THEN 0 WHEN 'vocals' THEN 1 ELSE 2 END,
+                        ar.created_at DESC LIMIT 1""", (track_id, MELODY_CONTOUR_REVISION),
+        )
+        contour = cursor.fetchone()
+    melody = melody_preview(contour["source"], contour["pitch"], contour["voiced"], float(contour["hop_seconds"])) if contour else None
+    status = cache["status"] if cache else "pending"
+    features = cache if status == "complete" else None
+    return {"track_id": str(track_id), "status": status, "visual_features": features,
+            "enrichment": {"descriptors": descriptors, "vocal_activity": vocal, "melody": melody}}
 
 
 @app.get("/library/tracks/{track_id}/audio-quality")

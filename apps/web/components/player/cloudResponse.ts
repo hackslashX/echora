@@ -1,6 +1,6 @@
-/** Input bands come from PlayerProvider: 35–180, 180–2200, 2200–10000 Hz. */
+/** Input bands come from PlayerProvider: 20–250, 250–2000, 2000–10000 Hz. */
 export type CloudAudio = {
-  bass: number; mid: number; treble: number; onset?: boolean;
+  bass: number; mid: number; treble: number; onset?: boolean; bpm?: number | null;
   bassAttack?: number; midAttack?: number; trebleAttack?: number;
 };
 export type CloudSensitivity = { bassReactivity: number; vocalReactivity: number; trebleReactivity: number };
@@ -14,13 +14,11 @@ export class CloudResponse {
   strike = 0;
   travel = 0;
   seed = 1;
-  bpm = 100;
+  bpm = 0;
   private speed = 0;
   private targets = [0, 0, 0];
   private lastAudio = -Infinity;
-  private lastBeat = -Infinity;
   private lastStrike = -Infinity;
-  private intervals: number[] = [];
 
   receive(audio: CloudAudio, sensitivity: CloudSensitivity, now: number) {
     this.lastAudio = now;
@@ -29,17 +27,7 @@ export class CloudResponse {
       clamp(audio.mid * sensitivity.vocalReactivity * 1.8),
       clamp(audio.treble * sensitivity.trebleReactivity * 2),
     ];
-    if (audio.onset) {
-      const interval = now - this.lastBeat;
-      if (interval >= .3 && interval <= 1.2) {
-        this.intervals.push(interval);
-        if (this.intervals.length > 9) this.intervals.shift();
-        const sorted = [...this.intervals].sort((a, b) => a - b);
-        this.bpm += (60 / sorted[Math.floor(sorted.length / 2)] - this.bpm) * .25;
-      } else if (interval > 1.2) this.intervals = [];
-      // Ignore subdivisions inside the refractory window.
-      if (interval >= .3) this.lastBeat = now;
-    }
+    this.bpm = audio.bpm ?? 0;
     const highAttack = clamp((audio.trebleAttack ?? 0) * sensitivity.trebleReactivity * 7);
     const midAttack = clamp((audio.midAttack ?? 0) * sensitivity.vocalReactivity * 6);
     const lowAttack = clamp((audio.bassAttack ?? 0) * sensitivity.bassReactivity * 6);
@@ -74,8 +62,7 @@ export class CloudResponse {
   reset() {
     this.bass = this.mid = this.treble = this.glow = this.strike = this.speed = 0;
     this.targets = [0, 0, 0];
-    this.lastAudio = this.lastBeat = this.lastStrike = -Infinity;
-    this.intervals = [];
-    this.bpm = 100;
+    this.lastAudio = this.lastStrike = -Infinity;
+    this.bpm = 0;
   }
 }

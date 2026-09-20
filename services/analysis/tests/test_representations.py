@@ -187,6 +187,43 @@ def test_waveform_planner_skips_current_and_retries_old_revision(db, visible_tra
     assert plan_audio(db, library, ["song"]).waveform_external_ids == frozenset({"song"})
 
 
+def test_visual_feature_endpoint_visibility_and_planner(db, visible_track):
+    from fastapi import HTTPException
+    from echora_analysis.main import track_visual_features
+    from echora_analysis.processing_plan import plan_audio
+    from echora_analysis.visual_features import VISUAL_FEATURE_REVISION
+
+    _, _, library, _, track, _ = visible_track
+    assert plan_audio(db, library, ["song"]).visual_feature_external_ids == frozenset({"song"})
+    assert track_visual_features(track, "test")["status"] == "pending"
+    with pytest.raises(HTTPException) as error:
+        track_visual_features(uuid.uuid4(), "test")
+    assert error.value.status_code == 404
+    db.execute(
+        """INSERT INTO track_visual_features (track_id, revision, duration_seconds, hop_seconds, features)
+           VALUES (%s,%s,10,.1,%s)""",
+        (track, VISUAL_FEATURE_REVISION, '{"bands":[[0.1]],"level":[0.1],"onset":[0]}'),
+    )
+    assert not plan_audio(db, library, ["song"]).visual_feature_external_ids
+    response = track_visual_features(track, "test")
+    assert response["visual_features"]["features"]["bands"] == [[0.1]]
+    assert response["enrichment"] == {"descriptors": None, "vocal_activity": None, "melody": None}
+    # Read-time enrichment appears without a visual-cache rerun.
+    from echora_analysis.audio_descriptors import DESCRIPTOR_REVISION
+    db.execute("INSERT INTO track_audio_descriptors (track_id, revision, status, descriptors) VALUES (%s,%s,'complete',%s)",
+               (track, DESCRIPTOR_REVISION, Jsonb({"rhythm": {"bpm": 120}})))
+    assert track_visual_features(track, "test")["enrichment"]["descriptors"]["descriptors"]["rhythm"]["bpm"] == 120
+    assert not plan_audio(db, library, ["song"]).visual_feature_external_ids
+    db.execute("UPDATE track_visual_features SET status='unsupported', features='{}' WHERE track_id=%s", (track,))
+    assert not plan_audio(db, library, ["song"]).visual_feature_external_ids
+    response = track_visual_features(track, "test")
+    assert response["status"] == "unsupported"
+    assert response["visual_features"] is None
+    db.execute("UPDATE track_visual_features SET revision='1' WHERE track_id=%s", (track,))
+    assert plan_audio(db, library, ["song"]).visual_feature_external_ids == frozenset({"song"})
+    assert track_visual_features(track, "test")["status"] == "pending"
+
+
 def test_job_transition_interrupts_only_its_unfinished_attempts(db, monkeypatch):
     job_id = uuid.uuid4()
     db.execute("INSERT INTO jobs(id,kind,worker_type,user_id,status) VALUES (%s,'analysis_batch','analysis',%s,'running')",

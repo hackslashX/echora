@@ -1,5 +1,6 @@
 "use client";
 
+import type { VisualFrame } from "./visualFeatures";
 import * as THREE from "three";
 import { useEffect, useRef } from "react";
 import { readPlaybackPreferences, type PlaybackPreferences } from "./playbackPreferences";
@@ -95,8 +96,7 @@ export default function SignalVisualizer() {
     let frame = 0, lastFrame = 0, lastAudio = -Infinity, targetEnergy = 0, playing = true;
     let active = false, failed = false;
     let targetBass = 0, targetMid = 0, targetTreble = 0, pendingPulse = 0;
-    let bpm = 100, lastBeat = -Infinity, travelSpeed = 0;
-    const beatIntervals: number[] = [];
+    let bpm = 0, travelSpeed = 0;
     const resize = () => {
       if (!renderer) return;
       const bounds = canvas.getBoundingClientRect();
@@ -156,37 +156,29 @@ export default function SignalVisualizer() {
     };
     const receivePreferences = (event: Event) => { preferences = (event as CustomEvent<PlaybackPreferences>).detail; sync(); };
     const receiveAudio = (event: Event) => {
-      const detail = (event as CustomEvent<{ bass: number; mid: number; treble: number; onset?: boolean; bassAttack?: number }>).detail;
+      const detail = (event as CustomEvent<VisualFrame>).detail;
+      if (!detail.active) { reset(); return; }
+      playing = true; bpm = detail.bpm ?? 0;
       targetEnergy = Math.min(1, detail.bass * preferences.bassReactivity * .5 + detail.mid * preferences.vocalReactivity * .35 + detail.treble * preferences.trebleReactivity * .15);
       targetBass = Math.min(1, detail.bass * preferences.bassReactivity * 1.4);
       targetMid = Math.min(1, detail.mid * preferences.vocalReactivity * 1.5);
       targetTreble = Math.min(1, detail.treble * preferences.trebleReactivity * 1.8);
       pendingPulse = Math.max(pendingPulse, Math.min(1,
-        ((detail.bassAttack ?? 0) * 5 + (detail.onset ? .55 : 0)) * preferences.bassReactivity,
+        ((detail.bassAttack ?? 0) * 5 + (detail.beat ? .55 : 0)) * preferences.bassReactivity,
       ));
       const now = performance.now();
-      if (detail.onset && playing) {
-        const interval = (now - lastBeat) / 1000;
-        if (interval >= .30 && interval <= 1.2) {
-          beatIntervals.push(interval);
-          if (beatIntervals.length > 7) beatIntervals.shift();
-          const sorted = [...beatIntervals].sort((a, b) => a - b);
-          const median = sorted[Math.floor(sorted.length / 2)];
-          bpm += (60 / median - bpm) * .3;
-        } else if (interval > 1.2) beatIntervals.length = 0;
-        lastBeat = now;
-      }
       lastAudio = now;
     };
     const receiveWaveform = (event: Event) => {
+      if (!(event as CustomEvent<VisualFrame>).detail.active) return;
       if (!active || preferences.backdropPreset !== "oscilloscope") return;
-      const bins = (event as CustomEvent<Uint8Array>).detail;
+      const bins = (event as CustomEvent<VisualFrame>).detail.waveform;
       for (let i = 0; i < SAMPLES; i++) {
         const start = Math.floor(i * bins.length / SAMPLES);
         const end = Math.min(bins.length, Math.max(start + 1, Math.floor((i + 1) * bins.length / SAMPLES)));
         let sum = 0;
         for (let j = start; j < end; j++) sum += bins[j];
-        samples[i] = end > start ? Math.round(sum / (end - start)) : 128;
+        samples[i] = end > start ? Math.round((sum / (end - start) + 1) * 127.5) : 128;
       }
       texture.needsUpdate = true;
     };
@@ -199,11 +191,12 @@ export default function SignalVisualizer() {
       samples.fill(128); texture.needsUpdate = true;
       targetEnergy = 0; targetBass = 0; targetMid = 0; targetTreble = 0; pendingPulse = 0; lastAudio = -Infinity;
       material.uniforms.pulse.value = 0;
-      bpm = 100; lastBeat = -Infinity; travelSpeed = 0; beatIntervals.length = 0;
+      bpm = 0; travelSpeed = 0;
+      for (const name of ["energy", "bass", "mid", "treble"]) material.uniforms[name].value = 0;
     };
     const events: [string, EventListener][] = [
-      ["echora:playback-preferences", receivePreferences], ["echora:audio-reactivity", receiveAudio],
-      ["echora:audio-waveform", receiveWaveform], ["echora:track-palette", receivePalette],
+      ["echora:playback-preferences", receivePreferences], ["echora:visual-frame", receiveAudio],
+      ["echora:visual-frame", receiveWaveform], ["echora:track-palette", receivePalette],
       ["echora:playback-state", receiveState], ["echora:track-change", reset],
       [compactLayoutEvent, sync], ["resize", resize],
     ];

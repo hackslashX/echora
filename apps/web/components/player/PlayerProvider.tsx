@@ -5,6 +5,7 @@ import { sizedPlayerCoverArtUrl } from "../media/coverArt";
 import { paletteFromPixels, type TrackPalette } from "./artworkPalette";
 import FullscreenPlayer from "./FullscreenPlayer";
 import { readPlaybackPreferences, streamUrlForQuality } from "./playbackPreferences";
+import { descriptorRhythm, validateVisualEnrichment, validateVisualFeatures, visualFrameAt, neutralVisualFrame, publishVisualFrame, type VisualFeatureTimeline } from "./visualFeatures";
 import { mediaUrl } from "../media/mediaOrigin";
 
 export type PlayerTrack = { id: string; title: string; artist?: string; album?: string; durationSeconds?: number; streamUrl: string; coverUrl?: string; connectionId?: string; sourceId?: string };
@@ -19,6 +20,7 @@ function scrobble(track: PlayerTrack | null, submission: boolean) {
 export type AudioQuality = { codec?: string; content_type?: string; bit_rate_kbps?: number; bit_depth?: number; sample_rate_hz?: number; channels?: number; lossless?: boolean; streamQuality: "original" | "320" | "120" };
 export type PlayerLyrics = { trackId: string; available: boolean; karaoke?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[]; text?: string; language?: string; provenance?: { ai_generated?: boolean; synced?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[] } };
 export type MelodyPreview = { source: string; points: { time_seconds: number; pitch: number | null }[] };
+
 type PlayerState = {
   track: PlayerTrack | null; audioQuality: AudioQuality | null; lyrics: PlayerLyrics | null; lyricsLoading: boolean; playing: boolean; buffering: boolean; currentTime: number; duration: number; buffered: number; muted: boolean; expanded: boolean;
   waveform: number[] | null; melody: MelodyPreview | null;
@@ -82,9 +84,12 @@ async function artworkPalette(url: string): Promise<TrackPalette> {
 
 export function PlayerProvider({ children }: { children: ReactNode }) {
   const audio = useRef<HTMLAudioElement | null>(null);
-  const audioContext = useRef<AudioContext | null>(null);
-  const analyser = useRef<AnalyserNode | null>(null);
+  const visualFeatures = useRef<VisualFeatureTimeline | null>(null);
   const analysisFrame = useRef(0);
+  const visualRequest = useRef<AbortController | null>(null);
+  const previousVisualTime = useRef<number | null>(null);
+  const [loadVersion, setLoadVersion] = useState(0);
+  function resetVisuals() { previousVisualTime.current = null; publishVisualFrame(neutralVisualFrame(audio.current?.currentTime || 0)); }
   const queueRef = useRef<PlayerTrack[]>([]);
   const trackRef = useRef<PlayerTrack | null>(null);
   const paletteRef = useRef<TrackPalette | null>(null);
@@ -104,7 +109,23 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!track?.id) return;
     const trackId = track.id;
+    visualFeatures.current = null;
     const controller = new AbortController();
+    visualRequest.current = controller;
+    resetVisuals();
+    fetch(`/analysis/library/tracks/${encodeURIComponent(trackId)}/visual-features`, { signal: controller.signal })
+      .then(response => response.ok ? response.json() : null)
+      .then(body => {
+        if (controller.signal.aborted || visualRequest.current !== controller || trackRef.current?.id !== trackId) return;
+        if (body?.track_id !== trackId) return;
+        const envelope = body?.visual_features;
+        visualFeatures.current = validateVisualFeatures(envelope?.features ? envelope.revision === "2" ? envelope.features : null : envelope);
+        if (visualFeatures.current) {
+          visualFeatures.current.rhythm = descriptorRhythm(body?.enrichment, visualFeatures.current.duration_seconds);
+          visualFeatures.current.enrichment = validateVisualEnrichment(body?.enrichment, visualFeatures.current.duration_seconds);
+        }
+        resetVisuals();
+      }).catch(() => {});
     fetch(`/analysis/library/tracks/${encodeURIComponent(trackId)}/waveform`, { signal: controller.signal })
       .then(response => response.ok ? response.json() : null)
       .then(body => {
@@ -112,10 +133,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         const validPeaks = Array.isArray(peaks) && peaks.length > 0 && peaks.length <= 1024 && peaks.every(value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1);
         const melody = body?.melody;
         const validMelody = melody && typeof melody.source === "string" && Array.isArray(melody.points) && melody.points.length <= 1024 && melody.points.every((point: { time_seconds?: unknown; pitch?: unknown }) => typeof point.time_seconds === "number" && Number.isFinite(point.time_seconds) && point.time_seconds >= 0 && (point.pitch === null || typeof point.pitch === "number" && Number.isFinite(point.pitch)));
-        if (!controller.signal.aborted) setWaveformData({ trackId, peaks: validPeaks ? peaks : null, melody: validMelody ? melody : null });
+        if (!controller.signal.aborted && visualRequest.current === controller && trackRef.current?.id === trackId) setWaveformData({ trackId, peaks: validPeaks ? peaks : null, melody: validMelody ? melody : null });
       }).catch(() => {});
     return () => controller.abort();
-  }, [track?.id]);
+  }, [track?.id, loadVersion]);
   const [audioQuality, setAudioQuality] = useState<AudioQuality | null>(null);
   const [lyrics, setLyrics] = useState<PlayerLyrics | null>(null);
   const [lyricsLoading, setLyricsLoading] = useState(false);
@@ -138,9 +159,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       publishMediaPosition(player, canonical);
     };
     const progress = () => setBuffered(player.buffered.length ? player.buffered.end(player.buffered.length - 1) : 0);
-    const ended = () => { scrobble(trackRef.current, true); window.dispatchEvent(new CustomEvent("echora:playback-state", { detail: false })); publishPalette(null); if (queueIndexRef.current >= 0 && queueIndexRef.current < queueRef.current.length - 1) activateQueueIndexRef.current(queueIndexRef.current + 1); else setPlaying(false); };
-    const paused = () => { window.dispatchEvent(new CustomEvent("echora:playback-state", { detail: false })); setPlaying(false); publishPalette(null); if (hasMediaSession()) navigator.mediaSession.playbackState = "paused"; };
-    const waiting = () => setBuffering(true);
+    const ended = () => { resetVisuals(); scrobble(trackRef.current, true); window.dispatchEvent(new CustomEvent("echora:playback-state", { detail: false })); publishPalette(null); if (queueIndexRef.current >= 0 && queueIndexRef.current < queueRef.current.length - 1) activateQueueIndexRef.current(queueIndexRef.current + 1); else setPlaying(false); };
+    const paused = () => { resetVisuals(); window.dispatchEvent(new CustomEvent("echora:playback-state", { detail: false })); setPlaying(false); publishPalette(null); if (hasMediaSession()) navigator.mediaSession.playbackState = "paused"; };
+    const waiting = () => { resetVisuals(); setBuffering(true); };
     const ready = () => setBuffering(false);
     const started = () => { window.dispatchEvent(new CustomEvent("echora:playback-state", { detail: true })); setPlaying(true); setBuffering(false); publishPalette(paletteRef.current); if (hasMediaSession()) navigator.mediaSession.playbackState = "playing"; publishMediaPosition(player, trackRef.current?.durationSeconds); const current = trackRef.current; if (current?.sourceId && announcedRef.current !== current.sourceId + player.currentSrc) { announcedRef.current = current.sourceId + player.currentSrc; scrobble(current, false); } };
     const setAction = (action: MediaSessionAction, handler: MediaSessionActionHandler | null) => { try { navigator.mediaSession.setActionHandler(action, handler); } catch {} };
@@ -159,61 +180,35 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     window.addEventListener("echora:playback-state-request", reportPlaybackState);
     player.addEventListener("timeupdate", time); player.addEventListener("durationchange", metadata);
     player.addEventListener("loadedmetadata", metadata); player.addEventListener("progress", progress); player.addEventListener("ended", ended);
+    player.addEventListener("seeking", resetVisuals); player.addEventListener("emptied", resetVisuals); player.addEventListener("error", resetVisuals);
     player.addEventListener("pause", paused); player.addEventListener("play", started);
     player.addEventListener("loadstart", waiting); player.addEventListener("waiting", waiting);
     player.addEventListener("canplay", ready); player.addEventListener("playing", ready);
-    return () => { window.removeEventListener("echora:playback-state-request", reportPlaybackState); player.pause(); publishPalette(null); if (hasMediaSession()) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = "none"; ["play", "pause", "previoustrack", "nexttrack", "seekbackward", "seekforward", "seekto"].forEach(action => setAction(action as MediaSessionAction, null)); } cancelAnimationFrame(analysisFrame.current); audioContext.current?.close(); player.remove(); };
+    return () => {
+      ([['timeupdate', time], ['durationchange', metadata], ['loadedmetadata', metadata], ['progress', progress],
+        ['ended', ended], ['pause', paused], ['play', started], ['seeking', resetVisuals], ['emptied', resetVisuals],
+        ['error', resetVisuals], ['loadstart', waiting], ['waiting', waiting], ['canplay', ready], ['playing', ready]] as const)
+        .forEach(([event, handler]) => player.removeEventListener(event, handler));
+      visualRequest.current?.abort(); resetVisuals();
+      window.removeEventListener("echora:playback-state-request", reportPlaybackState); player.pause(); publishPalette(null); if (hasMediaSession()) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = "none"; ["play", "pause", "previoustrack", "nexttrack", "seekbackward", "seekforward", "seekto"].forEach(action => setAction(action as MediaSessionAction, null)); } cancelAnimationFrame(analysisFrame.current); analysisFrame.current = 0; player.remove(); };
   }, []);
 
   function startAnalysis() {
     const player = audio.current;
-    if (!player || analyser.current) { audioContext.current?.resume(); return; }
-    const browser = window as Window & { webkitAudioContext?: typeof AudioContext };
-    const Context = window.AudioContext || browser.webkitAudioContext;
-    if (!Context) return;
-    const context = new Context();
-    const node = context.createAnalyser();
-    node.fftSize = 1024; node.smoothingTimeConstant = 0.55;
-    const source = context.createMediaElementSource(player);
-    source.connect(node); node.connect(context.destination);
-    audioContext.current = context; analyser.current = node;
-    const frequencies = new Uint8Array(node.frequencyBinCount);
-    const waveform = new Uint8Array(node.fftSize);
-    let lastAnalysis = 0;
-    let bassFloor = 0;
-    let lastOnset = -Infinity;
-    let lastBass = 0, lastMid = 0, lastTreble = 0;
-    const average = (from: number, to: number) => {
-      let sum = 0; const end = Math.min(to, frequencies.length);
-      for (let index = from; index < end; index++) sum += frequencies[index];
-      return end > from ? sum / (end - from) / 255 : 0;
-    };
-    const analyze = (now = performance.now()) => {
+    if (!player || analysisFrame.current) return;
+    const analyze = () => {
       analysisFrame.current = requestAnimationFrame(analyze);
-      if (now - lastAnalysis < (player.paused ? 500 : 1000 / 30)) return;
-      lastAnalysis = now;
-      node.getByteFrequencyData(frequencies);
-      node.getByteTimeDomainData(waveform);
-      window.dispatchEvent(new CustomEvent("echora:audio-spectrum", { detail: new Uint8Array(frequencies) }));
-      window.dispatchEvent(new CustomEvent("echora:audio-waveform", { detail: waveform }));
-      const binHz = context.sampleRate / node.fftSize;
-      const bass = average(Math.floor(35 / binHz), Math.ceil(180 / binHz));
-      const mid = average(Math.floor(180 / binHz), Math.ceil(2200 / binHz));
-      const treble = average(Math.floor(2200 / binHz), Math.ceil(10000 / binHz));
-      bassFloor += (bass - bassFloor) * .045;
-      const onset = !player.paused && now - lastOnset > 220 && bass > Math.max(.16, bassFloor + .075);
-      if (onset) lastOnset = now;
-      window.dispatchEvent(new CustomEvent("echora:audio-reactivity", { detail: {
-        bass, mid, treble, onset, timestamp: now / 1000,
-        level: bass * .45 + mid * .4 + treble * .15,
-        bassAttack: Math.max(0, bass - lastBass),
-        midAttack: Math.max(0, mid - lastMid),
-        trebleAttack: Math.max(0, treble - lastTreble),
-      } }));
-      lastBass = bass; lastMid = mid; lastTreble = treble;
       window.dispatchEvent(new CustomEvent("echora:playback-time", { detail: player.currentTime || 0 }));
+      if (player.paused || player.ended || player.seeking || player.readyState < 3) {
+        if (previousVisualTime.current !== null) resetVisuals();
+        return;
+      }
+      const frame = visualFrameAt(visualFeatures.current, player.currentTime, previousVisualTime.current);
+      previousVisualTime.current = frame.active ? player.currentTime : null;
+      frame.trackId = trackRef.current?.id ?? null;
+      publishVisualFrame(frame);
     };
-    context.resume(); analyze();
+    analyze();
   }
 
   function loadLyrics(next: PlayerTrack) {
@@ -233,6 +228,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   function load(next: PlayerTrack) {
     const player = audio.current; if (!player) return;
+    visualRequest.current?.abort(); visualFeatures.current = null; resetVisuals(); setLoadVersion(version => version + 1);
     const previous = trackRef.current;
     if (previous?.sourceId && previous.sourceId !== next.sourceId) {
       const seconds = listenedRef.current;
@@ -290,8 +286,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   nextRef.current = next;
   previousRef.current = previous;
   function clearQueue() { queueRef.current = track ? [track] : []; queueIndexRef.current = track ? 0 : -1; setQueue(queueRef.current); setQueueIndex(queueIndexRef.current); }
-  function toggle() { const player = audio.current; if (!player || !track) return; startAnalysis(); if (player.paused) player.play(); else player.pause(); }
-  function seek(seconds: number) { const player = audio.current; if (!player || !Number.isFinite(seconds)) return; player.currentTime = seconds; setCurrentTime(seconds); publishMediaPosition(player, trackRef.current?.durationSeconds); }
+  function toggle() { const player = audio.current; if (!player || !track) return; startAnalysis(); if (player.paused) player.play(); else { resetVisuals(); player.pause(); } }
+  function seek(seconds: number) {
+    const player = audio.current; if (!player || !Number.isFinite(seconds)) return;
+    const end = Number.isFinite(player.duration) ? player.duration : trackRef.current?.durationSeconds ?? Infinity;
+    const target = Math.max(0, Math.min(seconds, end));
+    resetVisuals(); player.currentTime = target; setCurrentTime(target);
+    window.dispatchEvent(new CustomEvent("echora:playback-time", { detail: target }));
+    publishMediaPosition(player, trackRef.current?.durationSeconds);
+  }
   function toggleMute() { const player = audio.current; if (!player) return; player.muted = !player.muted; setMuted(player.muted); }
 
   useEffect(() => {
