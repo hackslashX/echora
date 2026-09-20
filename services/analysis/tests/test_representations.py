@@ -214,6 +214,11 @@ def test_visual_feature_endpoint_visibility_and_planner(db, visible_track):
                (track, DESCRIPTOR_REVISION, Jsonb({"rhythm": {"bpm": 120}})))
     assert track_visual_features(track, "test")["enrichment"]["descriptors"]["descriptors"]["rhythm"]["bpm"] == 120
     assert not plan_audio(db, library, ["song"]).visual_feature_external_ids
+    db.execute("UPDATE track_visual_features SET status='unsupported', features='{}' WHERE track_id=%s", (track,))
+    assert not plan_audio(db, library, ["song"]).visual_feature_external_ids
+    response = track_visual_features(track, "test")
+    assert response["status"] == "unsupported"
+    assert response["visual_features"] is None
     db.execute("UPDATE track_visual_features SET revision='1' WHERE track_id=%s", (track,))
     assert plan_audio(db, library, ["song"]).visual_feature_external_ids == frozenset({"song"})
     assert track_visual_features(track, "test")["status"] == "pending"

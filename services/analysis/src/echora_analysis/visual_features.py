@@ -173,14 +173,29 @@ def extract_visual_features(samples: np.ndarray, sample_rate: int = SAMPLE_RATE)
 
 
 def store_visual_features(connection, track_id, audio: bytes) -> dict[str, object]:
-    features = extract_visual_features(decode_audio(audio, SAMPLE_RATE))
+    samples = decode_audio(audio, SAMPLE_RATE)
+    duration = len(samples) / SAMPLE_RATE
+    if duration > MAX_DURATION_SECONDS:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """INSERT INTO track_visual_features
+                     (track_id, revision, status, duration_seconds, hop_seconds, features)
+                   VALUES (%s, %s, 'unsupported', %s, %s, '{}'::jsonb)
+                   ON CONFLICT (track_id) DO UPDATE SET revision=EXCLUDED.revision,
+                     status=EXCLUDED.status, duration_seconds=EXCLUDED.duration_seconds,
+                     hop_seconds=EXCLUDED.hop_seconds, features=EXCLUDED.features, created_at=now()""",
+                (track_id, VISUAL_FEATURE_REVISION, duration, HOP_SECONDS),
+            )
+        return {"revision": VISUAL_FEATURE_REVISION, "status": "unsupported",
+                "duration_seconds": duration}
+    features = extract_visual_features(samples)
     with connection.cursor() as cursor:
         cursor.execute(
-            """INSERT INTO track_visual_features (track_id, revision, duration_seconds, hop_seconds, features)
-               VALUES (%s, %s, %s, %s, %s)
+            """INSERT INTO track_visual_features (track_id, revision, status, duration_seconds, hop_seconds, features)
+               VALUES (%s, %s, 'complete', %s, %s, %s)
                ON CONFLICT (track_id) DO UPDATE SET revision=EXCLUDED.revision,
-                 duration_seconds=EXCLUDED.duration_seconds, hop_seconds=EXCLUDED.hop_seconds,
-                 features=EXCLUDED.features, created_at=now()""",
+                 status=EXCLUDED.status, duration_seconds=EXCLUDED.duration_seconds,
+                 hop_seconds=EXCLUDED.hop_seconds, features=EXCLUDED.features, created_at=now()""",
             (track_id, VISUAL_FEATURE_REVISION, features["duration_seconds"], HOP_SECONDS, Jsonb(features)),
         )
     return features

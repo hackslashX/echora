@@ -199,7 +199,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const analyze = () => {
       analysisFrame.current = requestAnimationFrame(analyze);
       window.dispatchEvent(new CustomEvent("echora:playback-time", { detail: player.currentTime || 0 }));
-      if (player.paused || player.ended || player.seeking || player.readyState < 3) { resetVisuals(); return; }
+      if (player.paused || player.ended || player.seeking || player.readyState < 3) {
+        if (previousVisualTime.current !== null) resetVisuals();
+        return;
+      }
       const frame = visualFrameAt(visualFeatures.current, player.currentTime, previousVisualTime.current);
       previousVisualTime.current = frame.active ? player.currentTime : null;
       frame.trackId = trackRef.current?.id ?? null;

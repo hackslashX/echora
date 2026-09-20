@@ -208,7 +208,8 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
                       EXISTS (SELECT 1 FROM track_waveforms w
                               WHERE w.track_id=ts.track_id AND w.revision=%s) AS has_waveform,
                       EXISTS (SELECT 1 FROM track_visual_features vf
-                              WHERE vf.track_id=ts.track_id AND vf.revision=%s) AS has_visual_features
+                              WHERE vf.track_id=ts.track_id AND vf.revision=%s
+                                AND vf.status IN ('complete', 'unsupported')) AS has_visual_features
                FROM unnest(%s::text[]) requested(external_id)
                LEFT JOIN track_sources ts ON ts.library_id=%s AND ts.source_type='subsonic'
                                          AND ts.external_id=requested.external_id""",

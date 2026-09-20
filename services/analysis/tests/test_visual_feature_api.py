@@ -62,7 +62,7 @@ def test_api_returns_optional_current_enrichment_without_writes_or_model_work():
     descriptor = {'revision': '1', 'status': 'complete', 'descriptors': {'rhythm': {'bpm': 120}}}
     vocal = {'activity': {'windows': []}, 'run_id': 'voice-run'}
     contour = {'source': 'full-mix', 'pitch': [69, 69], 'voiced': [True, True], 'hop_seconds': .01}
-    api, cursor, _, _ = endpoint([{'exists': 1}, {'features': {'revision': '2'}}, descriptor, vocal, contour])
+    api, cursor, _, _ = endpoint([{'exists': 1}, {'status': 'complete', 'features': {'revision': '2'}}, descriptor, vocal, contour])
     track = uuid.uuid4()
     result = api(track, 'cookie')
     assert result['status'] == 'complete'
@@ -84,6 +84,14 @@ def test_api_pending_cache_does_not_hide_existing_enrichment():
     assert result['enrichment']['descriptors']['status'] == 'complete'
 
 
+def test_api_reports_unsupported_cache_without_serving_empty_features():
+    cache = {'status': 'unsupported', 'features': {}}
+    api, _, _, _ = endpoint([{'exists': 1}, cache, None, None, None])
+    result = api(uuid.uuid4(), 'cookie')
+    assert result['status'] == 'unsupported'
+    assert result['visual_features'] is None
+
+
 def test_planner_revision_two_missing_cache_only_requires_shared_mono_decode():
     connection = MagicMock()
     cursor = connection.cursor.return_value.__enter__.return_value
@@ -99,5 +107,6 @@ def test_planner_revision_two_missing_cache_only_requires_shared_mono_decode():
     sql, params = cursor.execute.call_args.args
     assert params[5] == '2'
     assert 'vf.revision=%s' in sql
+    assert "vf.status IN ('complete', 'unsupported')" in sql
     cursor.fetchall.return_value = [('song', 'track', True, True, True, True, True, True, True)]
     assert not plan_audio(connection, 'library', ['song']).visual_feature_external_ids

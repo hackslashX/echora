@@ -1077,11 +1077,11 @@ def track_visual_features(track_id: uuid.UUID, echora_session: str | None = Cook
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Track not found")
         cursor.execute(
-            """SELECT revision, duration_seconds, hop_seconds, features, created_at
+            """SELECT revision, status, duration_seconds, hop_seconds, features, created_at
                FROM track_visual_features WHERE track_id=%s AND revision=%s""",
             (track_id, VISUAL_FEATURE_REVISION),
         )
-        features = cursor.fetchone()
+        cache = cursor.fetchone()
         # Read enrichment at request time: ingest ordering never requires a DSP
         # rerun, and this authenticated endpoint never schedules model work.
         cursor.execute(
@@ -1105,7 +1105,9 @@ def track_visual_features(track_id: uuid.UUID, echora_session: str | None = Cook
         )
         contour = cursor.fetchone()
     melody = melody_preview(contour["source"], contour["pitch"], contour["voiced"], float(contour["hop_seconds"])) if contour else None
-    return {"track_id": str(track_id), "status": "complete" if features else "pending", "visual_features": features,
+    status = cache["status"] if cache else "pending"
+    features = cache if status == "complete" else None
+    return {"track_id": str(track_id), "status": status, "visual_features": features,
             "enrichment": {"descriptors": descriptors, "vocal_activity": vocal, "melody": melody}}
 
 

@@ -165,3 +165,20 @@ def test_store_uses_revision_two_and_source_hop_without_committing():
     assert 'ON CONFLICT (track_id)' in sql
     assert params[:4] == ('track', VISUAL_FEATURE_REVISION, result['duration_seconds'], HOP_SECONDS)
     connection.commit.assert_not_called()
+
+
+def test_store_persists_terminal_unsupported_result_for_long_audio():
+    connection = Mock()
+    cursor = connection.cursor.return_value.__enter__ = Mock(return_value=Mock())
+    connection.cursor.return_value.__exit__ = Mock(return_value=False)
+    samples = np.zeros(MAX_DURATION_SECONDS * SAMPLE_RATE + 1, dtype=np.float32)
+    with patch('echora_analysis.visual_features.decode_audio', return_value=samples), \
+         patch('echora_analysis.visual_features.extract_visual_features') as extract:
+        result = store_visual_features(connection, 'track', b'audio')
+    extract.assert_not_called()
+    sql, params = cursor.return_value.execute.call_args.args
+    assert "'unsupported'" in sql
+    assert params == ('track', VISUAL_FEATURE_REVISION, len(samples) / SAMPLE_RATE, HOP_SECONDS)
+    assert result == {"revision": VISUAL_FEATURE_REVISION, "status": "unsupported",
+                      "duration_seconds": len(samples) / SAMPLE_RATE}
+    connection.commit.assert_not_called()
