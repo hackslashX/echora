@@ -1,4 +1,4 @@
-export type BackdropPreset = "waves" | "oscilloscope" | "void" | "curtain" | "ascii" | "roots" | "retrotrain" | "clouds";
+export type BackdropPreset = "waves" | "oscilloscope" | "void" | "curtain" | "ascii" | "roots" | "lightningfall" | "meshgrid" | "clouds";
 export type PlaybackQuality = "original" | "320" | "120";
 export type PlaybackPreferences = {
   quality: PlaybackQuality;
@@ -29,7 +29,9 @@ const storageKey = "echora:playback-preferences";
 export function readPlaybackPreferences(): PlaybackPreferences {
   if (typeof window === "undefined") return defaultPlaybackPreferences;
   try {
-    return { ...defaultPlaybackPreferences, ...JSON.parse(localStorage.getItem(storageKey) || "{}") };
+    const stored = JSON.parse(localStorage.getItem(storageKey) || "{}");
+    if (stored.backdropPreset === "retrotrain") stored.backdropPreset = "lightningfall";
+    return { ...defaultPlaybackPreferences, ...stored };
   } catch { return defaultPlaybackPreferences; }
 }
 

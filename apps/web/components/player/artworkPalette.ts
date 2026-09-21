@@ -1,5 +1,5 @@
 type Color = [number, number, number];
-export type TrackPalette = { accent: Color; background: Color; waves: [Color, Color, Color] };
+export type TrackPalette = { accent: Color; background: Color; waves: [Color, Color, Color]; trails: Color[] };
 
 const clamp = (n: number) => Math.max(0, Math.min(1, n));
 const linear = (n: number) => n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4;
@@ -103,5 +103,22 @@ export function paletteFromPixels(pixels: ArrayLike<number>): TrackPalette {
     const light = selected[i] ? Math.max(.48, Math.min(.8, lab[0])) : i === 1 ? .42 : .78;
     return gamut(light, lab).map(n => n / 255) as Color;
   }) as TrackPalette["waves"];
-  return { accent, background, waves };
+  // Lightning Fall gets up to five supported colors, without changing the
+  // three-color palette used by the other backdrops. Compare display colors
+  // so lifting dark pigments does not introduce near-duplicate trail colors.
+  const trailColor = (lab: Color): Color => gamut(Math.max(.48, Math.min(.8, lab[0])), lab);
+  const trailLabs: Color[] = [toLab(trailColor(source))];
+  const trails: Color[] = [trailColor(source).map(n => n / 255) as Color];
+  const trailCandidates = candidates.map(c => ({ ...c, rgb: trailColor(c.lab), displayLab: toLab(trailColor(c.lab)) }));
+  while (trails.length < 5) {
+    const options = trailCandidates.filter(c => trailLabs.every(lab => distance(c.displayLab, lab) >= .08));
+    options.sort((a, b) => {
+      const separation = (c: typeof a) => Math.min(...trailLabs.map(lab => distance(c.displayLab, lab))) * Math.sqrt(c.count / total);
+      return separation(b) - separation(a);
+    });
+    if (!options.length) break;
+    trailLabs.push(options[0].displayLab);
+    trails.push(options[0].rgb.map(n => n / 255) as Color);
+  }
+  return { accent, background, waves, trails };
 }
