@@ -2,6 +2,7 @@ name: echora
 
 services:
   postgres:
+    restart: unless-stopped
     image: pgvector/pgvector:pg17
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-echora}
@@ -18,6 +19,7 @@ services:
     ports: ["5432:5432"]
 
   redis:
+    restart: unless-stopped
     image: redis:7.4-alpine
     command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "5gb", "--maxmemory-policy", "allkeys-lru"]
     healthcheck:
@@ -27,6 +29,7 @@ services:
       retries: 10
 
   analysis:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: services/analysis/docker/Dockerfile.gpu
@@ -118,6 +121,7 @@ services:
     stop_grace_period: 30s
 
   web:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/web/Dockerfile

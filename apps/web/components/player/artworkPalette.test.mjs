@@ -15,7 +15,7 @@ const spread = rgb => Math.max(...rgb) - Math.min(...rgb);
 
 function valid(palette) {
   for (const rgb of [palette.accent, palette.background]) for (const n of rgb) assert.ok(Number.isInteger(n) && n >= 0 && n <= 255);
-  for (const rgb of palette.waves) for (const n of rgb) assert.ok(Number.isFinite(n) && n >= 0 && n <= 1);
+  for (const rgb of [...palette.waves, ...palette.trails]) for (const n of rgb) assert.ok(Number.isFinite(n) && n >= 0 && n <= 1);
   assert.ok(contrast(palette.accent, [7, 16, 15]) >= 4.5);
   assert.ok(contrast(palette.accent, palette.background) >= 4.5);
   assert.ok(contrast(palette.accent.map(n => n * .88), [22, 48, 45]) >= 4.5);
@@ -89,4 +89,23 @@ test('deterministic, order-independent, non-mutating and bounded across RGB gamu
   assert.deepEqual(input, copy);
   assert.deepEqual(paletteFromPixels(input), paletteFromPixels(pixels([[20, 80, 210], 50], [[255, 30, 20], 50])));
   for (const r of [0, 64, 128, 192, 255]) for (const g of [0, 64, 128, 192, 255]) for (const b of [0, 64, 128, 192, 255]) valid(paletteFromPixels(pixels([[r, g, b], 4])));
+});
+
+
+test('trail palette retains five distinct supported artwork colors', () => {
+  const regions = [[[240, 30, 40], 200], [[20, 150, 230], 200], [[30, 200, 50], 200], [[240, 210, 20], 200], [[190, 30, 220], 200]];
+  const p = paletteFromPixels(pixels(...regions));
+  valid(p);
+  assert.equal(p.trails.length, 5);
+  assert.equal(new Set(p.trails.map(c => c.join(','))).size, 5);
+  assert.equal(p.waves.length, 3);
+  assert.deepEqual(p.trails, paletteFromPixels(pixels(...regions.reverse())).trails);
+});
+
+test('trail palette does not invent colors for simple covers or amplify tiny specks', () => {
+  const p = paletteFromPixels(pixels([[100, 100, 100], 995], [[255, 0, 200], 5]));
+  assert.equal(p.trails.length, 1);
+  assert.ok(spread(p.trails[0]) <= 1 / 255);
+  const two = paletteFromPixels(pixels([[240, 30, 40], 500], [[20, 150, 230], 500]));
+  assert.equal(two.trails.length, 2);
 });

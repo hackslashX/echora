@@ -14,7 +14,8 @@ import { BackdropPreset, PlaybackPreferences, readPlaybackPreferences } from "..
 import RootVisualizer from "../player/RootVisualizer";
 import SignalVisualizer from "../player/SignalVisualizer";
 import CloudVisualizer from "../player/CloudVisualizer";
-import RetroTrainVisualizer from "../player/RetroTrainVisualizer";
+import MeshGridVisualizer from "../player/MeshGridVisualizer";
+import LightningFallVisualizer from "../player/LightningFallVisualizer";
 import styles from "./Backdrop.module.css";
 import { readCompactLayoutPreference } from "./layoutPreference";
 
@@ -303,15 +304,15 @@ export default function Backdrop() {
           for (let channel = 0; channel < 3; channel++) waveColors[layer][channel] += (colors[layer][channel] - waveColors[layer][channel]) * .035;
         }
         const rootsActive = preferences.wavesEnabled && preferences.backdropPreset === "roots";
-        const trainActive = preferences.wavesEnabled && preferences.backdropPreset === "retrotrain";
-        const signalActive = preferences.backdropPreset === "oscilloscope" || preferences.backdropPreset === "void" || preferences.backdropPreset === "clouds";
-        const sceneActive = preferences.wavesEnabled && preferences.backdropPreset !== "waves" && !rootsActive && !trainActive && !signalActive;
+        const fallActive = preferences.wavesEnabled && preferences.backdropPreset === "lightningfall";
+        const signalActive = preferences.backdropPreset === "oscilloscope" || preferences.backdropPreset === "void" || preferences.backdropPreset === "clouds" || preferences.backdropPreset === "meshgrid";
+        const sceneActive = preferences.wavesEnabled && preferences.backdropPreset !== "waves" && !rootsActive && !fallActive && !signalActive;
         sceneCanvas.style.opacity = sceneActive ? "1" : "0";
-        canvas.style.opacity = sceneActive || rootsActive || trainActive || signalActive || (preferences.backdropPreset === "waves" && !preferences.wavesEnabled) ? "0" : "1";
+        canvas.style.opacity = sceneActive || rootsActive || fallActive || signalActive || (preferences.backdropPreset === "waves" && !preferences.wavesEnabled) ? "0" : "1";
         if (sceneActive && scene) {
           const sceneReactive: Reactivity = { ...reactive, bass: reactive.bass * preferences.bassReactivity, mid: reactive.mid * preferences.vocalReactivity, treble: reactive.treble * preferences.trebleReactivity };
           presetScene(scene, preferences.backdropPreset, sceneCanvas.width, sceneCanvas.height, elapsed, now / 1000, frameDelta, sceneReactive, [...baseColor] as Color, [[...waveColors[0]], [...waveColors[1]], [...waveColors[2]]], curtainState);
-        } else if (!rootsActive && !trainActive && !signalActive && baseline && splineSettings && particleSettings) {
+        } else if (!rootsActive && !fallActive && !signalActive && baseline && splineSettings && particleSettings) {
           splineSettings.opacity = baseline.spline.opacity * opacityScale;
           splineSettings.layerAmplitudes[0] = preferences.wavesEnabled && preferences.backdropPreset === "waves" ? baseline.spline.layerAmplitudes[0] + reactive.bass * 1.65 * preferences.bassReactivity : 0;
           splineSettings.layerAmplitudes[1] = preferences.wavesEnabled && preferences.backdropPreset === "waves" ? baseline.spline.layerAmplitudes[1] + reactive.mid * 1.3 * preferences.vocalReactivity : 0;
@@ -335,5 +336,5 @@ export default function Backdrop() {
     return () => { cancelled = true; cancelAnimationFrame(animation); removeResize(); window.removeEventListener("echora:audio-reactivity", receiveAudio); window.removeEventListener("echora:backdrop-mode", receiveMode); window.removeEventListener("echora:track-palette", receivePalette); window.removeEventListener("echora:playback-preferences", receivePreferences); };
   }, []);
 
-  return <div className={styles.backdrop} aria-hidden="true"><canvas ref={glRef} /><canvas ref={sceneRef} className={styles.scene} /><RootVisualizer /><SignalVisualizer /><CloudVisualizer /><RetroTrainVisualizer /></div>;
+  return <div className={styles.backdrop} aria-hidden="true"><canvas ref={glRef} /><canvas ref={sceneRef} className={styles.scene} /><RootVisualizer /><SignalVisualizer /><CloudVisualizer /><LightningFallVisualizer /><MeshGridVisualizer /></div>;
 }
