@@ -30,7 +30,8 @@ const duration = (seconds: number) => {
 export default function BrowseLibrary() {
   const player = usePlayer();
   const recordingRef = useRef<{ cancel: () => void }>(null);
-  function invalidateRecording() { recordingRef.current?.cancel(); }
+  const humRef = useRef<{ cancel: () => void }>(null);
+  function invalidateSearches() { recordingRef.current?.cancel(); humRef.current?.cancel(); }
   const [tracks, setTracks] = useState<Track[]>([]);
   const [artists, setArtists] = useState<Facet[]>([]);
   const [albums, setAlbums] = useState<Facet[]>([]);
@@ -89,10 +90,9 @@ export default function BrowseLibrary() {
     return () => window.clearTimeout(timer);
   }, [albumQuery, artist, artistQuery]);
 
-  function resetResults() { invalidateRecording(); setError(""); setRecordingWarning(""); setSearchMode(null); setTracks([]); setTotal(0); setBatch(0); listRef.current?.scrollTo({ top: 0 }); }
+  function resetResults() { invalidateSearches(); setError(""); setRecordingWarning(""); setSearchMode(null); setTracks([]); setTotal(0); setBatch(0); listRef.current?.scrollTo({ top: 0 }); }
 
   function showHumResults(results: Track[]) {
-    invalidateRecording();
     setRecordingWarning(""); setSearchMode("hum"); setLoading(false); setTracks(results); setTotal(results.length); setBatch(0); setMobilePane("tracks");
     listRef.current?.scrollTo({ top: 0 });
   }
@@ -121,12 +121,12 @@ export default function BrowseLibrary() {
       <MobilePivots label="Browse sections" active={mobilePane} onChange={setMobilePane} items={[{ key: "tracks", label: searchMode ? "matches" : "tracks", count: total }, { key: "filters", label: "filters" }]} />
       <aside className={`${styles.filters} ${mobilePane === "filters" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
         <CardHeader as="h1" title="Filters" />
-        <section className={styles.filterGroup}><span>Artists</span><input value={artistQuery} onChange={event => { invalidateRecording(); setArtistQuery(event.target.value); }} placeholder="Search artists" /><div><button type="button" className={!artist ? styles.selected : ""} onClick={() => { setArtist(""); setAlbum(""); resetResults(); }}>All artists</button>{artists.map(item => <button type="button" className={artist === item.name ? styles.selected : ""} onClick={() => { setArtist(item.name); setAlbum(""); resetResults(); }} key={item.name}>{item.name}<b>{item.tracks}</b></button>)}</div></section>
-        <section className={styles.filterGroup}><span>Albums</span><input value={albumQuery} onChange={event => { invalidateRecording(); setAlbumQuery(event.target.value); }} placeholder="Search albums" /><div><button type="button" className={!album ? styles.selected : ""} onClick={() => { setAlbum(""); resetResults(); }}>All albums</button>{albums.map(item => <button type="button" className={album === item.name ? styles.selected : ""} onClick={() => { setAlbum(item.name); resetResults(); }} key={item.name}>{item.name}<b>{item.tracks}</b></button>)}</div></section>
+        <section className={styles.filterGroup}><span>Artists</span><input value={artistQuery} onChange={event => { invalidateSearches(); setArtistQuery(event.target.value); }} placeholder="Search artists" /><div><button type="button" className={!artist ? styles.selected : ""} onClick={() => { setArtist(""); setAlbum(""); resetResults(); }}>All artists</button>{artists.map(item => <button type="button" className={artist === item.name ? styles.selected : ""} onClick={() => { setArtist(item.name); setAlbum(""); resetResults(); }} key={item.name}>{item.name}<b>{item.tracks}</b></button>)}</div></section>
+        <section className={styles.filterGroup}><span>Albums</span><input value={albumQuery} onChange={event => { invalidateSearches(); setAlbumQuery(event.target.value); }} placeholder="Search albums" /><div><button type="button" className={!album ? styles.selected : ""} onClick={() => { setAlbum(""); resetResults(); }}>All albums</button>{albums.map(item => <button type="button" className={album === item.name ? styles.selected : ""} onClick={() => { setAlbum(item.name); resetResults(); }} key={item.name}>{item.name}<b>{item.tracks}</b></button>)}</div></section>
       </aside>
       <section className={`${styles.listing} ${mobilePane === "tracks" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
         <CardHeader title={searchMode === "recording" ? "Recording results" : searchMode === "hum" ? "Hum matches" : "Tracks"} count={total} />
-        <div className={styles.search}><label><Search /><input value={query} onChange={event => { setQuery(event.target.value); resetResults(); }} placeholder="Search tracks" /></label><HumSearchButton onStart={invalidateRecording} onResults={showHumResults} onError={setError} /><RecordingSearchButton ref={recordingRef} onResults={showRecordingResults} onError={setError} /><select aria-label="Sort tracks" value={sortBy} onChange={event => { setSortBy(event.target.value as "name" | "artist" | "released"); resetResults(); }}><option value="name">Name</option><option value="artist">Artist</option><option value="released">Date released</option></select></div>
+        <div className={styles.search}><label><Search /><input value={query} onChange={event => { setQuery(event.target.value); resetResults(); }} placeholder="Search tracks" /></label><HumSearchButton ref={humRef} onStart={invalidateSearches} onResults={showHumResults} onError={setError} /><RecordingSearchButton ref={recordingRef} onResults={showRecordingResults} onError={setError} onStart={invalidateSearches} /><select aria-label="Sort tracks" value={sortBy} onChange={event => { setSortBy(event.target.value as "name" | "artist" | "released"); resetResults(); }}><option value="name">Name</option><option value="artist">Artist</option><option value="released">Date released</option></select></div>
         <div className={styles.list} ref={listRef}>{error && <div className={styles.feedback} role="alert">{error}</div>}{loading && tracks.length === 0 ? <div className={styles.empty}>Loading library</div> : tracks.length === 0 ? <div className={styles.empty}>No matching tracks</div> : <>{searchMode === "recording" && <RecordingMatchNotice message={recordingWarning} />}{tracks.map((track, index) => <article className={`${styles.row} ${player.track?.id === track.id ? styles.current : ""}`} key={track.id}>
           <button type="button" className={styles.playTrack} onClick={() => play(track)} disabled={!playerTrack(track)}>
             <span className={styles.art}>{track.cover_art && resultConnection(track, selectedConnectionId) ? <LoadingImage sizes="48px" alt="" src={coverArtUrl(resultConnection(track, selectedConnectionId), track.cover_art, 96)} /> : <Disc3 />}</span>

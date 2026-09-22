@@ -9,8 +9,9 @@ import styles from "./RecordingSearchButton.module.css";
 
 type Availability = { recognition_enabled: boolean; indexed_tracks: number; reason?: string };
 
-export default function RecordingSearchButton({ onResults, onError, ref }: {
+export default function RecordingSearchButton({ onResults, onError, onStart, ref }: {
   ref?: Ref<{ cancel: () => void }>;
+  onStart?: () => void;
   onResults: (tracks: RecordingTrack[], warning: string) => void;
   onError: (message: string) => void;
 }) {
@@ -131,6 +132,7 @@ export default function RecordingSearchButton({ onResults, onError, ref }: {
 
   async function start() {
     if (availability?.recognition_enabled !== true || phase !== "idle") return;
+    onStart?.();
     const attempt = ++lifecycle.current.generation;
     callbacks.current.onError(""); setJobId(""); setSeconds(0); setPhase("permission");
     try {
