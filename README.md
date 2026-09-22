@@ -197,7 +197,7 @@ Audio profiles summarize stored window embeddings, including changes within a tr
 
 Analysis is not ground truth. Lyrics can be missing or mismatched, pitch tracking can follow the wrong instrument, and similarity results depend on the selected signals. An absent melody or karaoke result should not prevent ordinary playback.
 
-For the technical details, see [architecture](docs/architecture.md), [representation and ranking correctness](docs/analysis-correctness.md), [audio profiles](docs/audio-profiles.md), and [audio descriptors](docs/audio-descriptors.md).
+For the technical details, see [architecture](docs/architecture.md), [representation and ranking correctness](docs/analysis-correctness.md), [audio profiles](docs/audio-profiles.md), [audio descriptors](docs/audio-descriptors.md), and [recording search](docs/recording-search.md). Recording search is disabled until a local model export and recognition policy have been validated.
 
 ## Running beyond localhost
 
