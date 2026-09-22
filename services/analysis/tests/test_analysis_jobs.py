@@ -35,6 +35,31 @@ def test_import_expands_only_selected_ids_without_reconciliation(monkeypatch):
     main._reconcile_user_tracks.assert_not_called()
 
 
+def test_recording_search_uses_same_worker_without_loading_connection(monkeypatch):
+    from echora_analysis import recording_search
+    execute = Mock(return_value={'state': 'no_match'})
+    monkeypatch.setattr(recording_search, 'execute', execute)
+    job = {'kind': 'recording_search', 'id': 'query', 'user_id': 'user'}
+    ctx = context()
+    assert analysis_jobs.execute(job, ctx) == {'state': 'no_match'}
+    execute.assert_called_once_with(job, ctx)
+
+
+def test_recording_model_does_not_override_configured_batch_size(monkeypatch):
+    main = SimpleNamespace(_load_connection=Mock(return_value=('https://music', 'u', 'secret')))
+    queue = SimpleNamespace(expand=Mock())
+    monkeypatch.setitem(sys.modules, 'echora_analysis.main', main)
+    monkeypatch.setattr(echora_analysis, 'main', main, raising=False)
+    monkeypatch.setitem(sys.modules, 'echora_analysis.jobs', queue)
+    monkeypatch.setattr(echora_analysis, 'jobs', queue, raising=False)
+    monkeypatch.setenv('ECHORA_BATCH_SIZE', '128')
+    monkeypatch.setenv('ECHORA_RECORDING_MODEL_MANIFEST', '/local/manifest.json')
+    job = {'id': 'parent', 'kind': 'import', 'user_id': 'user',
+           'payload': {'connection_id': 'connection', 'track_ids': ['a', 'b']}}
+    analysis_jobs.execute(job, context())
+    assert [batch['track_ids'] for batch in queue.expand.call_args.args[2]] == [['a', 'b']]
+
+
 def test_failed_scan_never_reconciles_or_expands(monkeypatch):
     main = SimpleNamespace(_load_connection=Mock(return_value=('url', 'u', 'p')),
                            _attach_user_library=Mock(), _reconcile_user_tracks=Mock())

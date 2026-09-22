@@ -1,0 +1,9 @@
+# Isolated export environment only. Never install TensorFlow into the worker image.
+# Legacy Keras 2 is required by the pinned upstream architecture/checkpoint.
+# ONNX 1.23 requires newer ml-dtypes than TensorFlow 2.15 supports.
+tensorflow-cpu==2.15.1
+tf2onnx==1.17.0
+onnx==1.17.0
+onnxruntime==1.23.2
+essentia==2.1b6.dev1110
+pyyaml==6.0.3

@@ -41,6 +41,7 @@ class AudioProcessingPlan:
 
     waveform_external_ids: frozenset[str] = frozenset()
     visual_feature_external_ids: frozenset[str] = frozenset()
+    recording_fingerprint_external_ids: frozenset[str] = frozenset()
 
     @property
     def needs_muq(self) -> bool:
@@ -58,7 +59,7 @@ class AudioProcessingPlan:
     def download_external_ids(self) -> frozenset[str]:
         return (self.muq_external_ids | self.mert_external_ids | self.fingerprint_external_ids
                 | self.melody_external_ids | self.descriptor_external_ids | self.waveform_external_ids
-                | self.visual_feature_external_ids)
+                | self.visual_feature_external_ids | self.recording_fingerprint_external_ids)
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,8 @@ class AudioPrerequisites:
 
 def audio_prerequisites(plan: AudioProcessingPlan, external_id: str) -> AudioPrerequisites:
     mono, stereo = set(), set()
+    if external_id in plan.recording_fingerprint_external_ids:
+        mono.add(8_000)
     if external_id in plan.muq_external_ids | plan.mert_external_ids:
         mono.add(24_000)
     if external_id in plan.melody_external_ids:
@@ -171,8 +174,19 @@ def plan_karaoke(connection: psycopg.Connection, pipeline_revision: str,
     return ProcessingPlan(karaoke_external_ids=ids)
 
 
-def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterable[str]) -> AudioProcessingPlan:
+def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterable[str],
+               *, resolved_track_ids: dict | None = None) -> AudioProcessingPlan:
     ids = list(external_ids)
+    # Execution can pin identities resolved from actual downloaded bytes. Do not
+    # let a concurrent source remap change the artifact plan for those bytes.
+    if resolved_track_ids is None:
+        source_join = """LEFT JOIN track_sources ts ON ts.library_id=%s AND ts.source_type='subsonic'
+                        AND ts.external_id=requested.external_id"""
+        source_parameters = [library_id]
+    else:
+        source_join = """LEFT JOIN unnest(%s::text[],%s::uuid[]) AS ts(external_id,track_id)
+                        ON ts.external_id=requested.external_id"""
+        source_parameters = [ids, [resolved_track_ids[item] for item in ids]]
     muq_revision = os.environ.get("MUQ_REVISION", "2e01c796b71dca71b45251384c04cd7b237c9020")
     mert_revision = os.environ.get("MERT_REVISION", "12af15fef9d0ac838c3f475bfbbf26d2060dd4f5")
     with connection.cursor() as cursor:
@@ -180,7 +194,7 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
         hum_setting = cursor.fetchone()
         hum_enabled = hum_setting is None or bool(hum_setting[0])
         cursor.execute(
-            """SELECT requested.external_id,
+            f"""SELECT requested.external_id,
                       ts.track_id,
                       EXISTS (SELECT 1 FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
                               WHERE e.track_id=ts.track_id AND e.embedding_type='audio-track'
@@ -211,11 +225,20 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
                               WHERE vf.track_id=ts.track_id AND vf.revision=%s
                                 AND vf.status IN ('complete', 'unsupported')) AS has_visual_features
                FROM unnest(%s::text[]) requested(external_id)
-               LEFT JOIN track_sources ts ON ts.library_id=%s AND ts.source_type='subsonic'
-                                         AND ts.external_id=requested.external_id""",
-            (muq_revision, mert_revision, MELODY_CONTOUR_REVISION, DESCRIPTOR_REVISION, WAVEFORM_REVISION, VISUAL_FEATURE_REVISION, ids, library_id),
+               {source_join}""",
+            (muq_revision, mert_revision, MELODY_CONTOUR_REVISION, DESCRIPTOR_REVISION, WAVEFORM_REVISION, VISUAL_FEATURE_REVISION, ids, *source_parameters),
         )
         rows = cursor.fetchall()
+        from .recording_encoder import config_from_env
+        recording_config = config_from_env()
+        recording_ids = frozenset()
+        if recording_config is not None:
+            cursor.execute(f"""SELECT requested.external_id FROM unnest(%s::text[]) requested(external_id)
+                {source_join}
+                WHERE NOT EXISTS (SELECT 1 FROM recording_fingerprints f
+                    WHERE f.track_id=ts.track_id AND f.representation_id=%s)""",
+                           (ids, *source_parameters, recording_config.representation_id))
+            recording_ids = frozenset(str(row[0]) for row in cursor.fetchall())
     return AudioProcessingPlan(
         frozenset(str(row[0]) for row in rows if not row[2]),
         frozenset(str(row[0]) for row in rows if not row[3]),
@@ -224,4 +247,5 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
         frozenset(str(row[0]) for row in rows if not row[6]),
         frozenset(str(row[0]) for row in rows if not row[7]),
         frozenset(str(row[0]) for row in rows if not row[8]),
+        recording_ids,
     )

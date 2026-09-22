@@ -10,9 +10,10 @@ import os
 import uuid
 
 from .processing_plan import plan_audio, plan_karaoke
+from .source_freshness import sources_needing_refresh
 
 
-def select_sync_tracks(connection, url: str, external_ids: list[str], mode: str = 'all') -> list[str]:
+def select_sync_tracks(connection, url: str, external_ids: list[str], mode: str = 'all', *, catalog=()) -> list[str]:
     if mode not in {'all', 'missing'}:
         raise ValueError('Unknown sync mode')
     ids = list(dict.fromkeys(external_ids))
@@ -32,6 +33,7 @@ def select_sync_tracks(connection, url: str, external_ids: list[str], mode: str 
     if mode == 'missing':
         return [item for item in ids if item in selected]
 
+    selected.update(sources_needing_refresh(connection, library_id, ids, catalog))
     selected.update(plan_audio(connection, library_id, ids).download_external_ids)
     with connection.cursor() as cursor:
         cursor.execute("""SELECT DISTINCT ts.external_id

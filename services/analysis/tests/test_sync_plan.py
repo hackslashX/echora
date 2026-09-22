@@ -18,6 +18,7 @@ def planner(monkeypatch):
     karaoke = Mock(return_value=SimpleNamespace(karaoke_external_ids=()))
     monkeypatch.setattr(sync_plan, 'plan_audio', audio)
     monkeypatch.setattr(sync_plan, 'plan_karaoke', karaoke)
+    monkeypatch.setattr(sync_plan, 'sources_needing_refresh', Mock(return_value=set()))
     return connection, cursor, audio, karaoke
 
 
@@ -62,11 +63,16 @@ def test_empty_catalog_and_invalid_mode(planner):
         sync_plan.select_sync_tracks(connection, 'https://music', [], 'force')
 
 
-def test_parent_batches_selected_work_but_reconciles_full_catalog(monkeypatch):
+@pytest.mark.parametrize('recording_enabled', [False, True])
+def test_parent_batches_selected_work_but_reconciles_full_catalog(monkeypatch, recording_enabled):
     import echora_analysis
     from echora_analysis import analysis_jobs
     catalog = [f'song-{i}' for i in range(941)]
-    selected = catalog[-5:]
+    selected = catalog[-70:]
+    if recording_enabled:
+        monkeypatch.setenv('ECHORA_RECORDING_MODEL_MANIFEST', '/configured/model.json')
+    else:
+        monkeypatch.delenv('ECHORA_RECORDING_MODEL_MANIFEST', raising=False)
     main = SimpleNamespace(_load_connection=Mock(return_value=('https://music', 'user', 'secret')),
                            _attach_user_library=Mock(), _reconcile_user_tracks=Mock())
     store = SimpleNamespace(expand=Mock(return_value=True))
@@ -86,7 +92,21 @@ def test_parent_batches_selected_work_but_reconciles_full_catalog(monkeypatch):
     job = {'id': 'root', 'kind': 'navidrome_sync', 'user_id': 'user',
            'connection_id': 'connection', 'payload': {'mode': 'missing'}}
     assert analysis_jobs.execute(job, context) is None
-    select.assert_called_once_with('db', 'https://music', catalog, 'missing')
+    select.assert_called_once_with('db', 'https://music', catalog, 'missing',
+                                   catalog=client.__enter__.return_value.all_tracks.return_value)
     main._reconcile_user_tracks.assert_called_once_with('user', 'https://music', catalog)
     assert store.expand.call_args.args[2] == [
-        {'operation': 'navidrome_sync', 'connection_id': 'connection', 'track_ids': selected}]
+        {'operation': 'navidrome_sync', 'connection_id': 'connection', 'track_ids': selected[i:i + 32]}
+        for i in range(0, len(selected), 32)]
+
+
+def test_entire_library_selects_recording_only_backfill_without_other_models(planner, monkeypatch):
+    from echora_analysis.processing_plan import AudioProcessingPlan
+    monkeypatch.delenv("ECHORA_RECORDING_MATCH_POLICY", raising=False)
+    monkeypatch.delenv("MOSS_MODEL_ID", raising=False)
+    connection, cursor, audio, _ = planner
+    cursor.fetchall.side_effect = [[("existing",), ("ready",)], []]
+    audio.return_value = AudioProcessingPlan(frozenset(), frozenset(), frozenset(), frozenset(),
+                                            recording_fingerprint_external_ids=frozenset({"existing"}))
+    assert sync_plan.select_sync_tracks(connection, "https://music", ["existing", "ready"], "all") == ["existing"]
+    assert not audio.return_value.needs_muq and not audio.return_value.needs_mert

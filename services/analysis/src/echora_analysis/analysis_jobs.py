@@ -41,17 +41,16 @@ def _source_rows(user_id, url, ids=None):
 
 
 def _add_links(user_id, url, ids):
+    from .source_visibility import update_memberships
+
     # Never reconcile a batch: removing absent IDs would delete sibling batches.
     with _connect() as connection, connection.cursor() as cursor:
-        cursor.execute(
-            """INSERT INTO user_track_links (user_id,library_id,track_id,external_id)
-               SELECT DISTINCT ON (ts.track_id) %s,ts.library_id,ts.track_id,ts.external_id
-               FROM track_sources ts JOIN libraries l ON l.id=ts.library_id
-               WHERE l.root_path=%s AND ts.source_type='subsonic' AND ts.external_id=ANY(%s)
-               ORDER BY ts.track_id,ts.external_id
-               ON CONFLICT (user_id,library_id,track_id) DO UPDATE SET external_id=EXCLUDED.external_id""",
-            (user_id, url.rstrip('/'), ids))
-        return cursor.rowcount
+        namespace = uuid.uuid5(uuid.NAMESPACE_URL, url.rstrip('/'))
+        cursor.execute("SELECT id FROM libraries WHERE namespace=%s", (namespace,))
+        library = cursor.fetchone()
+        if library is None:
+            return 0
+        return update_memberships(connection, library[0], user_id, ids)["linked"]
 
 
 def _profiles(ids, report):
@@ -126,6 +125,9 @@ def execute(job: dict, context) -> dict | None:
     jobs.expand owns parent waiting state and analysis_batch child creation.
     """
     context.check()
+    if job['kind'] == 'recording_search':
+        from .recording_search import execute as search_recording
+        return search_recording(job, context)
     kind = job['kind']
     payload = dict(job.get('payload') or {})
     if 'connection_id' not in payload and job.get('connection_id'):
@@ -160,12 +162,13 @@ def execute(job: dict, context) -> dict | None:
             if operation == 'navidrome_sync':
                 report({'phase': 'scanning', 'message': 'Scanning complete catalog'})
                 with NavidromeClient(*credentials) as client:
-                    catalog_ids = [track.id for track in client.all_tracks()]
+                    catalog = client.all_tracks()
+                    catalog_ids = [track.id for track in catalog]
                 context.check()
                 from .sync_plan import select_sync_tracks
                 report({'phase': 'planning', 'message': 'Checking missing analysis before batching'})
                 with _connect() as connection:
-                    ids = select_sync_tracks(connection, credentials[0], catalog_ids, payload.get('mode', 'all'))
+                    ids = select_sync_tracks(connection, credentials[0], catalog_ids, payload.get('mode', 'all'), catalog=catalog)
                 context.check()
                 main._attach_user_library(user_id, credentials[0])
                 # Reconcile the complete snapshot, never only the work selection.
