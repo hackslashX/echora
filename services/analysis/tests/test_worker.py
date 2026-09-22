@@ -62,3 +62,21 @@ def test_success_is_terminal(execution, monkeypatch):
     worker.execute(job)
     context.complete.assert_called_once_with(summary, status='complete')
     failure.assert_not_called()
+
+
+@pytest.mark.parametrize("failing", ["search", "calibration"])
+def test_retention_failure_does_not_block_job_claims(monkeypatch, caplog, failing):
+    from echora_analysis import recording_search, recording_calibration
+    search_cleanup = Mock(side_effect=OSError("private-path") if failing == "search" else None)
+    calibration_cleanup = Mock(side_effect=OSError("private-path") if failing == "calibration" else None)
+    monkeypatch.setattr(recording_search, "cleanup", search_cleanup)
+    monkeypatch.setattr(recording_calibration, "cleanup", calibration_cleanup)
+    monkeypatch.setattr(worker.signal, "signal", Mock())
+    claim = Mock(return_value=None)
+    monkeypatch.setattr(jobs, "claim", claim)
+    worker.run("analysis", once=True)
+    claim.assert_called_once()
+    search_cleanup.assert_called_once()
+    calibration_cleanup.assert_called_once()
+    assert "retention maintenance failed" in caplog.text
+    assert "private-path" not in caplog.text

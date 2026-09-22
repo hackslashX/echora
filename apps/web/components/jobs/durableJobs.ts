@@ -64,5 +64,7 @@ export function jobPresentation(job: Job | null) {
       if (typeof count === "number") summary.push(`${count} ${label}`);
     }
   }
+  const recordingCount = counts.recording_fingerprinted;
+  if (typeof recordingCount === "number") summary.push(`${recordingCount} recording fingerprints generated`);
   return { percent, showPercent, detail, message, summary };
 }

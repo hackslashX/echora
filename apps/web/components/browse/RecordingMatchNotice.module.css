@@ -1,0 +1,1 @@
+.notice{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-bottom:1px solid var(--glass-stroke);background:rgba(197,156,64,.08);color:#e5c992}.notice>svg{flex:0 0 18px;width:18px;height:18px;margin-top:1px}.notice>p{margin:0;font:var(--type-label)/1.5 var(--ui-font)}

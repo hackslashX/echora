@@ -47,6 +47,7 @@ class IngestSummary:
     melody_indexed: int = 0
     melody_contours: int = 0
     recording_matches: int = 0
+    recording_fingerprinted: int = 0
     described_audio: int = 0
     failed: int = 0
 
@@ -147,6 +148,10 @@ def _source_track_id(connection: psycopg.Connection, library_id: uuid.UUID, exte
 
 
 def _upsert_track(connection: psycopg.Connection, library_id: uuid.UUID, song: NavidromeTrack, audio_hash: str) -> tuple[uuid.UUID, bool]:
+    from .source_visibility import lock_library, source_remapped
+
+    lock_library(connection, library_id)
+    previous_id = _source_track_id(connection, library_id, song.id)
     track_id = uuid.uuid5(CONTENT_NAMESPACE, audio_hash)
     metadata = {"navidrome": song.raw, "identity": "sha256-source-bytes"}
     with connection.cursor() as cursor:
@@ -175,6 +180,8 @@ def _upsert_track(connection: psycopg.Connection, library_id: uuid.UUID, song: N
             """,
             (library_id, canonical_id, song.id, Jsonb(song.raw)),
         )
+    if previous_id != canonical_id:
+        source_remapped(connection, library_id, song.id)
     return canonical_id, inserted
 
 
@@ -191,6 +198,15 @@ def _library(connection: psycopg.Connection, url: str) -> uuid.UUID:
             (url.rstrip("/"), namespace),
         )
         return cursor.fetchone()[0]
+
+
+def _bound_source_audio(client: NavidromeClient, external_id: str,
+                        binding: tuple[uuid.UUID, str]) -> tuple[bytes, uuid.UUID]:
+    track_id, expected_hash = binding
+    audio = client.audio_bytes(external_id)
+    if hashlib.sha256(audio).hexdigest() != expected_hash:
+        raise ValueError("Source content changed after identity resolution; retry this source")
+    return audio, track_id
 
 
 def ingest_navidrome(
@@ -211,47 +227,49 @@ def ingest_navidrome(
         library_id = _library(connection, url)
         songs = navidrome.tracks(song_ids)
         summary.discovered = len(songs)
-        identity_downloaded: set[str] = set()
-        # Resolve content identity before planning: another source may already
-        # have every artifact for these exact bytes.
+        bindings: dict[str, tuple[uuid.UUID, str]] = {}
+        resolved_songs = []
+        # Selected sources require an identity check independently of artifact
+        # completeness. Bind later consumers to these exact bytes and IDs, even
+        # when another worker remaps the source before this claim finishes.
         for song in songs:
             report({"phase": "identity", "message": "Resolving track identity"})
-            if _source_track_id(connection, library_id, song.id) is None:
+            try:
+                get_check()()
                 audio = navidrome.audio_bytes(song.id)
-                _, inserted = _upsert_track(connection, library_id, song, hashlib.sha256(audio).hexdigest())
-                summary.downloaded += 1
-                identity_downloaded.add(song.id)
-                summary.inserted += int(inserted)
+                audio_hash = hashlib.sha256(audio).hexdigest()
+                track_id, inserted = _upsert_track(connection, library_id, song, audio_hash)
+                with connection.cursor() as cursor:
+                    cursor.execute("""UPDATE track_sources SET audio_verified_at=now()
+                        WHERE library_id=%s AND source_type='subsonic' AND external_id=%s
+                            AND track_id=%s""", (library_id, song.id, track_id))
                 connection.commit()
-        plan = plan_audio(connection, library_id, [song.id for song in songs])
+                bindings[song.id] = (track_id, audio_hash)
+                resolved_songs.append(song)
+                summary.downloaded += 1
+                summary.inserted += int(inserted)
+                del audio
+            except Exception:
+                connection.rollback()
+                summary.failed += 1
+                logger.warning("Could not resolve source identity for Navidrome song %s", song.id)
+        songs = resolved_songs
+        plan = plan_audio(connection, library_id, [song.id for song in songs],
+                          resolved_track_ids={key: value[0] for key, value in bindings.items()})
         required_models = int(plan.needs_muq) + int(plan.needs_mert)
         report({"phase": "planning", "message": "Processing plan ready", "completed": 0,
                 "total": len(plan.download_external_ids), "unit": "tracks",
                 "plan": {"muq": len(plan.muq_external_ids), "mert": len(plan.mert_external_ids),
                          "fingerprint": len(plan.fingerprint_external_ids),
+                         "recording_fingerprint": len(plan.recording_fingerprint_external_ids),
                          "melody": len(plan.melody_external_ids),
                          "descriptors": len(plan.descriptor_external_ids),
                          "waveform": len(plan.waveform_external_ids),
                          "visual_features": len(plan.visual_feature_external_ids)}})
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        downloaded_ids: set[str] = set(identity_downloaded)
-        inserted_ids: set[uuid.UUID] = set()
-
         def audio_track(song: NavidromeTrack) -> tuple[bytes, uuid.UUID]:
-            audio = navidrome.audio_bytes(song.id)
-            if song.id not in downloaded_ids:
-                downloaded_ids.add(song.id)
-                summary.downloaded += 1
-            track_id = _source_track_id(connection, library_id, song.id)
-            if track_id is None:
-                track_id, inserted = _upsert_track(
-                    connection, library_id, song, hashlib.sha256(audio).hexdigest(),
-                )
-                if inserted and track_id not in inserted_ids:
-                    inserted_ids.add(track_id)
-                    summary.inserted += 1
-            return audio, track_id
+            return _bound_source_audio(navidrome, song.id, bindings[song.id])
 
         # Prepare only the formats requested by outstanding tasks, before loading
         # GPU models. Same-format consumers and later batches read the disk cache.
@@ -446,6 +464,34 @@ def ingest_navidrome(
                 "completed": index + 1, "total": len(fingerprint_songs), "unit": "tracks",
                 "summary": summary.__dict__,
             })
+
+        recording_songs = [song for song in songs if song.id in plan.recording_fingerprint_external_ids]
+        if recording_songs:
+            from .recording_encoder import config_from_env
+            from .recording_search import store_fingerprints
+            recording_config = config_from_env()
+            if recording_config is None:
+                raise ValueError("Recording encoder configuration disappeared during analysis")
+            for index, song in enumerate(recording_songs):
+                report({"phase": "recording_fingerprint", "message": f"Indexing recording for {song.title}",
+                        "completed": index, "total": len(recording_songs), "unit": "tracks"})
+                failed = False
+                try:
+                    audio, track_id = audio_track(song)
+                    stored = store_fingerprints(connection, track_id, audio, recording_config, get_check())
+                    del audio
+                    connection.commit()
+                    summary.recording_fingerprinted += int(stored)
+                except Exception:
+                    connection.rollback()
+                    summary.failed += 1
+                    failed = True
+                    logger.error("Could not index recording for Navidrome song %s", song.id)
+                report({"phase": "recording_fingerprint",
+                        "message": (f"Recording indexing failed for {song.title}" if failed
+                                    else f"Recording indexing finished for {song.title}"),
+                        "completed": index + 1, "total": len(recording_songs), "unit": "tracks",
+                        "summary": summary.__dict__})
 
         descriptor_songs = [song for song in songs if song.id in plan.descriptor_external_ids]
         for index, song in enumerate(descriptor_songs):

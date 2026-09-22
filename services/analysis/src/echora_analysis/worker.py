@@ -143,8 +143,20 @@ def run(worker_type: str, *, once: bool = False, poll_seconds: float = 2, lease_
         signal.signal(name, lambda *_: stop.set())
     worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4()}"
     next_schedule_check = 0.0
+    next_recording_cleanup = 0.0
     while not stop.is_set():
         try:
+            if worker_type == "analysis" and time.monotonic() >= next_recording_cleanup:
+                from .recording_search import cleanup
+                from .recording_calibration import cleanup as cleanup_calibration
+                next_recording_cleanup = time.monotonic() + 60
+                for maintenance in (cleanup, cleanup_calibration):
+                    try:
+                        maintenance()
+                    except Exception:
+                        # A bad retained file must not block unrelated analysis.
+                        # Avoid exception text, which can expose private paths.
+                        logger.error("Recording retention maintenance failed; will retry")
             if worker_type == "scheduled" and time.monotonic() >= next_schedule_check:
                 from .curation_jobs import enqueue_due
                 enqueue_due()

@@ -5,6 +5,8 @@ const stages: Record<string, string> = {
   queued: "Waiting for worker", starting: "Starting", planning: "Checking missing work",
   models: "Loading model", waveform: "Waveforms", muq: "MuQ semantics", mert: "MERT acoustics",
   melody: "Melody extraction", fingerprint: "Fingerprints", descriptors: "Audio descriptors",
+  recording_fingerprint: "Recording fingerprints", recording_decode: "Preparing recording",
+  recording_encode: "Analyzing recording", recording_match: "Identifying recording",
   lyrics: "Lyrics retrieval and embeddings", karaoke: "Karaoke alignment", voice: "Voice classification",
   "audio-profiles": "Audio profiles", complete: "Complete", partial: "Partial result", failed: "Failed",
   cancelled: "Cancelled",

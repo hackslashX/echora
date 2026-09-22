@@ -21,6 +21,7 @@ import TrackReferencePicker, { type ReferenceTrack } from "./TrackReferencePicke
 import { useCurationJobs } from "../jobs/useCurationJobs";
 import LanguagePicker from "./LanguagePicker";
 import SoundProfile, { type SoundProfileValues } from "./SoundProfile";
+import { parseRecordingHandoff, resolveRecordingReference } from "./recordingHandoff";
 
 type Reference = { kind: "track" | "artist" | "album"; name: string };
 type Track = { id: string; title: string; artist?: string; album?: string; duration_seconds: number; source_id: string; cover_art?: string; score: number; percentile?: number; position?: number; evidence?: { selection_pool?: "familiar" | "discovery"; listen_count?: number } };
@@ -94,6 +95,22 @@ export default function CurateLibrary() {
 
   function loadCurations() { return api<{ curations: Curation[] }>("/library/curations").then(body => setCurations(body.curations)).catch(reason => setError(reason.message)); }
   useEffect(() => { api<{ navidrome_connection_id?: string }>("/auth/me").then(user => setConnectionId(user.navidrome_connection_id || "")); api<{ lastfm: { connected: boolean } }>("/settings").then(body => setHistoryConnected(body.lastfm.connected)).catch(() => {}); loadCurations(); }, []);
+
+  useEffect(() => {
+    const handoff = parseRecordingHandoff(window.location.search);
+    if (!handoff) return;
+    const controller = new AbortController();
+    resolveRecordingReference(handoff.trackId, controller.signal).then(track => {
+      if (controller.signal.aborted) return;
+      if (handoff.intent === "journey") { setJourneyStart([track]); setActiveAspect("sonic"); }
+      else { setPositiveTracks([track]); setActiveAspect("examples"); }
+      // Remove only our consumed parameters, preserving Next's history state.
+      const url = new URL(window.location.href);
+      url.searchParams.delete("recording_track"); url.searchParams.delete("recording_intent");
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    }).catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Could not load the recording"); });
+    return () => controller.abort();
+  }, []);
 
   const split = (tags: Tag[]) => ({
     positive: tags.filter(tag => !tag.negative).map(tag => tag.label),

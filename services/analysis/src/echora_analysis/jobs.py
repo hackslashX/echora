@@ -234,7 +234,8 @@ def claim(worker_type, worker_id, lease_seconds=120):
     with _db() as db:
         candidates = db.execute('''SELECT id FROM jobs WHERE worker_type=%s AND
             ((status='queued' AND available_at<=now()) OR
-             (status='running' AND lease_until<=now())) ORDER BY available_at,created_at''',
+             (status='running' AND lease_until<=now()))
+            ORDER BY available_at,created_at,id''',
                                 (worker_type,)).fetchall()
         for candidate in candidates:
             if not _family(db, candidate['id'], attempt=True):

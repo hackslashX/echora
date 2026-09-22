@@ -58,6 +58,8 @@ from .lyrics_analysis import shared_lyrics_model
 from .navidrome import NavidromeClient, media_navidrome_client
 from .representations import configure_representations
 
+from .recording_routes import create_router as recording_router
+
 app = FastAPI(title="Echora analysis", version="0.3.0")
 # Browser-facing media (covers, streams) is served cross-origin from the web app
 # when NEXT_PUBLIC_ANALYSIS_ORIGIN is set; canvas palette extraction needs CORS.
@@ -281,32 +283,18 @@ def _attach_user_library(user_id: uuid.UUID, source_url: str) -> None:
 
 
 def _reconcile_user_tracks(user_id: uuid.UUID, source_url: str, external_ids: list[str]) -> dict[str, int]:
+    from .source_visibility import update_memberships
+
     namespace = uuid.uuid5(uuid.NAMESPACE_URL, source_url.rstrip("/"))
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT id FROM libraries WHERE namespace=%s", (namespace,))
-        library = cursor.fetchone()
-        if library is None:
-            return {"linked": 0, "unlinked": 0}
-        library_id = library["id"]
+        # A first full catalog can precede all source/identity discovery.
         cursor.execute(
-            """DELETE FROM user_track_links
-               WHERE user_id=%s AND library_id=%s AND NOT (external_id = ANY(%s))""",
-            (user_id, library_id, external_ids),
-        )
-        unlinked = cursor.rowcount
-        cursor.execute(
-            """INSERT INTO user_track_links (user_id, library_id, track_id, external_id)
-               SELECT DISTINCT ON (ts.track_id) %s, ts.library_id, ts.track_id, ts.external_id
-               FROM track_sources ts
-               WHERE ts.library_id=%s AND ts.source_type='subsonic' AND ts.external_id=ANY(%s)
-               ORDER BY ts.track_id, ts.external_id
-               ON CONFLICT (user_id, library_id, track_id) DO UPDATE
-               SET external_id=EXCLUDED.external_id, last_seen_at=now()""",
-            (user_id, library_id, external_ids),
-        )
-        cursor.execute("SELECT count(*) AS count FROM user_track_links WHERE user_id=%s AND library_id=%s", (user_id, library_id))
-        linked = int(cursor.fetchone()["count"])
-    return {"linked": linked, "unlinked": unlinked}
+            """INSERT INTO libraries (name, root_path, namespace)
+               VALUES ('Navidrome', %s, %s)
+               ON CONFLICT (namespace) DO UPDATE SET root_path=EXCLUDED.root_path
+               RETURNING id""", (source_url.rstrip("/"), namespace))
+        library_id = cursor.fetchone()["id"]
+        return update_memberships(connection, library_id, user_id, external_ids, full=True)
 
 
 def _load_connection(connection_id: str, user_id: uuid.UUID | None = None) -> tuple[str, str, str] | None:
@@ -368,6 +356,9 @@ def _session_user(token: str | None) -> dict[str, object]:
             "onboarding_complete": preference.onboarding_complete,
             "navidrome_connection_id": preference.navidrome_connection_id,
         }
+
+
+app.include_router(recording_router(require_user))
 
 
 @app.on_event("startup")
@@ -860,9 +851,12 @@ def navidrome_sync_status(connection_id: str, echora_session: str | None = Cooki
             (namespace,),
         )
         processed = {str(row[0]) for row in cursor.fetchall()}
+        from .recording_search import index_status
+        recording_index = index_status(connection, namespace, [track.id for track in tracks], user["id"])
     missing = [track for track in tracks if track.id not in processed]
     return {
         "server": credentials[0], "total": len(tracks), "processed": len(tracks) - len(missing), "missing": len(missing),
+        "recording_index": recording_index,
         "tracks": [{"id": track.id, "title": track.title, "artist": track.artist, "album": track.album, "duration": track.duration, "cover_art": track.raw.get("coverArt")} for track in missing[:50]],
     }
 
@@ -1215,10 +1209,10 @@ def force_transcription_language(
             raise HTTPException(status_code=409, detail="Enable AI lyric generation in Settings before forcing transcription")
         cursor.execute(
             """INSERT INTO lyrics (track_id, source, text, provenance, availability_status)
-               VALUES (%s,'none',NULL,jsonb_build_object('transcription_language',%s,'forced_transcription',true),'missing')
+               VALUES (%s,'none',NULL,jsonb_build_object('transcription_language',%s::text,'forced_transcription',true),'missing')
                ON CONFLICT (track_id) DO UPDATE SET source='none', text=NULL, language=NULL,
                  provenance=(coalesce(lyrics.provenance,'{}'::jsonb) - 'manual' - 'lines' - 'synced')
-                   || jsonb_build_object('transcription_language',%s,'forced_transcription',true),
+                   || jsonb_build_object('transcription_language',%s::text,'forced_transcription',true),
                  availability_status='missing', created_at=now()""",
             (track_id, language, language),
         )
@@ -1238,7 +1232,7 @@ def update_track_lyrics_status(
             raise HTTPException(status_code=404, detail="Track is not in your library")
         cursor.execute(
             """INSERT INTO lyrics (track_id, source, text, provenance, availability_status)
-               VALUES (%s,'none',NULL,jsonb_build_object('manual_status',%s,'edited_at',now()::text),%s)
+               VALUES (%s,'none',NULL,jsonb_build_object('manual_status',%s::text,'edited_at',now()::text),%s)
                ON CONFLICT (track_id) DO UPDATE SET source='none', text=NULL, language=NULL,
                  provenance=(coalesce(lyrics.provenance,'{}'::jsonb)
                    - 'manual' - 'lines' - 'synced' - 'forced_transcription' - 'transcription_language')
@@ -1447,6 +1441,7 @@ async def hum_search(
 def library_tracks(
     limit: int = 10, offset: int = 0, q: str = "", artist: str = "", album: str = "",
     sort_by: str = "name", echora_session: str | None = Cookie(default=None),
+    track_id: uuid.UUID | None = None,
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     limit = min(max(limit, 1), 100)
@@ -1463,6 +1458,9 @@ def library_tracks(
         "WHERE visible_links.track_id=t.id AND visible_links.user_id=%s)"
     ]
     parameters: list[object] = [user["id"]]
+    if track_id is not None:
+        clauses.append("t.id = %s")
+        parameters.append(track_id)
     if q.strip():
         clauses.append("(t.title ILIKE %s OR t.artist ILIKE %s OR t.album ILIKE %s OR array_to_string(t.genres, ' ') ILIKE %s)")
         parameters.extend([f"%{q.strip()}%"] * 4)

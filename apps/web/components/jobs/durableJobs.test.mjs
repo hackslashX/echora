@@ -81,3 +81,15 @@ test('song metrics are only displayed when actually reported', () => {
   assert.deepEqual(jobPresentation({ ...job('complete'), summary: { inserted: 2, failed: 0 } }).summary,
     ['2 new', '0 failed']);
 });
+
+
+test('recording fingerprint summaries use reported counts for track and batch jobs', () => {
+  for (const unit of ['tracks', 'batches']) {
+    for (const count of [0, 7]) {
+      const result = jobPresentation({ ...job('complete'), unit, summary: { recording_fingerprinted: count } });
+      assert.ok(result.summary.includes(`${count} recording fingerprints generated`));
+    }
+    assert.ok(!jobPresentation({ ...job('complete'), unit }).summary.some(item => item.includes('recording')));
+  }
+  assert.ok(jobPresentation({ ...job('running'), unit: 'batches', progress: { recording_fingerprinted: 3 } }).summary.includes('3 recording fingerprints generated'));
+});

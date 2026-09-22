@@ -21,4 +21,4 @@ COPY services/analysis/alembic ./alembic
 ENV PATH="/opt/venv/bin:$PATH" PYTHONPATH="/service/src" TORCH_HOME="/models/torch" LID_MODEL_PATH="/models/lid.176.bin" NLTK_DATA="/usr/local/share/nltk_data"
 RUN mkdir -p /models/huggingface && chown -R echora /models
 EXPOSE 8000
-CMD ["sh", "-c", "mkdir -p /data/preprocessed && chown echora /data/preprocessed && chown -R echora /models && runuser -u echora -- python -m echora_analysis.download_models --prune-only && runuser -u echora -- alembic upgrade head && exec runuser -u echora -- uvicorn echora_analysis.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "mkdir -p /data/preprocessed /data/recording-calibration && chown echora /data/preprocessed /data/recording-calibration && chmod 700 /data/recording-calibration && chown -R echora /models && runuser -u echora -- python -m echora_analysis.download_models --prune-only && runuser -u echora -- alembic upgrade head && exec runuser -u echora -- uvicorn echora_analysis.main:app --host 0.0.0.0 --port 8000"]
