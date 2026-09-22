@@ -1215,10 +1215,10 @@ def force_transcription_language(
             raise HTTPException(status_code=409, detail="Enable AI lyric generation in Settings before forcing transcription")
         cursor.execute(
             """INSERT INTO lyrics (track_id, source, text, provenance, availability_status)
-               VALUES (%s,'none',NULL,jsonb_build_object('transcription_language',%s,'forced_transcription',true),'missing')
+               VALUES (%s,'none',NULL,jsonb_build_object('transcription_language',%s::text,'forced_transcription',true),'missing')
                ON CONFLICT (track_id) DO UPDATE SET source='none', text=NULL, language=NULL,
                  provenance=(coalesce(lyrics.provenance,'{}'::jsonb) - 'manual' - 'lines' - 'synced')
-                   || jsonb_build_object('transcription_language',%s,'forced_transcription',true),
+                   || jsonb_build_object('transcription_language',%s::text,'forced_transcription',true),
                  availability_status='missing', created_at=now()""",
             (track_id, language, language),
         )
@@ -1238,7 +1238,7 @@ def update_track_lyrics_status(
             raise HTTPException(status_code=404, detail="Track is not in your library")
         cursor.execute(
             """INSERT INTO lyrics (track_id, source, text, provenance, availability_status)
-               VALUES (%s,'none',NULL,jsonb_build_object('manual_status',%s,'edited_at',now()::text),%s)
+               VALUES (%s,'none',NULL,jsonb_build_object('manual_status',%s::text,'edited_at',now()::text),%s)
                ON CONFLICT (track_id) DO UPDATE SET source='none', text=NULL, language=NULL,
                  provenance=(coalesce(lyrics.provenance,'{}'::jsonb)
                    - 'manual' - 'lines' - 'synced' - 'forced_transcription' - 'transcription_language')
