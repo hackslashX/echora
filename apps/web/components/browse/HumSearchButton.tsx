@@ -1,6 +1,6 @@
 "use client";
 
-import { LoaderCircle, Mic, Square } from "lucide-react";
+import { LoaderCircle, Speech, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import AudioVisualizer from "./AudioVisualizer";
 import styles from "./HumSearchButton.module.css";
@@ -8,7 +8,7 @@ import styles from "./HumSearchButton.module.css";
 type Track = { id: string; title: string; artist?: string; album?: string; duration_seconds: number; source_id?: string; cover_art?: string; similarity?: number; matched_at_seconds?: number };
 type IndexStatus = { status: "missing" | "building" | "complete" | "failed"; indexed_tracks: number; error?: string };
 
-export default function HumSearchButton({ onResults, onError }: { onResults: (tracks: Track[]) => void; onError: (message: string) => void }) {
+export default function HumSearchButton({ onResults, onError, onStart }: { onStart?: () => void; onResults: (tracks: Track[]) => void; onError: (message: string) => void }) {
   const [index, setIndex] = useState<IndexStatus>({ status: "missing", indexed_tracks: 0 });
   const [state, setState] = useState<"idle" | "recording" | "searching" | "building">("idle");
   const [activeStream, setActiveStream] = useState<MediaStream | null>(null);
@@ -46,6 +46,7 @@ export default function HumSearchButton({ onResults, onError }: { onResults: (tr
   }
 
   async function start() {
+    onStart?.();
     if (index.status !== "complete") { await build(); return; }
     try {
       stream.current = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -84,7 +85,7 @@ export default function HumSearchButton({ onResults, onError }: { onResults: (tr
   const label = state === "recording" ? "Stop humming" : state === "searching" ? "Matching" : building ? `Indexing ${index.indexed_tracks || 0}/50` : index.status === "complete" ? "Hum to search" : "Build hum index";
   return <button type="button" className={`${styles.button} ${state === "recording" ? styles.recording : ""}`} onClick={state === "recording" ? stop : start} disabled={state === "searching" || building} aria-label={label} title={label}>
     {state === "recording" && activeStream ? <AudioVisualizer stream={activeStream} /> : null}
-    {state === "recording" ? <Square /> : state === "searching" || building ? <LoaderCircle className={styles.spin} /> : <Mic />}
+    {state === "recording" ? <Square /> : state === "searching" || building ? <LoaderCircle className={styles.spin} /> : <Speech aria-hidden="true" />}
     <span>{label}</span>
   </button>;
 }
