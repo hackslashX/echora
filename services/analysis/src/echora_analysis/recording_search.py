@@ -30,13 +30,19 @@ class QueueFull(ValueError):
 
 def search_configuration():
     from .recording_encoder import config_from_env
-    from .recording_matcher import MatchPolicy, MATCHER_REVISION
     config = config_from_env()
     if config is None:
         raise ValueError("Recording encoder is disabled")
     path = os.getenv("ECHORA_RECORDING_MATCH_POLICY")
     if not path:
         raise ValueError("Recording match policy is not configured")
+    policy, policy_id = load_match_policy(config, path)
+    return config, policy, policy_id
+
+
+def load_match_policy(config, path):
+    """Validate a policy against a verified encoder without changing process env."""
+    from .recording_matcher import MatchPolicy, MATCHER_REVISION
     payload = Path(path).read_bytes()
     data = json.loads(payload)
     if (not isinstance(data, dict) or data.get("representation_id") != config.representation_id
@@ -50,7 +56,7 @@ def search_configuration():
         policy = MatchPolicy(**data["thresholds"])
     except TypeError as error:
         raise ValueError("Invalid recording match policy") from error
-    return config, policy, hashlib.sha256(payload).hexdigest()
+    return policy, hashlib.sha256(payload).hexdigest()
 
 
 def status(user_id):

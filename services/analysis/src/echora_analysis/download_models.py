@@ -7,6 +7,7 @@ import urllib.request
 from huggingface_hub import scan_cache_dir, snapshot_download
 
 from .roformer import MODEL_ID as ROFORMER_MODEL_ID, MODEL_REVISION as ROFORMER_REVISION
+from .recording_download import download_recording_model
 
 ESSENTIA_MODELS = (
     ("https://essentia.upf.edu/models/feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx",
@@ -101,6 +102,7 @@ def _download_essentia() -> None:
 def main(*, prune_only: bool = False) -> None:
     required = required_models()
     if not prune_only:
+        download_recording_model()
         for model, revision, needs_main_ref in required:
             print(f"Downloading {model}@{revision}", flush=True)
             snapshot = snapshot_download(repo_id=model, revision=revision)

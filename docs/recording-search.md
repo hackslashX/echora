@@ -79,6 +79,26 @@ Queries are `recording_search` jobs on the existing analysis worker. The API doe
 
 All analysis jobs use the existing queue order. Recording queries have no scheduling priority, and enabling the model does not change `ECHORA_BATCH_SIZE`, which defaults to 128 tracks. Already queued batches retain their original size; restarting sync is required to create batches with the corrected size. No response-time guarantee is made.
 
+## Native model provisioning
+
+Recording bundles are handled by the existing `python -m echora_analysis.download_models` command, alongside the other analysis models. Download and verification code lives in `echora_analysis.recording_download`, not in deployment scripts. This support requires a release after 0.1.20.
+
+Configure the provisioning process with:
+
+```sh
+ECHORA_RECORDING_MODEL_ID=hcX02/echora-nmfp-triplet-v1-onnx
+ECHORA_RECORDING_MODEL_REVISION=956510e2ea26d22056d94c0ee500f1840fbd4719
+ECHORA_RECORDING_MODEL_DIRECTORY=/data/models/recording/nmfp-triplet-v1
+```
+
+Then run the normal model-download command with network access. Source ID and revision are opt-in and must be configured together. Revisions must be full immutable commit hashes, not branches or tags. The directory must be an absolute path on the shared model volume. Without these source variables, existing manually installed bundles continue to work and no recording download occurs.
+
+The downloader verifies a complete bundle in a temporary directory, then publishes it at `<directory>/<revision>`. It checks the model and parity checksums, license/parity attestations, representation ID and matcher policy. Existing valid bundles are reused without network access, including bundles installed by the earlier deployment bootstrap. Corrupt or incompatible caches fail closed and are not overwritten. Other generations remain untouched, and interrupted downloads remove their staging directory.
+
+Point runtime `ECHORA_RECORDING_MODEL_MANIFEST` at `<directory>/<revision>/manifest.json` and `ECHORA_RECORDING_MATCH_POLICY` at `<directory>/<revision>/match-policy.json`. Kubernetes supplies these paths and the three download variables to the existing model provisioning setup; no script ConfigMap or extra download init container is needed. The normal Hugging Face token configuration also works for private bundles. The published bundle above is public and needs no token.
+
+Serving and `--prune-only` never download or provision recording models. The model, manifest and policy must be available before starting offline workers. The published manifest includes the license acknowledgement for the approved deployment; other operators must review the upstream GPL terms and validation evidence before enabling it.
+
 ## Encoder contract
 
 Set these variables identically on the API and analysis workers:

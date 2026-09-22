@@ -31,6 +31,32 @@ def test_provisioning_leaves_legacy_demucs_weights_untouched(monkeypatch, tmp_pa
     monkeypatch.setattr(d, "snapshot_download", download)
     monkeypatch.setattr(d, "_prune_huggingface_cache", Mock())
     monkeypatch.setattr(d, "_download_essentia", Mock())
+    monkeypatch.setattr(d, "download_recording_model", Mock())
     d.main()
     download.assert_called_once_with(repo_id=d.ROFORMER_MODEL_ID, revision=d.ROFORMER_REVISION)
     assert checkpoint.read_bytes() == b"preserve existing experiment weights"
+
+
+def test_normal_downloader_provisions_recording_bundle(monkeypatch):
+    from echora_analysis import download_models as d
+    monkeypatch.setattr(d, "required_models", lambda: ())
+    recording = Mock()
+    monkeypatch.setattr(d, "download_recording_model", recording)
+    monkeypatch.setattr(d, "_prune_huggingface_cache", Mock())
+    monkeypatch.setattr(d, "_download_essentia", Mock())
+    d.main()
+    recording.assert_called_once_with()
+
+
+def test_prune_only_never_downloads_or_validates_recording_bundle(monkeypatch):
+    from echora_analysis import download_models as d
+    monkeypatch.setattr(d, "required_models", lambda: ())
+    recording, snapshots, essentia = Mock(), Mock(), Mock()
+    monkeypatch.setattr(d, "download_recording_model", recording)
+    monkeypatch.setattr(d, "snapshot_download", snapshots)
+    monkeypatch.setattr(d, "_download_essentia", essentia)
+    monkeypatch.setattr(d, "_prune_huggingface_cache", Mock())
+    d.main(prune_only=True)
+    recording.assert_not_called()
+    snapshots.assert_not_called()
+    essentia.assert_not_called()
