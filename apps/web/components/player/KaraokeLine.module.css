@@ -1,0 +1,3 @@
+.line{position:relative;display:inline-block;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal;vertical-align:baseline;color:#fff}
+.paint{position:absolute;inset:0;pointer-events:none;color:var(--aqua);mask-size:100% 100%;mask-repeat:no-repeat;-webkit-mask-size:100% 100%;-webkit-mask-repeat:no-repeat}
+.glowTarget{position:absolute;pointer-events:none}

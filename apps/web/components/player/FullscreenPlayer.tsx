@@ -3,7 +3,7 @@
 import { AArrowDown, AArrowUp, Disc3, ListMusic, MicVocal, Pause, Play, SkipBack, SkipForward, Type, Volume2, VolumeX, X } from "lucide-react";
 import { sizedPlayerCoverArtUrl } from "../media/coverArt";
 import LoadingImage from "../media/LoadingImage";
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { trackTemplate } from "../shell/gridGeometry";
 import { audioQualityLabel } from "./audioQuality";
 import { usePlayer } from "./PlayerProvider";
@@ -14,6 +14,8 @@ import LyricsGlow from "./LyricsGlow";
 import AiLyricsIndicator from "./AiLyricsIndicator";
 import { defaultPlaybackPreferences, readPlaybackPreferences, type PlaybackPreferences } from "./playbackPreferences";
 import { useDialogFocus } from "../shell/useDialogFocus";
+import { groupSyllablesByWord, lyricWordIsRtl as isRtlText } from "./lyricWords";
+import KaraokeLine from "./KaraokeLine";
 
 const DESKTOP_INSET = 80;
 const stamp = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
@@ -38,15 +40,7 @@ function FullscreenMarquee({ children }: { children: ReactNode }) {
 
   return <span ref={ref} className={styles.fullscreenMarquee} data-overflowing={distance > 1 || undefined} style={{ "--fullscreen-marquee-offset": `-${distance}px` } as CSSProperties}><span>{children}</span></span>;
 }
-const isRtlText = (text: string) => {
-  for (const character of text) {
-    if (/[\u0590-\u08ff]/u.test(character)) return true;
-    if (/\p{L}/u.test(character)) return false;
-  }
-  return false;
-};
 type LyricsLine = { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] };
-type KaraokeSyllable = NonNullable<LyricsLine["syllables"]>[number];
 type LyricsTextSize = "small" | "normal" | "large";
 const lyricsSizeStorageKey = "echora:lyrics-text-size";
 const lyricsSizeClasses: Record<LyricsTextSize, string> = {
@@ -54,22 +48,6 @@ const lyricsSizeClasses: Record<LyricsTextSize, string> = {
   normal: styles.lyricsNormal,
   large: styles.lyricsLarge,
 };
-
-function groupSyllablesByWord(syllables: KaraokeSyllable[]) {
-  const words: { syllable: KaraokeSyllable; index: number; text: string; fragmentIndex: number }[][] = [];
-  let word: { syllable: KaraokeSyllable; index: number; text: string; fragmentIndex: number }[] = [];
-  syllables.forEach((syllable, index) => {
-    syllable.text.split(/(\s+)/u).filter(Boolean).forEach((text, fragmentIndex) => {
-      word.push({ syllable, index, text, fragmentIndex });
-      if (/^\s+$/u.test(text)) {
-        words.push(word);
-        word = [];
-      }
-    });
-  });
-  if (word.length) words.push(word);
-  return words;
-}
 
 export default function FullscreenPlayer() {
   const player = usePlayer();
@@ -118,6 +96,9 @@ export default function FullscreenPlayer() {
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
   }, [player.track]);
   const currentLyrics = player.lyrics?.trackId === player.track?.id ? player.lyrics : null;
+  const lyricFragments = useMemo(() => new Map<LyricsLine, ReturnType<typeof groupSyllablesByWord>[number]>(
+    (currentLyrics?.lines || []).map(line => [line, groupSyllablesByWord(line.syllables || []).flat()])
+  ), [currentLyrics?.lines]);
   const aiLyrics = currentLyrics?.provenance?.ai_generated === true;
   const karaokeAvailable = Boolean(currentLyrics?.karaoke && currentLyrics.lines?.length);
   const karaokeLines = currentLyrics?.lines || [];
@@ -139,40 +120,9 @@ export default function FullscreenPlayer() {
   function karaokeLine(line: LyricsLine, active: boolean) {
     if (!karaokeMode || !currentLyrics?.karaoke || !line.syllables?.length) return line.text || "...";
     const now = playbackTime * 1000;
-    const rtl = isRtlText(line.text);
-    return <span className={styles.syllables} dir={rtl ? "rtl" : "ltr"}>{groupSyllablesByWord(line.syllables).map((word, wordIndex) => <span key={wordIndex} style={{ display: "inline-block", whiteSpace: "pre" }}>{word.map(({ syllable, index, text, fragmentIndex }) => {
-      // CSS masks on an inline whitespace box can paint as a solid rectangle
-      // while the fullscreen layer is composited. Spaces need no timing paint.
-      if (/^\s+$/u.test(text)) return text;
-      const singing = active && now >= syllable.start_ms && now < syllable.end_ms;
-      const state = now >= syllable.end_ms ? styles.syllablePast : singing ? styles.syllableActive : styles.syllableNext;
-      if (highlightStyle === "syllable") return <span key={`${syllable.start_ms}-${index}-${fragmentIndex}`} className={`${styles.syllable} ${state}`} data-lyric-singing={singing ? "true" : undefined}>{text}</span>;
-      const progress = Math.min(100, Math.max(0, (now - syllable.start_ms) / Math.max(1, syllable.end_ms - syllable.start_ms) * 100));
-      // A curved mask clips a second copy of the glyph, rather than layering
-      // decorative bubbles over a straight gradient boundary.
-      const edge = rtl ? 100 - progress : progress;
-      const amplitude = Math.min(6, progress * .6, (100 - progress) * .6);
-      const phase = now / 320 + index * .8;
-      const boundary = Array.from({ length: 21 }, (_, point) => {
-        const y = point * 5;
-        const x = edge + Math.sin(y / 100 * Math.PI * 2 + phase) * amplitude;
-        return `L${x.toFixed(2)},${y}`;
-      }).join(" ");
-      const side = rtl ? 100 : 0;
-      const mask = `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" preserveAspectRatio="none"><path fill="white" d="M${side},0 ${boundary} L${side},100 Z"/></svg>`)}")`;
-      const liquid: CSSProperties = {
-        position: "absolute", inset: 0, color: "var(--aqua)",
-        maskImage: mask, WebkitMaskImage: mask,
-        maskSize: "100% 100%", WebkitMaskSize: "100% 100%",
-        maskRepeat: "no-repeat", WebkitMaskRepeat: "no-repeat",
-        pointerEvents: "none",
-      };
-      return <span key={`${syllable.start_ms}-${index}-${fragmentIndex}`} className={`${styles.syllable} ${state} ${singing ? styles.lavaActive : ""}`}
-        data-lyric-singing={singing ? "true" : undefined}>{text}
-        {singing && <span aria-hidden="true" style={liquid}>{text}</span>}
-      </span>;
-    })}</span>)}</span>;
+    return <KaraokeLine fragments={lyricFragments.get(line) || []} now={now} active={active} highlightStyle={highlightStyle} />;
   }
+
   function chooseLyricsTextSize(size: LyricsTextSize) { localStorage.setItem(lyricsSizeStorageKey, size); setLyricsTextSize(size); }
   function close() { if (closing) return; document.body.classList.add("echora-fullscreen-player-closing"); setClosing(true); const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches; window.setTimeout(() => player.setExpanded(false), reduced ? 0 : 280); }
   return <main ref={dialogRef} tabIndex={-1} className={`${styles.player} ${motionStyles.surface} ${mobileLyricsLayout ? styles.hasMobileLyrics : ""} ${closing ? `${styles.closing} ${motionStyles.closing}` : ""}`} role="dialog" aria-modal="true" aria-label="Now playing">

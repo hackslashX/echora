@@ -65,6 +65,9 @@ def database(monkeypatch):
                                            'alembic/versions/0034_jobs.py'))
             with patch('alembic.op.execute', side_effect=db.execute):
                 migration['upgrade']()
+                dismissal = runpy.run_path(str(Path(__file__).resolve().parents[1] /
+                                              'alembic/versions/0049_job_dismissal.py'))
+                dismissal['upgrade']()
         yield connect
     finally:
         with psycopg.connect(url, autocommit=True) as db:
@@ -313,3 +316,72 @@ def test_batch_listing_is_owned_paginated_and_active_first(database):
     numbers = {item['id']: item['batch_number'] for item in jobs.list_batches(parent['id'], owner)['batches']}
     jobs.finish(child['id'], child['token'])
     assert {item['id']: item['batch_number'] for item in jobs.list_batches(parent['id'], owner)['batches']} == numbers
+
+
+def test_dismissal_is_owned_terminal_and_durable(database):
+    owner, stranger = uuid4(), uuid4()
+    job = jobs.enqueue('navidrome_sync', 'analysis', owner)
+    assert jobs.dismiss(job['id'], stranger) is None
+    with pytest.raises(ValueError, match='finished'):
+        jobs.dismiss(job['id'], owner)
+    claim = jobs.claim('analysis', 'worker')
+    with pytest.raises(ValueError, match='finished'):
+        jobs.dismiss(job['id'], owner)
+    jobs.finish(claim['id'], claim['token'])
+    dismissed = jobs.dismiss(job['id'], owner)
+    assert dismissed['dismissed_at'] is not None
+    assert dismissed['status'] == 'complete'
+    assert jobs.dismiss(job['id'], owner)['dismissed_at'] == dismissed['dismissed_at']
+    assert jobs.get_job(job['id'], owner)['dismissed_at'] == dismissed['dismissed_at']
+    assert jobs.list_jobs(owner)[0]['dismissed_at'] == dismissed['dismissed_at']
+    newer = jobs.enqueue('navidrome_sync', 'analysis', owner)
+    assert newer['dismissed_at'] is None
+    assert jobs.list_jobs(owner, active_only=True)[0]['id'] == newer['id']
+
+
+def test_library_discovery_filters_before_limiting(database):
+    owner = uuid4()
+    sync = jobs.enqueue('navidrome_sync', 'analysis', owner)
+    jobs.enqueue('recording_search', 'analysis', owner)
+    jobs.enqueue('curation_refresh', 'scheduled', owner)
+    assert [job['id'] for job in jobs.list_jobs(owner, library_only=True, limit=1)] == [sync['id']]
+
+
+def test_historical_fusion_completion_uses_committed_summary():
+    row = {key: None for key in jobs.PUBLIC}
+    row.update(id=uuid4(), kind='semantic_fusion_build', status='complete',
+               progress={'phase': 'complete', 'message': 'Storing 1029 fused vectors',
+                         'completed': 0, 'total': 1029, 'unit': 'tracks'},
+               summary={'fused': 1029, 'total': 1029})
+    public = jobs._public(row)
+    assert public['completed'] == public['total'] == 1029
+    assert public['message'] == 'Stored 1029 fused vectors'
+    assert public['unit'] == 'vectors'
+    row['status'] = 'failed'
+    assert jobs._public(row)['completed'] == 0
+
+
+def test_library_discovery_includes_only_owned_connectionless_fusion(database):
+    owner, stranger, connection, other_connection = uuid4(), uuid4(), uuid4(), uuid4()
+    sync = jobs.enqueue('navidrome_sync', 'analysis', owner, connection)
+    fusion = jobs.enqueue('semantic_fusion_build', 'analysis', owner)
+    jobs.enqueue('navidrome_sync', 'analysis', owner)
+    jobs.enqueue('semantic_fusion_build', 'analysis', owner, other_connection)
+    jobs.enqueue('navidrome_sync', 'analysis', owner, other_connection)
+    jobs.enqueue('semantic_fusion_build', 'analysis', stranger)
+    jobs.enqueue('semantic_fusion_build', 'analysis', stranger, connection)
+
+    expected = [fusion['id'], sync['id']]
+    for active_only in (True, False):
+        found = jobs.list_jobs(owner, connection, active_only=active_only, library_only=True)
+        assert [job['id'] for job in found] == expected
+    assert jobs.list_jobs(owner, connection) == [sync]
+    assert jobs.list_jobs(owner, connection, library_only=True, limit=1)[0]['id'] == fusion['id']
+
+    # History uses the same scope, including persisted acknowledgement.
+    jobs.cancel(fusion['id'], owner)
+    jobs.dismiss(fusion['id'], owner)
+    assert [job['id'] for job in jobs.list_jobs(owner, connection, active_only=True, library_only=True)] == [sync['id']]
+    history = jobs.list_jobs(owner, connection, library_only=True)
+    assert [job['id'] for job in history] == expected
+    assert history[0]['dismissed_at'] is not None

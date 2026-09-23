@@ -112,6 +112,8 @@ def build_semantic_fusion(progress: Callable[[dict[str, object]], None] | None =
         report({"phase": "loading", "message": "Loading paired lyrics and audio embeddings"})
         track_ids, lyrics, audio = _paired_vectors(connection)
         if not track_ids:
+            report({"phase": "writing", "message": "No paired audio and lyrics embeddings to fuse",
+                    "completed": 0, "total": 0, "unit": "vectors"})
             return {"total": 0, "fused": 0}
         fused, mean, std = _fuse(lyrics, audio, weights)
         config = _run_config(weights, mean, std, lyrics_revision, audio_revision, len(track_ids))
@@ -137,7 +139,7 @@ def build_semantic_fusion(progress: Callable[[dict[str, object]], None] | None =
             )
             run_id = cursor.fetchone()[0]
             report({"phase": "writing", "message": f"Storing {len(track_ids)} fused vectors",
-                    "completed": 0, "total": len(track_ids), "unit": "tracks"})
+                    "completed": 0, "total": len(track_ids), "unit": "vectors"})
             cursor.executemany(
                 """INSERT INTO embeddings
                      (track_id, run_id, embedding_type, dimension, aggregation, embedding)
@@ -155,4 +157,6 @@ def build_semantic_fusion(progress: Callable[[dict[str, object]], None] | None =
                 (MODEL_NAME, MODEL_REVISION, config_hash, fused.shape[1], Jsonb(config)),
             )
         connection.commit()
+    report({"phase": "writing", "message": f"Stored {len(track_ids)} fused vectors",
+            "completed": len(track_ids), "total": len(track_ids), "unit": "vectors"})
     return {"total": len(track_ids), "fused": len(track_ids)}

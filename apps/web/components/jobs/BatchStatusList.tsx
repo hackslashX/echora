@@ -31,7 +31,7 @@ export default function BatchStatusList({ jobId, active }: { jobId: string; acti
     void poll();
     return () => { controller.abort(); clearTimeout(timer); };
   }, [jobId, active, page]);
-  if (data?.total === 0 && !error) return null;
+  if (data?.total === 0 && !error) return <p role="status">{active ? "Preparing sync batches." : "This job has no track batches."}</p>;
   return <section className={styles.panel} aria-label="Batch status">
     <header><strong>Batch status</strong></header>
     {error && <p role="status">{error}</p>}

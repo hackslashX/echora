@@ -5,6 +5,7 @@ import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "reac
 import AudioVisualizer from "./AudioVisualizer";
 import { HumAttempt } from "./humAttempt";
 import styles from "./HumSearchButton.module.css";
+import activityStyles from "./SearchActivity.module.css";
 
 type Track = { id: string; title: string; artist?: string; album?: string; duration_seconds: number; source_id?: string; cover_art?: string; similarity?: number; matched_at_seconds?: number };
 type IndexStatus = { status: "missing" | "building" | "complete" | "failed"; indexed_tracks: number; error?: string };
@@ -112,7 +113,7 @@ export default function HumSearchButton({ onResults, onError, onStart, ref }: { 
   const building = state === "building" || index.status === "building";
   const cancellable = state === "permission" || state === "searching";
   const label = state === "recording" ? "Stop humming" : cancellable ? "Cancel hum search" : building ? `Indexing ${index.indexed_tracks || 0}/50` : index.status === "complete" ? "Hum to search" : "Build hum index";
-  return <button type="button" className={`${styles.button} ${state === "recording" ? styles.recording : ""}`} onClick={cancellable ? cancel : state === "recording" ? stop : start} disabled={building && !cancellable} aria-label={label} title={label}>
+  return <button type="button" className={`${styles.button} ${state === "recording" ? styles.recording : ""} ${cancellable || building ? activityStyles.active : ""}`} onClick={cancellable ? cancel : state === "recording" ? stop : start} disabled={building && !cancellable} aria-label={label} title={label}>
     {state === "recording" && activeStream ? <AudioVisualizer stream={activeStream} /> : null}
     {state === "recording" ? <Square /> : cancellable ? <X aria-hidden="true" /> : building ? <LoaderCircle className={styles.spin} /> : <Speech aria-hidden="true" />}
     <span>{label}</span>

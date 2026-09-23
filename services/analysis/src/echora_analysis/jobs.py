@@ -21,7 +21,7 @@ FUSION_TRIGGER_KINDS = frozenset({'navidrome_sync', 'import', 'lyrics_backfill',
                                   'karaoke_backfill', 'voice_backfill', 'audio_profiles'})
 PUBLIC = ('id', 'kind', 'worker_type', 'connection_id', 'parent_id', 'status',
           'cancel_requested', 'progress', 'summary', 'error', 'created_at',
-          'updated_at', 'finished_at')
+          'updated_at', 'finished_at', 'dismissed_at')
 
 
 def _uuid(value):
@@ -47,6 +47,13 @@ def _public(row, existing=False):
             snapshot['message'] = f"{snapshot['complete']} of {snapshot.get('total', 0)} batches successful"
         snapshot['completed'] = snapshot['complete']
         snapshot['finished'] = sum(snapshot.get(state, 0) for state in TERMINAL)
+    # Completed fusion jobs historically retained their pre-write zero counter.
+    if row['kind'] == 'semantic_fusion_build' and row['status'] == 'complete':
+        summary = row.get('summary') or {}
+        if isinstance(summary.get('fused'), int):
+            snapshot.update(phase='complete', completed=summary['fused'],
+                            total=summary.get('total', summary['fused']), unit='vectors',
+                            message=f"Stored {summary['fused']} fused vectors")
     result['progress'] = {key: value for key, value in snapshot.items()
                           if key in {'phase', 'completed', 'total', 'message', 'unit', 'track',
                                      'plan', 'summary', 'finished', *ACTIVE, *TERMINAL}}
@@ -135,11 +142,31 @@ def list_batches(job_id, user_id, limit=25, offset=0):
                             for row in rows], 'total': total}
 
 
-def list_jobs(user_id, connection_id=None, active_only=False, limit=20):
+def dismiss(job_id, user_id):
+    """Persist acknowledgement without deleting history or changing execution state."""
+    with _db() as db:
+        row = db.execute('SELECT * FROM jobs WHERE id=%s AND user_id=%s FOR UPDATE',
+                         (_uuid(job_id), _uuid(user_id))).fetchone()
+        if row is None:
+            return None
+        if row['status'] not in TERMINAL:
+            raise ValueError('Only finished jobs can be dismissed')
+        row = db.execute('''UPDATE jobs SET dismissed_at=coalesce(dismissed_at,now())
+            WHERE id=%s RETURNING *''', (row['id'],)).fetchone()
+        return _public(row)
+
+
+def list_jobs(user_id, connection_id=None, active_only=False, limit=20, library_only=False):
     clauses, args = ['user_id=%s', 'parent_id IS NULL'], [_uuid(user_id)]
     if connection_id is not None:
-        clauses.append('connection_id=%s')
+        # Explicit fusion rebuilds cover the corpus and have no connection ID.
+        # Include them only in library discovery, still under the owner filter.
+        clauses.append("(connection_id=%s OR (connection_id IS NULL AND kind='semantic_fusion_build'))"
+                       if library_only else 'connection_id=%s')
         args.append(_uuid(connection_id))
+    if library_only:
+        clauses.append('kind=ANY(%s)')
+        args.append(sorted(FUSION_TRIGGER_KINDS | {'semantic_fusion_build'}))
     if active_only:
         clauses.append("status IN ('queued','running','waiting')")
     args.append(max(0, min(int(limit), 1000)))
