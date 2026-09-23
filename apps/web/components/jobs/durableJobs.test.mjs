@@ -130,3 +130,30 @@ test('terminal non-batch jobs do not retain an in-progress message', () => {
   assert.equal(result.message, 'Library processing complete');
   assert.equal(result.detail, 'Processing finished.');
 });
+
+
+test('dismissed cancelled result prevents older history from reopening', async t => {
+  t.mock.method(globalThis, 'fetch', async url => response({ jobs: url.includes('active_only=true') ? [] : [
+    { ...job('cancelled'), dismissed_at: '2026-09-23T12:00:00Z' }, job('complete'),
+  ] }));
+  assert.equal(await discoverJob('connection', new AbortController().signal), null);
+});
+test('undismissed cancelled results still allow historical fallback', async t => {
+  t.mock.method(globalThis, 'fetch', async url => response({ jobs: url.includes('active_only=true') ? [] : [
+    job('cancelled'), job('complete'),
+  ] }));
+  assert.equal((await discoverJob('connection', new AbortController().signal)).status, 'complete');
+});
+test('dismissal of unrelated curation or child jobs does not hide library history', async t => {
+  const dismissed = { ...job('cancelled'), dismissed_at: '2026-09-23T12:00:00Z' };
+  t.mock.method(globalThis, 'fetch', async url => response({ jobs: url.includes('active_only=true') ? [] : [
+    { ...dismissed, kind: 'curation_refresh' }, { ...dismissed, parent_id: 'parent' }, job('complete'),
+  ] }));
+  assert.equal((await discoverJob('connection', new AbortController().signal)).status, 'complete');
+});
+test('connectionless fusion returned by library discovery remains visible', async t => {
+  t.mock.method(globalThis, 'fetch', async () => response({ jobs: [
+    { ...job('running'), kind: 'semantic_fusion_build', connection_id: null },
+  ] }));
+  assert.equal((await discoverJob('connection', new AbortController().signal)).kind, 'semantic_fusion_build');
+});

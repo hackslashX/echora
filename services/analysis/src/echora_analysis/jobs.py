@@ -159,7 +159,10 @@ def dismiss(job_id, user_id):
 def list_jobs(user_id, connection_id=None, active_only=False, limit=20, library_only=False):
     clauses, args = ['user_id=%s', 'parent_id IS NULL'], [_uuid(user_id)]
     if connection_id is not None:
-        clauses.append('connection_id=%s')
+        # Explicit fusion rebuilds cover the corpus and have no connection ID.
+        # Include them only in library discovery, still under the owner filter.
+        clauses.append("(connection_id=%s OR (connection_id IS NULL AND kind='semantic_fusion_build'))"
+                       if library_only else 'connection_id=%s')
         args.append(_uuid(connection_id))
     if library_only:
         clauses.append('kind=ANY(%s)')

@@ -359,3 +359,29 @@ def test_historical_fusion_completion_uses_committed_summary():
     assert public['unit'] == 'vectors'
     row['status'] = 'failed'
     assert jobs._public(row)['completed'] == 0
+
+
+def test_library_discovery_includes_only_owned_connectionless_fusion(database):
+    owner, stranger, connection, other_connection = uuid4(), uuid4(), uuid4(), uuid4()
+    sync = jobs.enqueue('navidrome_sync', 'analysis', owner, connection)
+    fusion = jobs.enqueue('semantic_fusion_build', 'analysis', owner)
+    jobs.enqueue('navidrome_sync', 'analysis', owner)
+    jobs.enqueue('semantic_fusion_build', 'analysis', owner, other_connection)
+    jobs.enqueue('navidrome_sync', 'analysis', owner, other_connection)
+    jobs.enqueue('semantic_fusion_build', 'analysis', stranger)
+    jobs.enqueue('semantic_fusion_build', 'analysis', stranger, connection)
+
+    expected = [fusion['id'], sync['id']]
+    for active_only in (True, False):
+        found = jobs.list_jobs(owner, connection, active_only=active_only, library_only=True)
+        assert [job['id'] for job in found] == expected
+    assert jobs.list_jobs(owner, connection) == [sync]
+    assert jobs.list_jobs(owner, connection, library_only=True, limit=1)[0]['id'] == fusion['id']
+
+    # History uses the same scope, including persisted acknowledgement.
+    jobs.cancel(fusion['id'], owner)
+    jobs.dismiss(fusion['id'], owner)
+    assert [job['id'] for job in jobs.list_jobs(owner, connection, active_only=True, library_only=True)] == [sync['id']]
+    history = jobs.list_jobs(owner, connection, library_only=True)
+    assert [job['id'] for job in history] == expected
+    assert history[0]['dismissed_at'] is not None

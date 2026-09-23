@@ -12,9 +12,12 @@ export async function discoverJob(connectionId: string, signal: AbortSignal): Pr
   // Curation work must never be presented as library synchronization.
   for (const active of [true, false]) {
     const { jobs } = await jobRequest<{ jobs: Job[] }>(`/jobs?${query}&active_only=${active}`, signal);
-    const job = jobs.find(item => item.status !== "cancelled" && !item.curation_id && item.kind !== "curation_refresh" && !item.parent_id);
-    // Do not fall back to older results after the latest result was acknowledged.
-    if (job) return job.dismissed_at && isTerminalJob(job) ? null : job;
+    for (const job of jobs) {
+      if (job.curation_id || job.kind === "curation_refresh" || job.parent_id) continue;
+      // Acknowledgement also applies to cancelled results. Never uncover older history.
+      if (job.dismissed_at && isTerminalJob(job)) return null;
+      if (job.status !== "cancelled") return job;
+    }
   }
   return null;
 }
