@@ -11,6 +11,7 @@ import { useDurableJob } from "../jobs/useDurableJob";
 import { jobPresentation } from "../jobs/durableJobs";
 import BatchStatusList from "../jobs/BatchStatusList";
 import CardHeader from "../ui/CardHeader";
+import FullSyncWarning from "./FullSyncWarning";
 import styles from "./SyncLibrary.module.css";
 
 type Track = { id: string; title: string; artist?: string; album?: string };
@@ -26,8 +27,9 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
 export default function SyncLibrary() {
   const [connectionId, setConnectionId] = useState("");
   const [status, setStatus] = useState<Status | null>(null);
-  const { job, active, terminal, error: jobError, loading: jobLoading, track, dismiss } = useDurableJob(connectionId);
-  const [mode, setMode] = useState<"all" | "missing">("all");
+  const { job, active, terminal, error: jobError, loading: jobLoading, track, dismiss, dismissing } = useDurableJob(connectionId);
+  const [mode, setMode] = useState<"all" | "missing">("missing");
+  const [confirmFullSync, setConfirmFullSync] = useState(false);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [mobilePane, setMobilePane, paneTransition] = useMobilePane<"status" | "method">("status", ["status", "method"]);
@@ -52,7 +54,8 @@ export default function SyncLibrary() {
   }, [connectionId, terminal]);
 
   async function start() {
-    if (!connectionId) return; setBusy(true); setError("");
+    if (!connectionId || busy) return;
+    setBusy(true); setError("");
     try {
       const result = await api<{ job_id: string; status: string; existing: boolean }>(`/navidrome/connections/${connectionId}/sync`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode }) });
       track(result.job_id);
@@ -69,6 +72,9 @@ export default function SyncLibrary() {
     : indeterminate
       ? "This setup step does not report track progress"
       : presentation.detail;
+  const showBatches = active && job?.unit === "batches";
+  const showJobDetails = active && !showBatches;
+  const pendingLabel = `${status?.missing ?? "—"} new ${status?.missing === 1 ? "track" : "tracks"}`;
   const columns = [0.32, 0.04, 0.64];
   const rows = [1];
   return <AppShell title="Sync" footer={<CopyrightFooter />} breadcrumb flush fullPage grid={{ columns, rows }}>
@@ -76,12 +82,13 @@ export default function SyncLibrary() {
       <MobilePivots label="Sync sections" active={mobilePane} onChange={setMobilePane} items={[{ key: "status", label: "status" }, { key: "method", label: "how it works" }]} />
       <section className={`${styles.intro} ${mobilePane === "method" ? `${styles.mobileActive} ${paneTransition}` : ""}`}><CardHeader as="h1" title="Sync, step by step." description="Sync reads your server without changing its library. Echora keeps existing analysis and processes only the work each track still needs." /><ol className={styles.steps}><li><b>1</b><div><strong>Read the catalog</strong><small>Load track IDs, metadata, artwork references, and the current library count from Navidrome.</small></div></li><li><b>2</b><div><strong>Resolve track identity</strong><small>Stream the source audio and use its SHA-256 content hash to link duplicates without merging recordings.</small></div></li><li><b>3</b><div><strong>Analyze missing representations</strong><div className={styles.models}><p><b>MuQ-MuLan</b><span>Maps musical meaning, style, mood, vocals, and instrumentation.</span></p><p><b>MERT</b><span>Measures acoustic structure, timbre, rhythm, pitch, and production.</span></p><p><b>BGE-M3</b><span>Maps lyric language, themes, imagery, and narrative.</span></p><p><b>Essentia</b><span>Identifies instrumental music and female or male lead vocals.</span></p><p><b>Demucs + MELODIA</b><span>Extracts full-mix, vocal, and accompaniment contours for hum search.</span></p><p><b>NMFP</b><span>Builds recording fingerprints from audio segments. Recognition remains separately gated.</span></p><p><b>Echora aligner</b><span>Aligns time-synced lyrics to syllable-level karaoke timing.</span></p></div></div></li><li><b>4</b><div><strong>Commit the results</strong><small>Store embeddings, recording fingerprints, karaoke lyrics, and provenance, then make the tracks available to Browse, Galaxy, concepts, journeys, and the player.</small></div></li></ol><div className={styles.server}><Server /><div><small>Connected server</small><strong>{status?.server || "Reading connection"}</strong></div></div></section>
       <section className={`${styles.workspace} ${mobilePane === "status" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
-        <CardHeader title={active ? "Processing library" : busy ? "Scanning Navidrome" : "Library scan complete"} actions={<button onClick={() => connectionId && scan(connectionId)} disabled={busy || !!active}><RefreshCw /> RESCAN</button>} />
+        <CardHeader title={active ? job?.kind === "semantic_fusion_build" ? "Building semantic fusion" : "Processing library" : busy ? "Scanning Navidrome" : "Library scan complete"} actions={<button onClick={() => connectionId && scan(connectionId)} disabled={busy || !!active}><RefreshCw /> RESCAN</button>} />
         <div className={styles.metrics}><div><Database /><strong>{status?.total ?? "—"}</strong><span>Navidrome tracks</span></div><div><Check /><strong>{status?.processed ?? "—"}</strong><span>In Echora</span></div><div><Waves /><strong>{status?.missing ?? "—"}</strong><span>New tracks</span></div></div>
-        {job ? <section className={`${styles.progress} ${indeterminate ? styles.indeterminate : ""}`}><div><span>{job?.phase?.toUpperCase()}</span><strong>{presentation.message}</strong><small>{progressDetail}</small></div><div className={styles.progressActions}>{terminal ? <button className={styles.dismiss} onClick={dismiss} aria-label="Dismiss sync results">Dismiss</button> : !indeterminate && presentation.showPercent && <b>{percent}%</b>}</div>{(active || job.status === "complete") && <i role="progressbar" aria-label={indeterminate ? "Preparing analysis" : "Library sync progress"} aria-valuemin={indeterminate ? undefined : 0} aria-valuemax={indeterminate ? undefined : 100} aria-valuenow={indeterminate ? undefined : percent}><u style={indeterminate ? undefined : { width: `${percent}%` }} /></i>}{job?.error && <p>{job.error}</p>}{terminal && presentation.summary.length > 0 && <div className={styles.summary}>{presentation.summary.map(item => <span key={item}>{item}</span>)}</div>}</section> : <section className={styles.ready}><div className={styles.mode}><button className={mode === "all" ? styles.selected : ""} onClick={() => setMode("all")}><strong>ENTIRE LIBRARY</strong><small>Fill missing analysis for existing and new tracks</small></button><button className={mode === "missing" ? styles.selected : ""} onClick={() => setMode("missing")}><strong>NEW TRACKS ONLY</strong><small>Process the {status?.missing ?? "—"} tracks not yet indexed</small></button></div><button className={styles.start} onClick={start} disabled={busy || jobLoading || !!jobError || !status || (mode === "missing" && status.missing === 0)}>START PROCESSING <b>↗</b></button></section>}
-        <section className={styles.queue}><header><span>{job ? "SYNC DETAILS" : "WAITING IN NAVIDROME"}</span><b>{status?.missing ?? "—"} new tracks</b></header><div>{job ? <BatchStatusList key={job.job_id || job.id} jobId={job.job_id || job.id!} active={active} /> : status?.tracks.length ? status.tracks.map(track => <article key={track.id}><span>{track.title}</span><small>{track.artist || "Unknown artist"}</small><i>{track.album || "Unknown album"}</i></article>) : <div className={styles.queueEmpty}>{busy ? <RefreshCw className={styles.scanningIcon} aria-hidden="true" /> : <CircleCheck aria-hidden="true" />}<p>{busy ? "Scanning the catalog" : "No new tracks found"}</p></div>}</div></section>
+        {job ? <section className={`${styles.progress} ${indeterminate ? styles.indeterminate : ""}`}><div><span>{job?.phase?.toUpperCase()}</span><strong>{presentation.message}</strong><small>{progressDetail}</small></div><div className={styles.progressActions}>{terminal ? <button className={styles.dismiss} onClick={dismiss} disabled={dismissing} aria-label="Dismiss sync results">{dismissing ? "Dismissing…" : "Dismiss"}</button> : !indeterminate && presentation.showPercent && <b>{percent}%</b>}</div>{(indeterminate || presentation.showPercent) && <i role="progressbar" aria-label={indeterminate ? "Preparing analysis" : "Library sync progress"} aria-valuemin={indeterminate ? undefined : 0} aria-valuemax={indeterminate ? undefined : 100} aria-valuenow={indeterminate ? undefined : percent}><u style={indeterminate ? undefined : { width: `${percent}%` }} /></i>}{job?.error && <p>{job.error}</p>}{terminal && presentation.summary.length > 0 && <div className={styles.summary}>{presentation.summary.map(item => <span key={item}>{item}</span>)}</div>}</section> : <section className={styles.ready}><div className={styles.mode}><button aria-pressed={mode === "missing"} className={mode === "missing" ? styles.selected : ""} onClick={() => setMode("missing")}><strong>NEW TRACKS ONLY</strong><small>Process {status?.missing ?? "—"} {status?.missing === 1 ? "track" : "tracks"} not yet indexed</small></button><button aria-pressed={mode === "all"} className={mode === "all" ? styles.selected : ""} onClick={() => setMode("all")}><strong>ENTIRE LIBRARY</strong><small>Recheck source audio and fill missing analysis</small></button></div><button className={styles.start} onClick={() => { if (mode === "all") setConfirmFullSync(true); else void start(); }} disabled={busy || jobLoading || !!jobError || !status || (mode === "missing" && status.missing === 0)}>START PROCESSING <b>↗</b></button></section>}
+        <section className={styles.queue}><header><span>{showBatches ? "SYNC BATCHES" : showJobDetails ? "PROCESSING DETAILS" : "WAITING IN NAVIDROME"}</span><b>{active ? job?.kind === "semantic_fusion_build" ? "Semantic fusion" : "Sync in progress" : pendingLabel}</b></header><div>{showBatches ? <BatchStatusList key={job.job_id || job.id} jobId={job.job_id || job.id!} active={active} /> : showJobDetails ? <div className={styles.queueEmpty}><RefreshCw className={styles.scanningIcon} aria-hidden="true" /><p>{job?.kind === "semantic_fusion_build" ? "Combining audio and lyrics embeddings across the Echora library. This step has no track batches." : "Preparing sync batches. Track progress will appear when processing begins."}</p></div> : status?.tracks.length ? status.tracks.map(track => <article key={track.id}><span>{track.title}</span><small>{track.artist || "Unknown artist"}</small><i>{track.album || "Unknown album"}</i></article>) : <div className={styles.queueEmpty}>{busy ? <RefreshCw className={styles.scanningIcon} aria-hidden="true" /> : <CircleCheck aria-hidden="true" />}<p>{busy ? "Scanning the catalog" : "No new tracks found"}</p></div>}</div></section>
         {(error || jobError) && <p role="alert" className={styles.error}>{error || jobError}</p>}
       </section>
     </main>
+    {confirmFullSync && <FullSyncWarning onClose={() => setConfirmFullSync(false)} onConfirm={() => { setConfirmFullSync(false); void start(); }} />}
   </AppShell>;
 }

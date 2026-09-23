@@ -1,0 +1,6 @@
+/* Shared processing treatment. Keep the label and cancel control above the light. */
+.active{isolation:isolate;box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .5)}
+.active::before{content:"";position:absolute;z-index:0;inset:0;pointer-events:none;background:radial-gradient(ellipse at 50% 50%,rgb(var(--accent-rgb) / .32),transparent 68%);transform:translateX(-65%);animation:search-glow 2.8s ease-in-out infinite alternate}
+.active::after{content:"";position:absolute;z-index:0;inset:auto 0 0;height:2px;pointer-events:none;background:linear-gradient(90deg,transparent,var(--aqua),transparent);transform:translateX(-65%);animation:search-glow 2.8s ease-in-out infinite alternate}
+@keyframes search-glow{to{transform:translateX(65%)}}
+@media(prefers-reduced-motion:reduce){.active::before,.active::after{animation:none;transform:none}}

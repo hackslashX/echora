@@ -15,7 +15,7 @@ test('discovery scopes the connection, excludes curation and children, then fall
   const urls = [];
   t.mock.method(globalThis, 'fetch', async url => { urls.push(url); return response({ jobs: urls.length === 1 ? [{ ...job('running'), kind: 'curation_refresh' }, { ...job('running'), parent_id: 'parent' }] : [job('partial')] }); });
   assert.equal((await discoverJob('connection', new AbortController().signal)).status, 'partial');
-  assert.deepEqual(urls, ['/analysis/jobs?connection_id=connection&active_only=true', '/analysis/jobs?connection_id=connection&active_only=false']);
+  assert.deepEqual(urls, ['/analysis/jobs?connection_id=connection&library_only=true&active_only=true', '/analysis/jobs?connection_id=connection&library_only=true&active_only=false']);
 });
 test('active discovery does not request history', async t => {
   let calls = 0;
@@ -92,4 +92,41 @@ test('recording fingerprint summaries use reported counts for track and batch jo
     assert.ok(!jobPresentation({ ...job('complete'), unit }).summary.some(item => item.includes('recording')));
   }
   assert.ok(jobPresentation({ ...job('running'), unit: 'batches', progress: { recording_fingerprinted: 3 } }).summary.includes('3 recording fingerprints generated'));
+});
+
+
+test('dismissed latest result does not uncover older history', async t => {
+  t.mock.method(globalThis, 'fetch', async url => response({ jobs: url.includes('active_only=true') ? [] : [
+    { ...job('complete'), dismissed_at: '2026-09-23T12:00:00Z' }, job('complete')
+  ] }));
+  assert.equal(await discoverJob('connection', new AbortController().signal), null);
+});
+test('new active job remains visible after earlier dismissal', async t => {
+  t.mock.method(globalThis, 'fetch', async () => response({ jobs: [job('running')] }));
+  assert.equal((await discoverJob('connection', new AbortController().signal)).status, 'running');
+});
+test('historical fusion completion reports stored vectors, not stale writing progress', () => {
+  const result = jobPresentation({ ...job('complete'), kind: 'semantic_fusion_build',
+    total: 1029, completed: 0, unit: 'tracks', message: 'Storing 1029 fused vectors',
+    summary: { fused: 1029, total: 1029 } });
+  assert.equal(result.message, 'Semantic fusion complete');
+  assert.equal(result.detail, '1029 fused vectors stored across the Echora library.');
+  assert.equal(result.percent, 100);
+});
+test('zero-vector fusion does not imply a failed or incomplete write', () => {
+  const result = jobPresentation({ ...job('complete'), kind: 'semantic_fusion_build', summary: { fused: 0, total: 0 } });
+  assert.equal(result.message, 'Semantic fusion complete');
+  assert.match(result.detail, /No paired audio and lyrics/);
+  assert.equal(result.showPercent, false);
+});
+test('failed fusion never claims vectors were stored', () => {
+  const result = jobPresentation({ ...job('failed'), kind: 'semantic_fusion_build', message: 'Storing 1029 fused vectors' });
+  assert.equal(result.message, 'Semantic fusion failed');
+  assert.doesNotMatch(result.detail, /stored/);
+  assert.equal(result.showPercent, false);
+});
+test('terminal non-batch jobs do not retain an in-progress message', () => {
+  const result = jobPresentation({ ...job('complete'), message: 'Analyzing a track' });
+  assert.equal(result.message, 'Library processing complete');
+  assert.equal(result.detail, 'Processing finished.');
 });

@@ -3059,17 +3059,31 @@ def library_facets(
 @app.get("/jobs")
 def list_user_jobs(
     connection_id: uuid.UUID | None = None, active_only: bool = False, limit: int = 20,
+    library_only: bool = False,
     echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     return {"jobs": jobs.list_jobs(user["id"], connection_id=connection_id,
-                                   active_only=active_only, limit=min(max(limit, 1), 100))}
+                                   active_only=active_only, limit=min(max(limit, 1), 100),
+                                   library_only=library_only)}
 
 
 @app.get("/jobs/{job_id}")
 def job(job_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
     value = jobs.get_job(job_id, user["id"])
+    if value is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return value
+
+
+@app.post("/jobs/{job_id}/dismiss")
+def dismiss_job(job_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
+    try:
+        value = jobs.dismiss(job_id, user["id"])
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if value is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return value

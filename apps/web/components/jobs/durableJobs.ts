@@ -1,4 +1,4 @@
-export type Job = { id?: string; kind?: string; parent_id?: string; job_id: string; connection_id?: string; curation_id?: string; status: string; phase: string; completed: number; total: number; message?: string; error?: string; cancel_requested?: boolean; unit?: string; track?: { id: string; title: string; artist?: string }; summary?: Record<string, number>; progress?: Record<string, unknown> };
+export type Job = { id?: string; kind?: string; parent_id?: string; job_id: string; connection_id?: string; curation_id?: string; status: string; dismissed_at?: string | null; phase: string; completed: number; total: number; message?: string; error?: string; cancel_requested?: boolean; unit?: string; track?: { id: string; title: string; artist?: string }; summary?: Record<string, number>; progress?: Record<string, unknown> };
 export const isActiveJob = (job: Job | null) => !!job && ["queued", "running", "waiting"].includes(job.status);
 export const isTerminalJob = (job: Job | null) => !!job && ["complete", "partial", "failed", "cancelled"].includes(job.status);
 export async function jobRequest<T>(path: string, signal: AbortSignal, method = "GET"): Promise<T> {
@@ -8,12 +8,13 @@ export async function jobRequest<T>(path: string, signal: AbortSignal, method = 
   return body as T;
 }
 export async function discoverJob(connectionId: string, signal: AbortSignal): Promise<Job | null> {
-  const query = new URLSearchParams({ connection_id: connectionId });
+  const query = new URLSearchParams({ connection_id: connectionId, library_only: "true" });
   // Curation work must never be presented as library synchronization.
   for (const active of [true, false]) {
     const { jobs } = await jobRequest<{ jobs: Job[] }>(`/jobs?${query}&active_only=${active}`, signal);
     const job = jobs.find(item => item.status !== "cancelled" && !item.curation_id && item.kind !== "curation_refresh" && !item.parent_id);
-    if (job) return job;
+    // Do not fall back to older results after the latest result was acknowledged.
+    if (job) return job.dismissed_at && isTerminalJob(job) ? null : job;
   }
   return null;
 }
@@ -44,14 +45,22 @@ export function watchJob(connectionId: string, jobId: string | null, receive: (j
 
 /** Legacy parent `completed` counts included cancelled batches. Never label those successful. */
 export function jobPresentation(job: Job | null) {
-  const total = job?.total || 0;
+  const fusion = job?.kind === "semantic_fusion_build";
+  const fused = fusion && job?.status === "complete" && typeof job.summary?.fused === "number" ? job.summary.fused : null;
+  const total = fused !== null ? (job?.summary?.total ?? fused) : job?.total || 0;
   const batch = job?.unit === "batches";
   const counts = job?.summary || job?.progress || {};
-  const successful = batch ? (typeof counts.complete === "number" ? counts.complete : 0) : (job?.completed || 0);
+  const successful = fused ?? (batch ? (typeof counts.complete === "number" ? counts.complete : 0) : (job?.completed || 0));
   const percent = total ? Math.min(100, Math.max(0, Math.round(successful / total * 100))) : 0;
-  const showPercent = !!job && (isActiveJob(job) || job.status === "complete");
-  const detail = `${successful} of ${total} ${batch ? "batches successful" : job?.unit || "tracks"}`;
-  const message = batch ? detail : job?.message || "Waiting for worker";
+  const showPercent = !!job && total > 0 && (isActiveJob(job) || job.status === "complete");
+  let detail = `${successful} of ${total} ${batch ? "batches successful" : fusion ? "vectors" : job?.unit || "tracks"}`;
+  let message = batch ? detail : job?.message || "Waiting for worker";
+  if (isTerminalJob(job) && job?.status !== "cancelled") {
+    const label = fusion ? "Semantic fusion" : "Library processing";
+    message = job?.status === "complete" ? `${label} complete` : job?.status === "partial" ? `${label} finished with errors` : `${label} failed`;
+    if (fused !== null) detail = fused === 0 ? "No paired audio and lyrics embeddings to fuse." : `${fused} fused vectors stored across the Echora library.`;
+    else if (!batch) detail = job?.status === "complete" ? "Processing finished." : "Review the error and results before retrying.";
+  }
   const summary: string[] = [];
   if (batch) {
     for (const [key, label] of [["complete", "successful"], ["partial", "partially successful"], ["failed", "failed"], ["cancelled", "cancelled"]]) {
