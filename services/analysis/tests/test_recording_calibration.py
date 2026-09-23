@@ -1,4 +1,7 @@
 """Private disk retention, consent, owner scope and HTTP calibration contracts."""
+
+from echora_analysis.settings import get_settings
+
 from datetime import datetime, timezone
 import os
 from pathlib import Path
@@ -19,7 +22,9 @@ from test_recording_search import recording_db, _wav  # noqa: F401
 @pytest.fixture
 def calibration_db(recording_db, monkeypatch, tmp_path):  # noqa: F811 -- fixture injection
     monkeypatch.setenv("ECHORA_RECORDING_CALIBRATION_ENABLED", "true")
+    get_settings.cache_clear()
     monkeypatch.setenv("ECHORA_RECORDING_CALIBRATION_DIR", str(tmp_path / "private-clips"))
+    get_settings.cache_clear()
     with recording_db() as db:
         db.execute("CREATE TABLE IF NOT EXISTS users(id uuid PRIMARY KEY)")
         migration = runpy.run_path(str(Path(__file__).resolve().parents[1] /
@@ -49,6 +54,7 @@ def client(user_id):
 
 def test_calibration_enables_capture_without_bypassing_recognition_policy(monkeypatch):
     monkeypatch.setenv("ECHORA_RECORDING_CALIBRATION_ENABLED", "true")
+    get_settings.cache_clear()
     monkeypatch.setattr(recording_encoder, "config_from_env", lambda: None)
     status = recording_search.status(uuid4())
     assert status["enabled"] and status["calibration_enabled"]
@@ -59,6 +65,7 @@ def test_calibration_enables_capture_without_bypassing_recognition_policy(monkey
 
 def test_api_requires_consent_label_and_size_before_saving(monkeypatch):
     monkeypatch.setenv("ECHORA_RECORDING_CALIBRATION_ENABLED", "true")
+    get_settings.cache_clear()
     save = Mock(return_value={"id": str(uuid4())})
     monkeypatch.setattr(calibration, "save", save)
     api = client(uuid4())
@@ -67,7 +74,7 @@ def test_api_requires_consent_label_and_size_before_saving(monkeypatch):
     assert api.post(url + "?not_in_library=true", content=b"audio").status_code == 422
     assert api.post(url, content=b"audio", headers=headers).status_code == 422
     assert api.post(url + f"?not_in_library=true&expected_track_id={uuid4()}", content=b"audio", headers=headers).status_code == 422
-    assert api.post(url + "?not_in_library=true", content=b"x" * (recording_search.MAX_UPLOAD_BYTES + 1), headers=headers).status_code == 413
+    assert api.post(url + "?not_in_library=true", content=b"x" * (get_settings().recording_max_upload_bytes + 1), headers=headers).status_code == 413
     save.assert_not_called()
     assert api.post(url + "?not_in_library=true", content=b"audio", headers=headers).status_code == 201
     assert save.call_args.kwargs["consent"] == calibration.CONSENT_VERSION
@@ -77,6 +84,7 @@ def test_api_requires_consent_label_and_size_before_saving(monkeypatch):
     assert api.post(url + "?not_in_library=true", content=b"audio",
                     headers={**headers, "X-Echora-Calibration-Notes": "x" * 301}).status_code == 422
     monkeypatch.setenv("ECHORA_RECORDING_CALIBRATION_ENABLED", "false")
+    get_settings.cache_clear()
     assert api.post(url + "?not_in_library=true", content=b"audio", headers=headers).status_code == 503
 
 
@@ -138,7 +146,8 @@ def test_expiry_and_orphan_cleanup_without_touching_other_files(calibration_db):
 
 def test_quota_and_disk_failure_do_not_publish_sample_rows(calibration_db, monkeypatch):
     user = owner(calibration_db)
-    monkeypatch.setattr(calibration, "MAX_USER_SAMPLES", 1)
+    monkeypatch.setenv("ECHORA_RECORDING_CALIBRATION_MAX_USER_SAMPLES", "1")
+    get_settings.cache_clear()
     sample = capture(user)
     with pytest.raises(recording_search.QueueFull):
         capture(user)

@@ -6,6 +6,8 @@ Disk publication/deletion and expiry share a database advisory lock across repli
 """
 from __future__ import annotations
 
+from .settings import get_settings
+
 import hashlib
 import os
 from pathlib import Path
@@ -13,11 +15,9 @@ import time
 from uuid import UUID, uuid4
 
 from . import jobs
-from .recording_search import MAX_UPLOAD_BYTES, SAMPLE_RATE, QueueFull, decode_query
+from .recording_search import SAMPLE_RATE, QueueFull, decode_query
 
 CONSENT_VERSION = "save-for-calibration-v1"
-MAX_USER_SAMPLES = 20
-MAX_TOTAL_SAMPLES = 200
 _LOCK = "recording-calibration-storage-v1"
 _PUBLIC = ("id", "expected_track_id", "not_in_library", "notes", "duration_seconds",
            "created_at", "expires_at", "expected_title", "expected_artist")
@@ -32,11 +32,11 @@ class TrackUnavailable(ValueError):
 
 
 def enabled() -> bool:
-    return os.getenv("ECHORA_RECORDING_CALIBRATION_ENABLED", "false").lower() == "true"
+    return get_settings().recording_calibration_enabled
 
 
 def directory() -> Path:
-    return Path(os.getenv("ECHORA_RECORDING_CALIBRATION_DIR", "/data/recording-calibration"))
+    return Path(get_settings().recording_calibration_dir)
 
 
 def _file(root: Path, sample_id) -> Path:
@@ -62,7 +62,7 @@ def save(user_id, audio: bytes, *, expected_track_id=None, not_in_library=False,
         raise ValueError("Choose the actual library song or mark the clip as not in your library")
     if not isinstance(notes, str) or len(notes) > 300:
         raise ValueError("Calibration notes must be at most 300 characters")
-    if not audio or len(audio) > MAX_UPLOAD_BYTES:
+    if not audio or len(audio) > get_settings().recording_max_upload_bytes:
         raise ValueError("Invalid calibration recording size")
     owner = UUID(str(user_id))
     expected = UUID(str(expected_track_id)) if expected_track_id is not None else None
@@ -93,7 +93,7 @@ def save(user_id, audio: bytes, *, expected_track_id=None, not_in_library=False,
                 FROM recording_calibration_samples""", (owner, owner)).fetchone()
             # Expired rows count until cleanup erases their files, bounding disk
             # retention even while a worker is stopped.
-            if quota["total"] >= MAX_TOTAL_SAMPLES or quota["owned"] >= MAX_USER_SAMPLES or quota["recent"] >= 6:
+            if quota["total"] >= get_settings().recording_calibration_max_total_samples or quota["owned"] >= get_settings().recording_calibration_max_user_samples or quota["recent"] >= get_settings().recording_calibration_uploads_per_minute:
                 raise QueueFull("Calibration storage is full. Delete a saved clip or try later.")
             if expected is not None and not db.execute(
                     "SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s",
@@ -101,10 +101,10 @@ def save(user_id, audio: bytes, *, expected_track_id=None, not_in_library=False,
                 raise TrackUnavailable("This song is not available in your library")
             row = db.execute("""INSERT INTO recording_calibration_samples
                 (id,user_id,expected_track_id,not_in_library,notes,consent_version,
-                 audio_sha256,byte_count,duration_seconds)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                 audio_sha256,byte_count,duration_seconds,expires_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,now()+%s*interval '1 second') RETURNING *""",
                              (sample_id, owner, expected, bool(not_in_library), notes.strip(), CONSENT_VERSION,
-                              hashlib.sha256(audio).hexdigest(), len(audio), duration)).fetchone()
+                              hashlib.sha256(audio).hexdigest(), len(audio), duration, get_settings().recording_calibration_retention_seconds)).fetchone()
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             written = True
             with os.fdopen(fd, "wb") as stream:
@@ -131,7 +131,7 @@ def list_samples(user_id):
             LEFT JOIN tracks t ON t.id=s.expected_track_id AND EXISTS (
                 SELECT 1 FROM user_track_links u WHERE u.user_id=s.user_id AND u.track_id=t.id)
             WHERE s.user_id=%s AND s.expires_at>now() ORDER BY s.created_at DESC,s.id
-            LIMIT %s""", (UUID(str(user_id)), MAX_USER_SAMPLES)).fetchall()
+            LIMIT %s""", (UUID(str(user_id)), get_settings().recording_calibration_max_user_samples)).fetchall()
     return {"samples": [_public(row) for row in rows]}
 
 

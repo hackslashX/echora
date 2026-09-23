@@ -1,0 +1,9 @@
+{
+  "job_poll_ms": 1200,
+  "batch_poll_ms": 1500,
+  "hum_index_poll_ms": 2500,
+  "recording_poll_ms": 1500,
+  "recording_search_timeout_ms": 120000,
+  "recording_request_timeout_ms": 10000,
+  "recording_upload_timeout_ms": 60000
+}

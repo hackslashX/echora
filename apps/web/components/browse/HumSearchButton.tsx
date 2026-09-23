@@ -1,5 +1,7 @@
 "use client";
 
+import { runtimeConfig } from "../runtime/runtimeConfig";
+
 import { LoaderCircle, Speech, Square, X } from "lucide-react";
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import AudioVisualizer from "./AudioVisualizer";
@@ -38,9 +40,9 @@ export default function HumSearchButton({ onResults, onError, onStart, ref }: { 
           if (value.status !== "building") setState(current => current === "building" ? "idle" : current);
         }
       } catch { /* Index polling is independent of the cancelled search. */ }
-      if (!controller.signal.aborted && pollingIndex) timer = setTimeout(refresh, 2500);
+      if (!controller.signal.aborted && pollingIndex) timer = setTimeout(refresh, runtimeConfig().hum_index_poll_ms);
     }
-    if (pollingIndex) timer = setTimeout(refresh, 2500);
+    if (pollingIndex) timer = setTimeout(refresh, runtimeConfig().hum_index_poll_ms);
     else void refresh();
     return () => { controller.abort(); clearTimeout(timer); };
   }, [pollingIndex]);

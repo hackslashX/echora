@@ -1,4 +1,7 @@
 """Pre-batch song selection, separate from execution-time rechecking."""
+
+from echora_analysis.settings import get_settings
+
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
@@ -71,8 +74,10 @@ def test_parent_batches_selected_work_but_reconciles_full_catalog(monkeypatch, r
     selected = catalog[-70:]
     if recording_enabled:
         monkeypatch.setenv('ECHORA_RECORDING_MODEL_MANIFEST', '/configured/model.json')
+        get_settings.cache_clear()
     else:
         monkeypatch.delenv('ECHORA_RECORDING_MODEL_MANIFEST', raising=False)
+        get_settings.cache_clear()
     main = SimpleNamespace(_load_connection=Mock(return_value=('https://music', 'user', 'secret')),
                            _attach_user_library=Mock(), _reconcile_user_tracks=Mock())
     store = SimpleNamespace(expand=Mock(return_value=True))
@@ -88,6 +93,7 @@ def test_parent_batches_selected_work_but_reconciles_full_catalog(monkeypatch, r
     select = Mock(return_value=selected)
     monkeypatch.setattr(sync_plan, 'select_sync_tracks', select)
     monkeypatch.setenv('ECHORA_BATCH_SIZE', '32')
+    get_settings.cache_clear()
     context = SimpleNamespace(check=Mock(), report=Mock(), token='token')
     job = {'id': 'root', 'kind': 'navidrome_sync', 'user_id': 'user',
            'connection_id': 'connection', 'payload': {'mode': 'missing'}}
@@ -103,7 +109,9 @@ def test_parent_batches_selected_work_but_reconciles_full_catalog(monkeypatch, r
 def test_entire_library_selects_recording_only_backfill_without_other_models(planner, monkeypatch):
     from echora_analysis.processing_plan import AudioProcessingPlan
     monkeypatch.delenv("ECHORA_RECORDING_MATCH_POLICY", raising=False)
+    get_settings.cache_clear()
     monkeypatch.delenv("MOSS_MODEL_ID", raising=False)
+    get_settings.cache_clear()
     connection, cursor, audio, _ = planner
     cursor.fetchall.side_effect = [[("existing",), ("ready",)], []]
     audio.return_value = AudioProcessingPlan(frozenset(), frozenset(), frozenset(), frozenset(),

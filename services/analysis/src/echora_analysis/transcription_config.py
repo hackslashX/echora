@@ -1,11 +1,12 @@
 """Optional published MOSS checkpoint. No implicit upstream-model fallback."""
-import os
+
+from .settings import get_settings
 import re
 
 
 def transcription_model() -> tuple[str, str] | None:
-    model = os.getenv('MOSS_MODEL_ID', '').strip()
-    revision = os.getenv('MOSS_REVISION', '').strip()
+    model = get_settings().moss_model_id.strip()
+    revision = get_settings().moss_revision.strip()
     if not model and not revision:
         return None
     if not model or not re.fullmatch(r'[0-9a-f]{40}', revision):

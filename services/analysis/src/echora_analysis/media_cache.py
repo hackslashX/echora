@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+from .settings import get_settings
+
 from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
-import os
 import uuid
 
 import redis
 
-CACHE_TTL_SECONDS = 60 * 60
 
 
 def cache_key(kind: str, *parts: object) -> str:
@@ -29,7 +29,7 @@ class StreamCacheWriter:
         self.staging_key = f"{key}:staging:{uuid.uuid4().hex}"
         self.enabled = False
         try:
-            self.client.set(self.staging_key, f"{content_type}\0".encode(), ex=CACHE_TTL_SECONDS)
+            self.client.set(self.staging_key, f"{content_type}\0".encode(), ex=get_settings().media_cache_ttl_seconds)
             self.enabled = True
         except redis.RedisError:
             pass
@@ -64,7 +64,7 @@ class StreamCacheWriter:
 
 class MediaCache:
     def __init__(self, url: str) -> None:
-        self.client: redis.Redis[bytes] = redis.Redis.from_url(url, decode_responses=False, socket_connect_timeout=0.5, socket_timeout=2)
+        self.client: redis.Redis[bytes] = redis.Redis.from_url(url, decode_responses=False, socket_connect_timeout=get_settings().media_cache_connect_timeout_seconds, socket_timeout=get_settings().media_cache_timeout_seconds)
 
     def get(self, key: str) -> CachedMedia | None:
         try:
@@ -80,7 +80,7 @@ class MediaCache:
 
     def set(self, key: str, content: bytes, content_type: str) -> None:
         try:
-            self.client.set(key, f"{content_type}\0".encode() + content, ex=CACHE_TTL_SECONDS)
+            self.client.set(key, f"{content_type}\0".encode() + content, ex=get_settings().media_cache_ttl_seconds)
         except redis.RedisError:
             pass
 
@@ -90,5 +90,5 @@ class MediaCache:
 
 @lru_cache(maxsize=1)
 def media_cache() -> MediaCache | None:
-    url = os.environ.get("REDIS_URL")
+    url = get_settings().redis_url
     return MediaCache(url) if url else None

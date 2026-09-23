@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from .settings import get_settings
+
 from dataclasses import dataclass
 import hashlib
 import json
 import logging
-import os
 import platform
 import uuid
 from collections.abc import Callable
@@ -220,7 +221,7 @@ def ingest_navidrome(
     report = progress or (lambda _: None)
     summary = IngestSummary(requested=len(song_ids))
 
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, NavidromeClient(
+    with psycopg.connect(get_settings().database_url) as connection, NavidromeClient(
         url, username, password
     ) as navidrome:
         configure_representations(connection)
@@ -389,8 +390,8 @@ def ingest_navidrome(
             report({"phase": "models", "message": "Loading semantic model", "completed": loaded,
                     "total": required_models, "unit": "models"})
             muq = MuQMuLanModel(
-                os.getenv("MUQ_MODEL_ID", "OpenMuQ/MuQ-MuLan-large"),
-                os.getenv("MUQ_REVISION", "2e01c796b71dca71b45251384c04cd7b237c9020"),
+                get_settings().muq_model_id,
+                get_settings().muq_revision,
                 device,
             )
             try:
@@ -404,8 +405,8 @@ def ingest_navidrome(
             report({"phase": "models", "message": "Loading acoustic model", "completed": loaded,
                     "total": required_models, "unit": "models"})
             mert = MertModel(
-                os.getenv("MERT_MODEL_ID", "m-a-p/MERT-v1-95M"),
-                os.getenv("MERT_REVISION", "12af15fef9d0ac838c3f475bfbbf26d2060dd4f5"),
+                get_settings().mert_model_id,
+                get_settings().mert_revision,
                 device,
             )
             try:

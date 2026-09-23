@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .settings import get_settings
+
 import json
 import subprocess
 import tempfile
@@ -25,7 +27,7 @@ def compute_chromaprint(audio: bytes) -> tuple[bytes, float, str]:
         source.flush()
         process = subprocess.run(
             ["fpcalc", "-raw", "-json", source.name], capture_output=True, text=True,
-            timeout=120, check=False,
+            timeout=get_settings().fingerprint_timeout_seconds, check=False,
         )
     if process.returncode != 0:
         raise ValueError(f"fpcalc failed: {process.stderr.strip()[-400:]}")

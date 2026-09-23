@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from .settings import get_settings
+
 from dataclasses import dataclass
-import os
 import threading
 import time
 
@@ -63,7 +64,7 @@ class LyricsEmbeddingModel:
         started = time.perf_counter()
         with torch.inference_mode():
             encoded = self.model.encode(
-                chunks, batch_size=2, normalize_embeddings=True,
+                chunks, batch_size=get_settings().lyrics_window_batch_size, normalize_embeddings=True,
                 convert_to_numpy=True, show_progress_bar=False,
             )
         vectors = [_normalize(row) for row in encoded]
@@ -76,7 +77,7 @@ class LyricsEmbeddingModel:
 
     def embed_queries(self, texts: list[str]) -> np.ndarray:
         matrix = self.model.encode(
-            [text.strip() for text in texts], batch_size=8, normalize_embeddings=True,
+            [text.strip() for text in texts], batch_size=get_settings().lyrics_track_batch_size, normalize_embeddings=True,
             convert_to_numpy=True, show_progress_bar=False,
         )
         return np.asarray(matrix, dtype=np.float32)
@@ -87,8 +88,8 @@ def shared_lyrics_model() -> LyricsEmbeddingModel:
     with _shared_lock:
         if _shared_model is None:
             _shared_model = LyricsEmbeddingModel(
-                os.environ.get("LYRICS_MODEL_ID", "BAAI/bge-m3"),
-                os.environ.get("LYRICS_REVISION", "5617a9f61b028005a4858fdac845db406aefb181"),
+                get_settings().lyrics_model_id,
+                get_settings().lyrics_revision,
                 "cuda" if torch.cuda.is_available() else "cpu",
             )
         return _shared_model

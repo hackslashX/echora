@@ -4,9 +4,10 @@ The session advisory lock is shared by workers and recipe mutation routes. It is
 held across remote I/O (not merely the selecting transaction). Publication intent
 outlives jobs: a fresh manual job cannot bypass an ambiguous playlist creation.
 """
+
+from .settings import get_settings
 from contextlib import contextmanager
 import json
-import os
 import uuid
 
 import psycopg
@@ -15,7 +16,7 @@ from psycopg.types.json import Jsonb
 
 
 def _connect():
-    return psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row)
+    return psycopg.connect(get_settings().database_url, row_factory=dict_row)
 
 
 @contextmanager
@@ -69,7 +70,8 @@ def enqueue_due():
     with _connect() as connection:
         due = connection.execute("""SELECT id FROM curations
             WHERE status='draft' OR (refresh_enabled AND next_refresh_at <= now())
-            ORDER BY next_refresh_at NULLS FIRST LIMIT 100""").fetchall()
+            ORDER BY next_refresh_at NULLS FIRST LIMIT %s""",
+                                 (get_settings().curation_due_limit,)).fetchall()
     count = 0
     for item in due:
         with locked(item["id"], wait=False) as connection:

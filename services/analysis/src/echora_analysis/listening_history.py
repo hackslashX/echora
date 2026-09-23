@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from .settings import get_settings
+
 
 @dataclass(frozen=True)
 class Listen:
@@ -38,7 +40,7 @@ def recent_listens(username: str, api_key: str, since: datetime) -> list[Listen]
             return list(cached[1])
     listens: list[Listen] = []
     page = 1
-    with httpx.Client(timeout=20) as client:
+    with httpx.Client(timeout=get_settings().listening_history_timeout_seconds) as client:
         while page <= 20:
             response = client.get("https://ws.audioscrobbler.com/2.0/", params={
                 "method": "user.getrecenttracks", "user": username, "api_key": api_key,

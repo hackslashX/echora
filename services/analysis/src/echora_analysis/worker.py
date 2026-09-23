@@ -14,6 +14,7 @@ import time
 import uuid
 
 from . import jobs
+from .settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,8 @@ def _has_failures(value: object) -> bool:
     return False
 
 
-def execute(job: dict, work_directory: str | None = None, supervisor_pid: int | None = None) -> None:
+def execute(job: dict, work_directory: str | None = None, supervisor_pid: int | None = None,
+            lease_seconds: int | None = None) -> None:
     """Run one claim in an isolated process so model memory dies with the claim."""
     # Pipeline subprocesses inherit this group, allowing the supervisor to stop all work.
     if hasattr(os, "setsid"):
@@ -48,7 +50,7 @@ def execute(job: dict, work_directory: str | None = None, supervisor_pid: int | 
         tempfile.tempdir = work_directory
     previous_job_id = os.environ.get('ECHORA_JOB_ID')
     os.environ['ECHORA_JOB_ID'] = str(job['id'])
-    context = jobs.JobContext(job)
+    context = jobs.JobContext(job, lease_seconds=lease_seconds)
     try:
         context.check()
         if job["worker_type"] == "analysis":
@@ -59,7 +61,7 @@ def execute(job: dict, work_directory: str | None = None, supervisor_pid: int | 
         # None means the scan expanded into durable child batches.
         if summary is not None:
             partial = _has_failures(summary)
-            if partial and job.get('attempts', 1) < job.get('max_attempts', 3):
+            if partial and job.get('attempts', 1) < job.get('max_attempts', get_settings().job_max_attempts):
                 # Per-song failures are swallowed by pipelines to preserve the rest
                 # of the batch. Retry that batch using its committed artifact plan.
                 context.report({'message': 'Retrying incomplete analysis', 'summary': summary})
@@ -90,7 +92,7 @@ def _terminate(process) -> None:
             process.terminate()
     except ProcessLookupError:
         pass
-    process.join(timeout=5)
+    process.join(timeout=get_settings().worker_shutdown_grace_seconds)
     if process.is_alive():
         try:
             if hasattr(os, "killpg") and os.getpgid(process.pid) == process.pid:
@@ -99,20 +101,20 @@ def _terminate(process) -> None:
                 process.kill()
         except ProcessLookupError:
             pass
-        process.join(timeout=5)
+        process.join(timeout=get_settings().worker_shutdown_grace_seconds)
 
 
 def supervise(job: dict, stop: threading.Event, lease_seconds: int) -> None:
     # The supervisor owns cleanup even when an executor cannot run its finally blocks.
     directory = tempfile.TemporaryDirectory(prefix='echora-worker-')
     process = multiprocessing.get_context("spawn").Process(
-        target=execute, args=(job, directory.name, os.getpid()))
+        target=execute, args=(job, directory.name, os.getpid(), lease_seconds))
     try:
         process.start()
     except BaseException:
         directory.cleanup()
         raise
-    heartbeat_interval = min(10, lease_seconds / 3)
+    heartbeat_interval = min(get_settings().worker_heartbeat_seconds, lease_seconds / 3)
     try:
         while process.is_alive():
             if stop.wait(heartbeat_interval):
@@ -137,7 +139,10 @@ def supervise(job: dict, stop: threading.Event, lease_seconds: int) -> None:
         directory.cleanup()
 
 
-def run(worker_type: str, *, once: bool = False, poll_seconds: float = 2, lease_seconds: int = 120) -> None:
+def run(worker_type: str, *, once: bool = False, poll_seconds: float | None = None, lease_seconds: int | None = None) -> None:
+    settings = get_settings()
+    poll_seconds = settings.worker_poll_seconds if poll_seconds is None else poll_seconds
+    lease_seconds = settings.worker_lease_seconds if lease_seconds is None else lease_seconds
     stop = threading.Event()
     for name in (signal.SIGTERM, signal.SIGINT):
         signal.signal(name, lambda *_: stop.set())
@@ -149,7 +154,7 @@ def run(worker_type: str, *, once: bool = False, poll_seconds: float = 2, lease_
             if worker_type == "analysis" and time.monotonic() >= next_recording_cleanup:
                 from .recording_search import cleanup
                 from .recording_calibration import cleanup as cleanup_calibration
-                next_recording_cleanup = time.monotonic() + 60
+                next_recording_cleanup = time.monotonic() + settings.worker_cleanup_interval_seconds
                 for maintenance in (cleanup, cleanup_calibration):
                     try:
                         maintenance()
@@ -160,7 +165,7 @@ def run(worker_type: str, *, once: bool = False, poll_seconds: float = 2, lease_
             if worker_type == "scheduled" and time.monotonic() >= next_schedule_check:
                 from .curation_jobs import enqueue_due
                 enqueue_due()
-                next_schedule_check = time.monotonic() + 30
+                next_schedule_check = time.monotonic() + settings.worker_schedule_check_seconds
             job = jobs.claim(worker_type, worker_id, lease_seconds)
             if job:
                 supervise(job, stop, lease_seconds)
@@ -179,8 +184,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("worker_type", choices=("analysis", "scheduled"))
     parser.add_argument("--once", action="store_true", help="Claim at most one job, then exit")
-    parser.add_argument("--poll-seconds", type=float, default=2)
-    parser.add_argument("--lease-seconds", type=int, default=120)
+    parser.add_argument("--poll-seconds", type=float, default=get_settings().worker_poll_seconds)
+    parser.add_argument("--lease-seconds", type=int, default=get_settings().worker_lease_seconds)
     args = parser.parse_args()
     if args.poll_seconds <= 0 or args.lease_seconds < 15:
         parser.error("poll seconds must be positive and lease seconds must be at least 15")

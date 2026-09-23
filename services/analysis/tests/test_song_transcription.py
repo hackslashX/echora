@@ -1,3 +1,5 @@
+from echora_analysis.settings import get_settings
+
 import pytest
 from echora_analysis.song_transcription import parse_window, windows
 from echora_analysis.transcription_config import transcription_model
@@ -23,11 +25,15 @@ def test_invalid_generation_is_not_published(text):
 
 def test_model_config_requires_pinned_revision(monkeypatch):
     monkeypatch.delenv('MOSS_MODEL_ID', raising=False)
+    get_settings.cache_clear()
     monkeypatch.delenv('MOSS_REVISION', raising=False)
+    get_settings.cache_clear()
     assert transcription_model() is None
     monkeypatch.setenv('MOSS_MODEL_ID','example/model')
+    get_settings.cache_clear()
     with pytest.raises(ValueError): transcription_model()
     monkeypatch.setenv('MOSS_REVISION','a'*40)
+    get_settings.cache_clear()
     assert transcription_model() == ('example/model','a'*40)
 
 

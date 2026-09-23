@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
+from .settings import get_settings
 
 from psycopg.types.json import Jsonb
 
@@ -16,7 +16,8 @@ MODELS = {
 
 def model_settings(name: str) -> tuple[str, str]:
     prefix, model_id, revision, _ = MODELS[name]
-    return os.getenv(f"{prefix}_MODEL_ID", model_id), os.getenv(f"{prefix}_REVISION", revision)
+    settings = get_settings()
+    return getattr(settings, f"{prefix.lower()}_model_id"), getattr(settings, f"{prefix.lower()}_revision")
 
 
 def config_hash(config: dict[str, object]) -> str:

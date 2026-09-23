@@ -1,19 +1,23 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
+from .settings import get_settings
+
 
 class Base(DeclarativeBase):
     pass
 
 
-_database_url = os.environ["DATABASE_URL"].replace("postgresql://", "postgresql+psycopg://", 1)
-_engine = create_engine(_database_url, pool_pre_ping=True, pool_size=10, max_overflow=20)
+_settings = get_settings()
+if not _settings.database_url:
+    raise RuntimeError("DATABASE_URL is required")
+_database_url = _settings.database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+_engine = create_engine(_database_url, pool_pre_ping=True, pool_size=_settings.db_pool_size, max_overflow=_settings.db_max_overflow)
 SessionLocal = sessionmaker(_engine, expire_on_commit=False)
 
 

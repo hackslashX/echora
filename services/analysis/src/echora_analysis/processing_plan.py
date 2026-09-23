@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from .settings import get_settings
+
 from dataclasses import dataclass
-import os
 import uuid
 from typing import Iterable
 
@@ -116,7 +117,7 @@ def plan_lyrics(connection: psycopg.Connection, external_ids: Iterable[str] | No
     if library_id is not None:
         restriction += " AND ts.library_id=%s"
         parameters.append(library_id)
-    revision = os.environ.get("LYRICS_REVISION", "5617a9f61b028005a4858fdac845db406aefb181")
+    revision = get_settings().lyrics_revision
     with connection.cursor() as cursor:
         cursor.execute(
             f"""SELECT DISTINCT ts.external_id
@@ -187,8 +188,8 @@ def plan_audio(connection: psycopg.Connection, library_id, external_ids: Iterabl
         source_join = """LEFT JOIN unnest(%s::text[],%s::uuid[]) AS ts(external_id,track_id)
                         ON ts.external_id=requested.external_id"""
         source_parameters = [ids, [resolved_track_ids[item] for item in ids]]
-    muq_revision = os.environ.get("MUQ_REVISION", "2e01c796b71dca71b45251384c04cd7b237c9020")
-    mert_revision = os.environ.get("MERT_REVISION", "12af15fef9d0ac838c3f475bfbbf26d2060dd4f5")
+    muq_revision = get_settings().muq_revision
+    mert_revision = get_settings().mert_revision
     with connection.cursor() as cursor:
         cursor.execute("SELECT hum_processing_enabled FROM analysis_settings WHERE singleton=true")
         hum_setting = cursor.fetchone()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .settings import get_settings
+
 from collections.abc import Callable
 import hashlib
 import json
@@ -41,7 +43,7 @@ _model_lock = threading.Lock()
 
 
 def _model_directory() -> str:
-    directory = os.environ.get("ESSENTIA_MODELS_DIR", "/data/models/essentia")
+    directory = get_settings().essentia_models_dir
     return directory
 
 
@@ -49,7 +51,7 @@ def _require_model_file(filename: str) -> str:
     path = os.path.join(_model_directory(), filename)
     if not os.path.exists(path):
         raise FileNotFoundError(
-            f"Essentia model {filename} is missing from {os.environ.get('ESSENTIA_MODELS_DIR', '/data/models/essentia')}; "
+            f"Essentia model {filename} is missing from {get_settings().essentia_models_dir}; "
             "run `python -m echora_analysis.download_models` on a machine with network access"
         )
     return path
@@ -205,7 +207,7 @@ def backfill_voice(
     """
     report = progress or (lambda _: None)
     summary = {"total": 0, "classified": 0, "failed": 0}
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, NavidromeClient(url, username, password) as client:
+    with psycopg.connect(get_settings().database_url) as connection, NavidromeClient(url, username, password) as client:
         library_id = resolve_library_id(connection, url)
         restriction, parameters = _id_filter(external_ids)
         configure_representations(connection)

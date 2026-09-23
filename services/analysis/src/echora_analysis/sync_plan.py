@@ -6,7 +6,8 @@ explicit lyrics backfills remain the way to retry retrieval for those songs.
 """
 from __future__ import annotations
 
-import os
+from .settings import get_settings
+
 import uuid
 
 from .processing_plan import plan_audio, plan_karaoke
@@ -73,7 +74,7 @@ def select_sync_tracks(connection, url: str, external_ids: list[str], mode: str 
     # Share the exact karaoke compatibility contract with the executing pipeline.
     from .karaoke_pipeline import KARAOKE_PIPELINE_REVISION, DEFAULT_MODEL_REVISION, _stored_model_revision
     karaoke = plan_karaoke(connection, KARAOKE_PIPELINE_REVISION, ids,
-                          _stored_model_revision(os.getenv('FA_KARA_REVISION', DEFAULT_MODEL_REVISION)),
+                          _stored_model_revision(get_settings().fa_kara_revision),
                           library_id=library_id)
     selected.update(karaoke.karaoke_external_ids)
     return [item for item in ids if item in selected]

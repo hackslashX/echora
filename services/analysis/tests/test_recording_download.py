@@ -1,4 +1,7 @@
 """Provision dummy pinned artifacts without network or inference."""
+
+from echora_analysis.settings import get_settings
+
 from dataclasses import asdict
 import hashlib
 import json
@@ -84,6 +87,7 @@ def test_cold_install_and_offline_reuse_preserve_other_generations(provision, mo
     sibling.mkdir(parents=True)
     (sibling / 'keep').write_text('previous deployment')
     monkeypatch.setenv('ECHORA_RECORDING_MODEL_MANIFEST', '/unrelated/manifest.json')
+    get_settings.cache_clear()
     installed = downloader.download_recording_model(env)
     assert installed == root / REVISION
     assert installed.stat().st_mode & 0o777 == 0o755

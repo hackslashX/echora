@@ -12,9 +12,10 @@ mixes generations.
 """
 from __future__ import annotations
 
+from .settings import get_settings
+
 import hashlib
 import json
-import os
 import platform
 import uuid
 from collections.abc import Callable
@@ -34,8 +35,8 @@ STD_FLOOR = 1e-6
 
 
 def fusion_weights() -> tuple[float, float]:
-    lyrics = float(os.getenv("SEMANTIC_FUSION_WEIGHT_LYRICS", "0.75"))
-    audio = float(os.getenv("SEMANTIC_FUSION_WEIGHT_AUDIO", "0.25"))
+    lyrics = float(get_settings().semantic_fusion_weight_lyrics)
+    audio = float(get_settings().semantic_fusion_weight_audio)
     total = lyrics + audio
     return lyrics / total, audio / total
 
@@ -107,7 +108,7 @@ def build_semantic_fusion(progress: Callable[[dict[str, object]], None] | None =
     weights = fusion_weights()
     _, lyrics_revision = model_settings("bge_m3")
     _, audio_revision = model_settings("muq_mulan")
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
+    with psycopg.connect(get_settings().database_url) as connection:
         configure_representations(connection)
         report({"phase": "loading", "message": "Loading paired lyrics and audio embeddings"})
         track_ids, lyrics, audio = _paired_vectors(connection)

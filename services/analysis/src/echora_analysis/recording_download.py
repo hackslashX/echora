@@ -8,7 +8,6 @@ under <directory>/<full revision>, leaving other generations untouched.
 from collections.abc import Mapping
 import errno
 import json
-import os
 from pathlib import Path
 import re
 import shutil
@@ -42,14 +41,17 @@ def validate_bundle(directory: Path) -> None:
 
 
 def download_recording_model(environ: Mapping[str, str] | None = None) -> Path | None:
-    env = os.environ if environ is None else environ
-    model_id = env.get("ECHORA_RECORDING_MODEL_ID", "").strip()
-    revision = env.get("ECHORA_RECORDING_MODEL_REVISION", "").strip()
+    from .settings import get_settings
+
+    settings = get_settings() if environ is None else None
+    env = environ
+    model_id = (settings.recording_model_id if settings else env.get("ECHORA_RECORDING_MODEL_ID", "")).strip()
+    revision = (settings.recording_model_revision if settings else env.get("ECHORA_RECORDING_MODEL_REVISION", "")).strip()
     if not model_id and not revision:
         return None
     if not model_id or not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("Set ECHORA_RECORDING_MODEL_ID and a full immutable ECHORA_RECORDING_MODEL_REVISION together")
-    root = Path(env.get("ECHORA_RECORDING_MODEL_DIRECTORY", "/data/models/recording"))
+    root = Path(settings.recording_model_directory if settings else env.get("ECHORA_RECORDING_MODEL_DIRECTORY", "/data/models/recording"))
     if not root.is_absolute():
         raise ValueError("ECHORA_RECORDING_MODEL_DIRECTORY must be an absolute mounted path")
     destination = root / revision

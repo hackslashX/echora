@@ -1,3 +1,14 @@
+from echora_analysis.settings import get_settings
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _reset_settings_cache():
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 from unittest.mock import Mock
 
 from echora_analysis.download_models import _pin_main_ref

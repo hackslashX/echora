@@ -71,6 +71,8 @@ A CPU analysis service is included under the `cpu` Compose profile, but the defa
 
 ## Get started
 
+Application settings, session lifetimes, and optional environment overrides are documented in [Runtime settings](docs/runtime-settings.md).
+
 ### 1. Create your configuration
 
 Clone the repository, enter its directory, then copy the environment template:
