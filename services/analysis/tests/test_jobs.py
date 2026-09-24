@@ -385,3 +385,12 @@ def test_library_discovery_includes_only_owned_connectionless_fusion(database):
     history = jobs.list_jobs(owner, connection, library_only=True)
     assert [job['id'] for job in history] == expected
     assert history[0]['dismissed_at'] is not None
+
+
+def test_context_honors_worker_lease_override(monkeypatch):
+    from unittest.mock import Mock
+    heartbeat = Mock(return_value=True)
+    monkeypatch.setattr(jobs, 'heartbeat', heartbeat)
+    context = jobs.JobContext({'id': 'job', 'claim_token': 'token'}, lease_seconds=45)
+    context.check()
+    heartbeat.assert_called_once_with('job', 'token', 45)

@@ -1,4 +1,7 @@
 """Orchestration tests use no database or model downloads."""
+
+from echora_analysis.settings import get_settings
+
 import sys
 import echora_analysis
 from types import SimpleNamespace
@@ -26,6 +29,7 @@ def test_import_expands_only_selected_ids_without_reconciliation(monkeypatch):
     monkeypatch.setitem(sys.modules, 'echora_analysis.jobs', jobs)
     monkeypatch.setattr(echora_analysis, 'jobs', jobs, raising=False)
     monkeypatch.setenv('ECHORA_BATCH_SIZE', '2')
+    get_settings.cache_clear()
     job = {'id': 'parent', 'kind': 'import', 'user_id': 'user',
            'payload': {'connection_id': 'connection', 'track_ids': ['a', 'b', 'a', 'c'], 'password': 'DO NOT COPY'}}
     assert analysis_jobs.execute(job, context()) is None
@@ -53,7 +57,9 @@ def test_recording_model_does_not_override_configured_batch_size(monkeypatch):
     monkeypatch.setitem(sys.modules, 'echora_analysis.jobs', queue)
     monkeypatch.setattr(echora_analysis, 'jobs', queue, raising=False)
     monkeypatch.setenv('ECHORA_BATCH_SIZE', '128')
+    get_settings.cache_clear()
     monkeypatch.setenv('ECHORA_RECORDING_MODEL_MANIFEST', '/local/manifest.json')
+    get_settings.cache_clear()
     job = {'id': 'parent', 'kind': 'import', 'user_id': 'user',
            'payload': {'connection_id': 'connection', 'track_ids': ['a', 'b']}}
     analysis_jobs.execute(job, context())

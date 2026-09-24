@@ -11,19 +11,21 @@ languages constantly), so the module always produces a distribution:
 
 from __future__ import annotations
 
+from .settings import get_settings
+
 import os
 import re
 import urllib.request
 from collections import defaultdict
 
 MODEL_URL = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
-MODEL_PATH = os.environ.get("LID_MODEL_PATH", "/models/lid.176.bin")
+MODEL_PATH = get_settings().lid_model_path
 
 # IndicLID-FTR (AI4Bharat): fastText model trained on romanized Indic text.
 # Catches Hindi/Urdu/etc. written in Latin script ("Hinglish"), which generic
 # LID models misclassify as European languages. Lazy-downloaded on first use.
 INDICLID_FTR_URL = "https://github.com/AI4Bharat/IndicLID/releases/download/v1.0/indiclid-ftr.zip"
-INDICLID_FTR_PATH = os.environ.get("INDICLID_FTR_PATH", "/models/indiclid-ftr.bin")
+INDICLID_FTR_PATH = get_settings().indiclid_ftr_path
 INDICLID_FTR_THRESHOLD = 0.6
 INDIC_LABELS = {
     "hin": "hi", "urd": "ur", "pan": "pa", "ben": "bn", "guj": "gu",

@@ -1,4 +1,7 @@
 """Execution binds canonical artifacts to hashed source bytes, not mutable aliases."""
+
+from echora_analysis.settings import get_settings
+
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
 from uuid import uuid4
@@ -33,6 +36,7 @@ def execution(monkeypatch):
     planner = Mock()
     monkeypatch.setattr(ingest, 'plan_audio', planner)
     monkeypatch.setenv('DATABASE_URL', 'postgresql://test')
+    get_settings.cache_clear()
     return connection, client, upsert, waveform, planner
 
 

@@ -6,9 +6,10 @@ The exact reader deliberately precedes ANN so recall has a testable baseline.
 """
 from __future__ import annotations
 
+from .settings import get_settings
+
 import hashlib
 import json
-import os
 from pathlib import Path
 import subprocess
 import time
@@ -19,7 +20,6 @@ from psycopg.types.json import Jsonb
 
 from . import jobs
 
-MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_CLIP_SECONDS = 20
 SAMPLE_RATE = 8000
 
@@ -33,7 +33,7 @@ def search_configuration():
     config = config_from_env()
     if config is None:
         raise ValueError("Recording encoder is disabled")
-    path = os.getenv("ECHORA_RECORDING_MATCH_POLICY")
+    path = get_settings().recording_match_policy
     if not path:
         raise ValueError("Recording match policy is not configured")
     policy, policy_id = load_match_policy(config, path)
@@ -126,7 +126,7 @@ def cleanup():
 
 
 def enqueue(user_id, audio: bytes, representation_id: str, policy_id: str):
-    if not audio or len(audio) > MAX_UPLOAD_BYTES:
+    if not audio or len(audio) > get_settings().recording_max_upload_bytes:
         raise ValueError("Invalid recording upload size")
     with jobs._db() as db:
         # Serialize admission, including the global cap, across API replicas.
@@ -137,28 +137,30 @@ def enqueue(user_id, audio: bytes, representation_id: str, policy_id: str):
                             (user_id,)).fetchone()
         recent = db.execute("""SELECT count(*) AS n FROM jobs WHERE kind='recording_search'
             AND user_id=%s AND created_at>now()-interval '1 minute'""", (user_id,)).fetchone()["n"]
-        if active["total"] >= 32 or active["owned"] >= 1 or recent >= 6:
+        if active["total"] >= get_settings().recording_max_active or active["owned"] >= get_settings().recording_max_active_per_user or recent >= get_settings().recording_uploads_per_minute:
             raise QueueFull()
         public = jobs._insert(db, "recording_search", "analysis", user_id, None, {}, None, None)
         db.execute("UPDATE jobs SET max_attempts=1 WHERE id=%s", (public["id"],))
-        db.execute("""INSERT INTO recording_searches(job_id,representation_id,policy_id,audio)
-            VALUES (%s,%s,%s,%s)""", (public["id"], representation_id, policy_id, audio))
+        db.execute("""INSERT INTO recording_searches(job_id,representation_id,policy_id,audio,audio_expires_at,expires_at)
+            VALUES (%s,%s,%s,%s,now()+%s*interval '1 second',now()+%s*interval '1 second')""",
+                   (public["id"], representation_id, policy_id, audio,
+                    get_settings().recording_audio_retention_seconds, get_settings().recording_result_retention_seconds))
         # Operator-armed only after explicit user consent. Consume the one-shot
         # reservation in the same transaction as admission, never on rejected
         # uploads. Later searches retain the usual terminal audio erasure.
         db.execute("""UPDATE recording_diagnostic_captures
-            SET audio=%s,job_id=%s,captured_at=now(),expires_at=now()+interval '24 hours'
+            SET audio=%s,job_id=%s,captured_at=now(),expires_at=now()+%s*interval '1 second'
             WHERE user_id=%s AND captured_at IS NULL AND expires_at>now()""",
-                   (audio, public["id"], user_id))
+                   (audio, public["id"], get_settings().recording_diagnostic_retention_seconds, user_id))
         return {"job_id": public["id"]}
 
 
 def decode_query(audio: bytes, check=lambda: None) -> np.ndarray:
     """Bound decoding and observe cancellation without retaining query PCM."""
-    if not audio or len(audio) > MAX_UPLOAD_BYTES:
+    if not audio or len(audio) > get_settings().recording_max_upload_bytes:
         raise ValueError("Invalid recording upload size")
     check()
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + get_settings().recording_decode_timeout_seconds
     with subprocess.Popen([
             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
             "-protocol_whitelist", "pipe", "-threads", "1", "-i", "pipe:0",
@@ -173,7 +175,7 @@ def decode_query(audio: bytes, check=lambda: None) -> np.ndarray:
                 if remaining <= 0:
                     raise ValueError("Recording decode timed out")
                 try:
-                    output, _ = process.communicate(input=pending_input, timeout=min(.25, remaining))
+                    output, _ = process.communicate(input=pending_input, timeout=min(get_settings().recording_cancel_poll_seconds, remaining))
                     break
                 except subprocess.TimeoutExpired:
                     # communicate resumes partially written input and captured
@@ -247,7 +249,7 @@ def execute(job, context):
     from .recording_encoder import encode
     from .recording_matcher import match_recording
     started = time.monotonic()
-    deadline = started + 120
+    deadline = started + get_settings().recording_processing_timeout_seconds
     last_lease_check = started
     context.check()
 

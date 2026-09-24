@@ -9,15 +9,16 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from . import recording_calibration, recording_search
+from .settings import get_settings
 
 
 async def _audio_body(request: Request) -> bytes:
     content = bytearray()
     try:
-        async with asyncio.timeout(30):
+        async with asyncio.timeout(get_settings().recording_upload_read_timeout_seconds):
             async for chunk in request.stream():
-                if len(content) + len(chunk) > recording_search.MAX_UPLOAD_BYTES:
-                    raise HTTPException(413, "The recording exceeds 8 MB")
+                if len(content) + len(chunk) > get_settings().recording_max_upload_bytes:
+                    raise HTTPException(413, "The recording exceeds the configured upload limit")
                 content.extend(chunk)
     except TimeoutError:
         raise HTTPException(408, "Recording upload timed out") from None

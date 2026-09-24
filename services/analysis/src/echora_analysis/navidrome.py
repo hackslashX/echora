@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from .settings import get_settings
+
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import os
 from dataclasses import dataclass
 import hashlib
 import secrets
@@ -29,9 +30,11 @@ class NavidromeTrack:
 
 
 _media_http_client = httpx.Client(
-    timeout=httpx.Timeout(30, read=300),
+    timeout=httpx.Timeout(get_settings().navidrome_timeout_seconds, read=get_settings().navidrome_read_timeout_seconds),
     follow_redirects=True,
-    limits=httpx.Limits(max_connections=100, max_keepalive_connections=30, keepalive_expiry=30),
+    limits=httpx.Limits(max_connections=get_settings().navidrome_max_connections,
+                        max_keepalive_connections=get_settings().navidrome_max_keepalive_connections,
+                        keepalive_expiry=get_settings().navidrome_keepalive_expiry_seconds),
 )
 
 
@@ -44,7 +47,7 @@ def batch_audio_cache(check=lambda: None):
     """Bounded private disk cache; removed even on BaseException cancellation."""
     with TemporaryDirectory(prefix="echora-audio-") as directory:
         state = {"directory": Path(directory), "size": 0,
-                 "limit": max(0, int(os.getenv("ECHORA_AUDIO_CACHE_BYTES", str(2 * 1024**3)))),
+                 "limit": max(0, int(get_settings().audio_cache_bytes)),
                  "check": check}
         token = _batch_state.set(state)
         try:
@@ -63,7 +66,7 @@ class NavidromeClient:
         self.username = username
         self.password = password
         self._owns_client = http_client is None
-        self.client = http_client or httpx.Client(timeout=httpx.Timeout(30, read=300), follow_redirects=True)
+        self.client = http_client or httpx.Client(timeout=httpx.Timeout(get_settings().navidrome_timeout_seconds, read=get_settings().navidrome_read_timeout_seconds), follow_redirects=True)
 
     def _auth(self) -> dict[str, str]:
         salt = secrets.token_hex(8)

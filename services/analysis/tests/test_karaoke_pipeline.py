@@ -1,3 +1,5 @@
+from echora_analysis.settings import get_settings
+
 import io
 import json
 from pathlib import Path
@@ -29,7 +31,9 @@ def test_stored_model_revision_tracks_roformer_independent_of_legacy_env(monkeyp
 
     for value in ("true", "false"):
         monkeypatch.setenv("FA_KARA_VOCAL_SEPARATION", value)
+        get_settings.cache_clear()
         monkeypatch.setenv("FA_KARA_DEMUCS_MODEL", "ignored")
+        get_settings.cache_clear()
         assert _stored_model_revision("model-revision").endswith(
             f":model-revision:roformer:{SEPARATION_REVISION}"
         )
@@ -237,7 +241,9 @@ def test_bound_to_synced_lines_clamps_syllables_to_source_window():
 @pytest.mark.parametrize("separate", [None, True, False])
 def test_worker_uses_cached_vocals_and_original_reference(monkeypatch, tmp_path, separate):
     monkeypatch.setenv("HF_HOME", str(tmp_path))
+    get_settings.cache_clear()
     monkeypatch.setenv("FA_KARA_VOCAL_SEPARATION", "false")
+    get_settings.cache_clear()
     snapshot = tmp_path / "hub" / f"models--{pipeline.DEFAULT_MODEL_ID.replace('/', '--')}" / "snapshots" / pipeline.DEFAULT_MODEL_REVISION
     snapshot.mkdir(parents=True)
     events = []
@@ -295,6 +301,7 @@ def test_worker_uses_cached_vocals_and_original_reference(monkeypatch, tmp_path,
 @pytest.mark.parametrize("cancel", [False, True])
 def test_backfill_prewarms_before_alignment_and_skips_failed_tracks(monkeypatch, cancel):
     monkeypatch.setenv("DATABASE_URL", "unused-mocked")
+    get_settings.cache_clear()
     connection = MagicMock()
     monkeypatch.setattr(pipeline.psycopg, "connect", lambda _: connection)
     connection.__enter__.return_value = connection

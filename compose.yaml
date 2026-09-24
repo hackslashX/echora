@@ -33,6 +33,10 @@ services:
     build:
       context: .
       dockerfile: services/analysis/docker/Dockerfile.gpu
+    # Pass optional runtime overrides to Pydantic Settings, not just Compose interpolation.
+    env_file: &analysis-env-files
+      - path: .env
+        required: false
     environment: &analysis-environment
       DATABASE_URL: ${DATABASE_URL:-postgresql://echora:echora-local@postgres:5432/echora}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
@@ -99,6 +103,7 @@ services:
       retries: 30
 
   analysis-worker:
+    env_file: *analysis-env-files
     build:
       context: .
       dockerfile: services/analysis/docker/Dockerfile.gpu
@@ -118,6 +123,7 @@ services:
     stop_grace_period: 30s
 
   scheduled-worker:
+    env_file: *analysis-env-files
     build:
       context: .
       dockerfile: services/analysis/docker/Dockerfile.cpu

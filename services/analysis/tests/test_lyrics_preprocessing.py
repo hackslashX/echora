@@ -1,3 +1,5 @@
+from echora_analysis.settings import get_settings
+
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -23,6 +25,7 @@ def setup(monkeypatch, provider, stored=None):
     connection = Mock()
     connection.cursor.side_effect = lambda: nullcontext(cursor)
     monkeypatch.setenv("DATABASE_URL", "unused")
+    get_settings.cache_clear()
     monkeypatch.setattr(lp.psycopg, "connect", lambda _: nullcontext(connection))
     client = Mock()
     def lyrics(key):

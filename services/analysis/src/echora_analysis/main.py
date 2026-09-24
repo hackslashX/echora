@@ -4,7 +4,6 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
-import os
 import random
 import secrets
 import uuid
@@ -23,7 +22,6 @@ from psycopg.types.json import Jsonb
 from sklearn.metrics import adjusted_rand_score, silhouette_score
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import joinedload
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,7 +43,8 @@ from .audio_profiles import (
 from .concepts import combine_concept_percentiles, empirical_percentiles, expand_tag_groups, predefined_concepts, score_concept
 from .curations import CURATION_SCORING_REVISION, EXAMPLE_COMPONENT_WEIGHTS, MATCH_PERCENTILE, rank_curation
 from .db import session_scope
-from . import jobs
+from . import jobs, sessions
+from .settings import get_settings
 from .db_models import Curation, NavidromeConnection, OidcAllowedEmail, OidcSetting, User, UserPreference, UserSession
 from .hum_search import DEFAULT_CORPUS_SIZE, search_corpus
 from .journeys import normalize_rows as normalize_journey_rows, select_journey, select_multistop_journey, spherical_targets
@@ -65,26 +64,25 @@ app = FastAPI(title="Echora analysis", version="0.3.0")
 # when NEXT_PUBLIC_ANALYSIS_ORIGIN is set; canvas palette extraction needs CORS.
 # Origins are explicit: reflecting arbitrary origins with credentials would let
 # any site read responses using the visitor's session cookie.
-_cors_origins = [origin.strip() for origin in os.getenv("ECHORA_CORS_ORIGINS", "").split(",") if origin.strip()]
+_cors_origins = [origin.strip() for origin in get_settings().cors_origins.split(",") if origin.strip()]
 if _cors_origins:
     app.add_middleware(
         CORSMiddleware, allow_origins=_cors_origins, allow_credentials=True,
         allow_methods=["*"], allow_headers=["*"],
     )
 app.add_middleware(
-    SessionMiddleware, secret_key=os.environ.get("OIDC_SESSION_SECRET", secrets.token_urlsafe(48)),
+    SessionMiddleware, secret_key=get_settings().oidc_session_secret,
     session_cookie="echora_oidc_state", same_site="lax",
-    https_only=os.environ.get("COOKIE_SECURE", "false").lower() == "true",
+    https_only=get_settings().cookie_secure,
 )
 _oauth = OAuth()
-_oidc_issuer = os.environ.get("OIDC_ISSUER_URL", "").rstrip("/")
-if _oidc_issuer and os.environ.get("OIDC_CLIENT_ID") and os.environ.get("OIDC_CLIENT_SECRET"):
+_oidc_issuer = get_settings().oidc_issuer_url.rstrip("/")
+if _oidc_issuer and get_settings().oidc_client_id and get_settings().oidc_client_secret:
     _oauth.register(
-        name="oidc", client_id=os.environ["OIDC_CLIENT_ID"], client_secret=os.environ["OIDC_CLIENT_SECRET"],
+        name="oidc", client_id=get_settings().oidc_client_id, client_secret=get_settings().oidc_client_secret,
         server_metadata_url=f"{_oidc_issuer}/.well-known/openid-configuration",
-        client_kwargs={"scope": os.environ.get("OIDC_SCOPES", "openid profile email")},
+        client_kwargs={"scope": get_settings().oidc_scopes},
     )
-_SESSION_HOURS = 2
 logger = logging.getLogger(__name__)
 _COMMUNITY_SNAPSHOT_REVISION = 1
 
@@ -247,7 +245,7 @@ def _credentials(request: Credentials) -> tuple[str, str, str]:
 
 
 def _cipher() -> Fernet:
-    key = os.environ.get("CREDENTIAL_ENCRYPTION_KEY")
+    key = get_settings().credential_encryption_key
     if not key:
         raise RuntimeError("CREDENTIAL_ENCRYPTION_KEY is required")
     return Fernet(key.encode())
@@ -273,7 +271,7 @@ def _save_connection(credentials: tuple[str, str, str], user_id: uuid.UUID) -> s
 
 def _attach_user_library(user_id: uuid.UUID, source_url: str) -> None:
     namespace = uuid.uuid5(uuid.NAMESPACE_URL, source_url.rstrip("/"))
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url) as connection, connection.cursor() as cursor:
         cursor.execute(
             """INSERT INTO user_libraries (user_id, library_id)
                SELECT %s, id FROM libraries WHERE namespace=%s
@@ -286,7 +284,7 @@ def _reconcile_user_tracks(user_id: uuid.UUID, source_url: str, external_ids: li
     from .source_visibility import update_memberships
 
     namespace = uuid.uuid5(uuid.NAMESPACE_URL, source_url.rstrip("/"))
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         # A first full catalog can precede all source/identity discovery.
         cursor.execute(
             """INSERT INTO libraries (name, root_path, namespace)
@@ -319,7 +317,7 @@ def _load_connection(connection_id: str, user_id: uuid.UUID | None = None) -> tu
 
 
 def _user_audio_track_ids(user_id: uuid.UUID) -> list[uuid.UUID]:
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT DISTINCT utl.track_id
                FROM user_track_links utl
@@ -339,40 +337,25 @@ def require_user(echora_session: str | None = Cookie(default=None)) -> dict[str,
 
 
 def _session_user(token: str | None) -> dict[str, object]:
-    if not token:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
-    with session_scope() as session:
-        stored = session.scalar(
-            select(UserSession).join(UserSession.user).options(joinedload(UserSession.user).joinedload(User.preference))
-            .where(UserSession.token_hash == token_hash, UserSession.expires_at > datetime.now(timezone.utc), User.is_blocked.is_(False))
-        )
-        if stored is None or stored.user.preference is None:
-            raise HTTPException(status_code=401, detail="Session expired")
-        user, preference = stored.user, stored.user.preference
-        return {
-            "id": user.id, "username": user.username, "email": user.email,
-            "display_name": user.display_name, "is_admin": user.is_admin,
-            "onboarding_complete": preference.onboarding_complete,
-            "navidrome_connection_id": preference.navidrome_connection_id,
-        }
+    return sessions.session_user(token)
 
 
 app.include_router(recording_router(require_user))
+app.include_router(sessions.router)
 
 
 @app.on_event("startup")
 def start_background_services() -> None:
     # Worker claims, not API restarts, determine whether execution is interrupted.
     _enforce_secure_cookie_policy()
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
+    with psycopg.connect(get_settings().database_url) as connection:
         configure_representations(connection)
 
 
 def _enforce_secure_cookie_policy() -> None:
-    if os.environ.get("COOKIE_SECURE", "false").lower() == "true":
+    if get_settings().cookie_secure:
         return
-    redirect = os.environ.get("OIDC_REDIRECT_URI", "http://localhost:3000/analysis/auth/oidc/callback")
+    redirect = (get_settings().oidc_redirect_uri or "http://localhost:3000/analysis/auth/oidc/callback")
     host = urlparse(redirect).hostname or ""
     if host not in {"localhost", "127.0.0.1", "::1"}:
         raise RuntimeError(
@@ -391,7 +374,7 @@ async def oidc_start(request: Request) -> Response:
     client = _oauth.create_client("oidc")
     if client is None:
         raise HTTPException(status_code=503, detail="OIDC is not configured")
-    redirect_uri = os.environ.get("OIDC_REDIRECT_URI") or str(request.url_for("oidc_callback"))
+    redirect_uri = get_settings().oidc_redirect_uri or str(request.url_for("oidc_callback"))
     return await client.authorize_redirect(request, redirect_uri)
 
 
@@ -410,10 +393,10 @@ async def oidc_callback(request: Request) -> Response:
     email = str(claims.get("email") or "").strip().casefold()
     if not subject or not email or "@" not in email:
         raise HTTPException(status_code=422, detail="OIDC must provide subject and email claims")
-    require_verified = os.environ.get("OIDC_REQUIRE_VERIFIED_EMAIL", "false").lower() == "true"
+    require_verified = get_settings().oidc_require_verified_email
     if require_verified and claims.get("email_verified") is not True:
         raise HTTPException(status_code=403, detail="OIDC email is not verified")
-    bootstrap_email = os.environ.get("OIDC_BOOTSTRAP_ADMIN_EMAIL", "").strip().casefold()
+    bootstrap_email = get_settings().oidc_bootstrap_admin_email.strip().casefold()
     if not bootstrap_email:
         raise HTTPException(status_code=503, detail="OIDC_BOOTSTRAP_ADMIN_EMAIL is not configured")
     with session_scope() as session:
@@ -444,15 +427,11 @@ async def oidc_callback(request: Request) -> Response:
             user.oidc_subject = subject
             user.email = email
             user.username = email
-        token = secrets.token_urlsafe(48)
         session.execute(delete(UserSession).where(UserSession.expires_at < datetime.now(timezone.utc)))
-        session.add(UserSession(
-            token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=_SESSION_HOURS),
-        ))
-    destination = os.environ.get("OIDC_POST_LOGIN_REDIRECT", "http://localhost:3000/home")
+        token, expires_at, _ = sessions.create_session(session, user.id)
+    destination = get_settings().oidc_post_login_redirect
     response = RedirectResponse(destination, status_code=303)
-    response.set_cookie("echora_session", token, max_age=_SESSION_HOURS * 3600, httponly=True, samesite="strict", secure=os.environ.get("COOKIE_SECURE", "false").lower() == "true", path="/")
+    sessions.set_session_cookie(response, token, expires_at)
     return response
 
 
@@ -527,7 +506,7 @@ def update_karaoke_processing_settings(
     user = _session_user(echora_session)
     if not user.get("is_admin"):
         raise HTTPException(status_code=403, detail="Administrator access required")
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """INSERT INTO analysis_settings
                  (singleton, karaoke_processing_enabled, karaoke_bound_to_synced_lines, updated_at)
@@ -557,7 +536,7 @@ def update_transcription_processing_settings(
     user = _session_user(echora_session)
     if not user.get("is_admin"):
         raise HTTPException(status_code=403, detail="Administrator access required")
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url) as connection, connection.cursor() as cursor:
         cursor.execute(
             """INSERT INTO analysis_settings (singleton, transcription_processing_enabled, updated_at)
                VALUES (true,%s,now()) ON CONFLICT (singleton) DO UPDATE
@@ -573,7 +552,7 @@ def update_hum_processing_settings(
     user = _session_user(echora_session)
     if not user.get("is_admin"):
         raise HTTPException(status_code=403, detail="Administrator access required")
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """INSERT INTO analysis_settings
                  (singleton, karaoke_bound_to_synced_lines, hum_processing_enabled, updated_at)
@@ -656,7 +635,7 @@ def update_lastfm(request: LastFmSettingsRequest, echora_session: str | None = C
         response = httpx.get("https://ws.audioscrobbler.com/2.0/", params={
             "method": "user.getrecenttracks", "user": request.username.strip(),
             "api_key": api_key, "format": "json", "limit": 1,
-        }, timeout=15)
+        }, timeout=get_settings().lastfm_validation_timeout_seconds)
         response.raise_for_status()
         payload = response.json()
         if payload.get("error"):
@@ -694,6 +673,13 @@ def _admin_user(echora_session: str | None) -> dict[str, object]:
     return user
 
 
+@app.get("/settings/runtime")
+def runtime_settings(response: Response) -> dict[str, int]:
+    # Only this explicit, non-secret allowlist is browser-visible.
+    response.headers["Cache-Control"] = "no-store"
+    return get_settings().public_ui()
+
+
 @app.get("/settings/oidc")
 def oidc_admin_settings(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     _admin_user(echora_session)
@@ -704,7 +690,7 @@ def oidc_admin_settings(echora_session: str | None = Cookie(default=None)) -> di
         return {
             "configured": _oauth.create_client("oidc") is not None,
             "issuer": _oidc_issuer or None,
-            "require_verified_email": os.environ.get("OIDC_REQUIRE_VERIFIED_EMAIL", "false").lower() == "true",
+            "require_verified_email": get_settings().oidc_require_verified_email,
             "auto_provision": policy.auto_provision if policy else True,
             "users": [{
                 "id": str(item.id), "email": item.email, "display_name": item.display_name,
@@ -841,7 +827,7 @@ def navidrome_sync_status(connection_id: str, echora_session: str | None = Cooki
     except Exception as error:
         raise HTTPException(status_code=502, detail="Could not scan the Navidrome library") from error
     namespace = uuid.uuid5(uuid.NAMESPACE_URL, credentials[0].rstrip("/"))
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url) as connection, connection.cursor() as cursor:
         cursor.execute(
             """
             SELECT ts.external_id FROM track_sources ts
@@ -890,7 +876,7 @@ def start_recording_backfill(
 @app.get("/library/lyrics/status", dependencies=[Depends(require_user)])
 def lyrics_status(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT count(*) AS total,
                       count(*) FILTER (WHERE l.availability_status='available') AS available,
@@ -937,7 +923,7 @@ def start_semantic_fusion_build(echora_session: str | None = Cookie(default=None
 @app.get("/library/semantic-fusion/status", dependencies=[Depends(require_user)])
 def semantic_fusion_status(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT count(*) AS fused,
                       (SELECT count(*) FROM current_embeddings l WHERE l.embedding_type='lyrics'
@@ -953,7 +939,7 @@ def similar_tracks(
     track_id: uuid.UUID, limit: int = 20, echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT e.embedding FROM current_embeddings e
                WHERE e.track_id=%s AND e.embedding_type='semantic_fusion'""", (track_id,))
@@ -977,7 +963,7 @@ def track_recording_group(
     track_id: uuid.UUID, echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT rg.id, rg.status, rg.canonical_track_id, rg.created_at, rg.updated_at
                FROM recording_group_members member JOIN recording_groups rg ON rg.id=member.group_id
@@ -1013,7 +999,7 @@ def track_audio_descriptors(
     track_id: uuid.UUID, echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Track not found")
@@ -1042,7 +1028,7 @@ def track_audio_descriptors(
 @app.get("/library/tracks/{track_id}/waveform")
 def track_waveform(track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Track not found")
@@ -1066,7 +1052,7 @@ def track_waveform(track_id: uuid.UUID, echora_session: str | None = Cookie(defa
 @app.get("/library/tracks/{track_id}/visual-features")
 def track_visual_features(track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Track not found")
@@ -1108,7 +1094,7 @@ def track_visual_features(track_id: uuid.UUID, echora_session: str | None = Cook
 @app.get("/library/tracks/{track_id}/audio-quality")
 def track_audio_quality(track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT ts.source_data->>'suffix' AS codec,
                       ts.source_data->>'contentType' AS content_type,
@@ -1133,7 +1119,7 @@ def track_audio_quality(track_id: uuid.UUID, echora_session: str | None = Cookie
 @app.get("/library/tracks/{track_id}/lyrics")
 def track_lyrics(track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT l.text, l.language, l.source, l.provenance, l.availability_status,
                       karaoke.lines AS karaoke_lines, karaoke.ass AS karaoke_ass,
@@ -1168,7 +1154,7 @@ def update_track_lyrics(
     if not lyric_text:
         raise HTTPException(status_code=422, detail="Lyrics cannot be empty")
     language = request.language.strip().lower() if request.language else None
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Track is not in your library")
@@ -1199,7 +1185,7 @@ def force_transcription_language(
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     language = request.language.strip()
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Track is not in your library")
@@ -1226,7 +1212,7 @@ def update_track_lyrics_status(
     track_id: uuid.UUID, request: LyricsStatusRequest, echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Track is not in your library")
@@ -1386,7 +1372,7 @@ def start_navidrome_ingest(
 @app.get("/library/hum/index", dependencies=[Depends(require_user)])
 def hum_index_status(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT count(DISTINCT mc.track_id) AS indexed_tracks
                FROM melody_contours mc
@@ -1509,7 +1495,7 @@ def library_tracks(
 
 
 def _lyrics_concept_corpus(user_id: uuid.UUID) -> tuple[list[dict[str, object]], np.ndarray, str]:
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT DISTINCT ON (e.track_id) t.id, t.title, t.artist, t.album,
                       e.embedding::text AS embedding, ar.id AS run_id
@@ -1529,7 +1515,7 @@ def _lyrics_concept_corpus(user_id: uuid.UUID) -> tuple[list[dict[str, object]],
 
 
 def _semantic_concept_corpus(user_id: uuid.UUID) -> tuple[list[dict[str, object]], np.ndarray, str]:
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """
             SELECT DISTINCT ON (e.track_id) t.id, t.title, t.artist, t.album,
@@ -1555,7 +1541,7 @@ def _semantic_concept_corpus(user_id: uuid.UUID) -> tuple[list[dict[str, object]
 @app.get("/library/concepts")
 def library_concepts(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT id, name, description, positive_prompts, negative_prompts,
                       positive_track_ids, negative_track_ids, enabled, created_at, updated_at
@@ -1571,7 +1557,7 @@ def create_concept(request: ConceptRequest, echora_session: str | None = Cookie(
     user = _session_user(echora_session)
     if not request.positive_prompts and not request.positive_track_ids:
         raise HTTPException(status_code=422, detail="A concept needs a positive prompt or positive track")
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """
             INSERT INTO concepts (user_id, name, description, positive_prompts, negative_prompts,
@@ -1612,7 +1598,7 @@ def concept_lens(request: ConceptLensRequest, echora_session: str | None = Cooki
     user = _session_user(echora_session)
     requested = list(dict.fromkeys(name.strip() for name in request.concepts if name.strip()))
     definitions = {str(item["name"]).casefold(): item for item in predefined_concepts()}
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT name, positive_prompts, negative_prompts, positive_track_ids, negative_track_ids
                FROM concepts WHERE user_id=%s AND enabled""",
@@ -1709,7 +1695,7 @@ def _curation_corpus(
     np.ndarray, np.ndarray, list[tuple[np.ndarray, np.ndarray] | None],
     np.ndarray | None, np.ndarray, list[tuple[np.ndarray, np.ndarray] | None],
 ]:
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """WITH selected_embeddings AS (
                  SELECT DISTINCT ON (e.track_id) e.track_id, e.embedding::text AS embedding,
@@ -1913,7 +1899,7 @@ def _preview_sonic_journey(
         _norm(lyrics_matrix) * np.sqrt(lyrics_share),
     ], axis=1)
 
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT track_id::text AS id, group_id::text AS group_id FROM recording_group_members WHERE track_id=ANY(%s)",
             ([row["id"] for row in rows],),
@@ -1979,7 +1965,7 @@ def _preview_curation(
         return _preview_sonic_journey(request, rows, matrix, acoustic_matrix, lyrics_matrix, lyrics_available)
     language_map: dict[str, dict[str, object]] = {}
     if request.target_language:
-        with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+        with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
             cursor.execute(
                 """SELECT l.track_id::text AS id, l.provenance->'languages' AS distribution
                    FROM lyrics l WHERE l.provenance ? 'languages'""")
@@ -2216,7 +2202,7 @@ def preview_curation(request: CurationPreviewRequest, echora_session: str | None
 @app.get("/library/curations")
 def list_curations(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT c.*, latest.recipe,
                    coalesce((SELECT jsonb_agg(jsonb_build_object('id', pt.id, 'title', pt.title, 'artist', pt.artist, 'album', pt.album)) FROM tracks pt WHERE pt.id=ANY(c.positive_track_ids)), '[]') AS positive_tracks,
@@ -2470,7 +2456,7 @@ def _cluster_embeddings(normalized: np.ndarray, similarities: np.ndarray) -> tup
 def audio_profile_status(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
     models: dict[str, dict[str, int]] = {}
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         for model_name in SUPPORTED_PROFILE_MODELS:
             cursor.execute(
                 """WITH latest_source AS (
@@ -2513,7 +2499,7 @@ def start_audio_profile_rebuild(
     echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT DISTINCT e.track_id, ar.model_name
                FROM current_embeddings e JOIN analysis_runs ar ON ar.id=e.run_id
@@ -2541,7 +2527,7 @@ def track_audio_profile(
     user = _session_user(echora_session)
     if model not in SUPPORTED_PROFILE_MODELS:
         raise HTTPException(status_code=422, detail="Audio profiles support muq_mulan or mert")
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT tap.*, profile_run.model_revision AS profile_revision,
                       profile_run.config AS profile_config, profile_run.created_at AS profile_created_at,
@@ -2619,7 +2605,7 @@ def library_map(
         semantic_weight = 0.5 if semantic_weight is None else semantic_weight
         if not 0 <= semantic_weight <= 1:
             raise HTTPException(status_code=422, detail="semantic_weight must be between 0 and 1")
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         if model == "blend":
             cursor.execute(
                 """
@@ -2702,7 +2688,7 @@ def library_map(
         [model, f"{effective_weight:.4f}", str(_COMMUNITY_SNAPSHOT_REVISION), *[f"{row['id']}:{row['run_id']}" for row in rows]]
     )
     corpus_hash = hashlib.sha256(corpus_material.encode()).hexdigest()
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT id, payload, created_at FROM community_snapshots
                WHERE model_name=%s AND semantic_weight=%s AND corpus_hash=%s AND algorithm_revision=%s""",
@@ -2807,7 +2793,7 @@ def library_map(
         "resolutions_tested": clustering["resolutions_tested"], "semantic_weight": effective_weight,
     }
     metrics = {"silhouette": clustering["silhouette"], "seed_stability_ari": clustering["seed_stability_ari"]}
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """INSERT INTO community_snapshots
                  (model_name, semantic_weight, corpus_hash, algorithm_revision, track_count, parameters, metrics, payload)
@@ -2828,7 +2814,7 @@ def community_snapshots(
 ) -> dict[str, object]:
     _session_user(echora_session)
     limit = min(max(limit, 1), 100)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT id, model_name, semantic_weight, corpus_hash, algorithm_revision,
                       track_count, parameters, metrics, created_at
@@ -2844,7 +2830,7 @@ def community_snapshot(
     snapshot_id: uuid.UUID, echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     _session_user(echora_session)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT payload, created_at FROM community_snapshots WHERE id=%s", (snapshot_id,))
         snapshot = cursor.fetchone()
     if snapshot is None:
@@ -2855,7 +2841,7 @@ def community_snapshot(
 def _artist_embedding_corpus(model: str) -> tuple[list[dict[str, object]], np.ndarray, str]:
     if model not in {"muq_mulan", "mert"}:
         raise HTTPException(status_code=422, detail="Artist profiles support muq_mulan or mert")
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT DISTINCT ON (e.track_id) t.id, t.title, t.artist, t.album,
                       e.embedding::text AS embedding, ar.id AS run_id
@@ -2901,7 +2887,7 @@ def artist_profile(
     display_name = str(rows[indices[0]]["artist"])
     payload, profile = _artist_payload(display_name, rows, matrix, indices)
     stored = jsonable_encoder({**payload, "model": model, "corpus_hash": corpus_hash})
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """INSERT INTO artist_profiles
                  (artist_key, artist_name, model_name, corpus_hash, track_count, component_count, payload)
@@ -2963,7 +2949,7 @@ def preview_journey(
     _session_user(echora_session)
     if request.start_track_id == request.end_track_id:
         raise HTTPException(status_code=422, detail="Journey endpoints must be different tracks")
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """
             WITH semantic AS (
@@ -3030,7 +3016,7 @@ def library_facets(
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     limit = min(max(limit, 1), 50)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
         cursor.execute(
             """SELECT artist AS name, count(*) AS tracks FROM tracks t
                WHERE artist IS NOT NULL AND artist ILIKE %s

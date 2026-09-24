@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from .settings import get_settings
+
 from collections.abc import Callable
 import hashlib
 import json
 import logging
-import os
 import platform
 import uuid
 
@@ -98,7 +99,7 @@ def backfill_lyrics(
 ) -> dict[str, int]:
     report = progress or (lambda _: None)
     summary = {"total": 0, "available": 0, "missing": 0, "unavailable": 0, "embedded": 0, "failed": 0}
-    with psycopg.connect(os.environ["DATABASE_URL"]) as connection, NavidromeClient(url, username, password) as client:
+    with psycopg.connect(get_settings().database_url) as connection, NavidromeClient(url, username, password) as client:
         library_id = resolve_library_id(connection, url)
         configure_representations(connection)
         planned = plan_lyrics(connection, external_ids, library_id=library_id).lyrics_external_ids
@@ -244,8 +245,8 @@ def backfill_lyrics(
         report({"phase": "models", "message": "Loading BGE-M3 lyrics model",
                 "completed": 0, "total": 1, "unit": "models"})
         model = LyricsEmbeddingModel(
-            os.environ.get("LYRICS_MODEL_ID", "BAAI/bge-m3"),
-            os.environ.get("LYRICS_REVISION", "5617a9f61b028005a4858fdac845db406aefb181"), device,
+            get_settings().lyrics_model_id,
+            get_settings().lyrics_revision, device,
         )
         try:
             run_id = _create_run(connection, model)

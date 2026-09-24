@@ -1,4 +1,7 @@
 """Recording API boundaries and isolated-schema lifecycle integration tests."""
+
+from echora_analysis.settings import get_settings
+
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -42,7 +45,7 @@ def test_api_limits_and_configuration(api, monkeypatch):
     enqueue = Mock(side_effect=search.QueueFull)
     monkeypatch.setattr(search, "enqueue", enqueue)
     assert client.post("/library/recording/search", content=b"").status_code == 422
-    assert client.post("/library/recording/search", content=b"x" * (search.MAX_UPLOAD_BYTES + 1)).status_code == 413
+    assert client.post("/library/recording/search", content=b"x" * (get_settings().recording_max_upload_bytes + 1)).status_code == 413
     enqueue.assert_not_called()
     response = client.post("/library/recording/search", content=b"audio")
     assert response.status_code == 429
@@ -86,6 +89,7 @@ def test_policy_requires_calibration_and_matching_representation(monkeypatch, tm
     monkeypatch.setattr(recording_encoder, "config_from_env", lambda: SimpleNamespace(representation_id="one"))
     path = tmp_path / "policy.json"
     monkeypatch.setenv("ECHORA_RECORDING_MATCH_POLICY", str(path))
+    get_settings.cache_clear()
     data = {"representation_id": "one", "matcher_revision": recording_matcher.MATCHER_REVISION,
             "calibrated": False, "validation_dataset": "held-out-phone-recordings", "thresholds": {}}
     path.write_text(json.dumps(data))
@@ -226,6 +230,7 @@ def test_sync_index_status_scopes_catalog_owner_and_representation(recording_db,
     owner, other, library, elsewhere, namespace = [uuid4() for _ in range(5)]
     monkeypatch.setattr(recording_encoder, "config_from_env", lambda: SimpleNamespace(representation_id="current"))
     monkeypatch.delenv("ECHORA_RECORDING_MATCH_POLICY", raising=False)
+    get_settings.cache_clear()
     with recording_db() as db:
         db.execute("INSERT INTO libraries(id,namespace) VALUES (%s,%s),(%s,%s)", (library, namespace, elsewhere, uuid4()))
         for external, who, lib, version, windows in [

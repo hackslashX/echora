@@ -10,6 +10,7 @@ import uuid
 
 import pytest
 
+from echora_analysis.settings import Settings
 from echora_analysis.melody_preview import melody_preview
 from echora_analysis.processing_plan import audio_prerequisites, plan_audio
 from echora_analysis.visual_features import VISUAL_FEATURE_REVISION
@@ -30,7 +31,7 @@ def endpoint(rows):
     cursor = connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
     cursor.fetchone.side_effect = rows
     session = MagicMock(return_value={'id': 'user'})
-    namespace = dict(Cookie=lambda **kw: None, _session_user=session, psycopg=SimpleNamespace(connect=connect),
+    namespace = dict(get_settings=lambda: Settings.model_construct(database_url="fake"), Cookie=lambda **kw: None, _session_user=session, psycopg=SimpleNamespace(connect=connect),
                      os=SimpleNamespace(environ={'DATABASE_URL': 'fake'}), dict_row=object(), HTTPException=HttpError,
                      VISUAL_FEATURE_REVISION=VISUAL_FEATURE_REVISION, DESCRIPTOR_REVISION='1',
                      MELODY_CONTOUR_REVISION='melody-current', melody_preview=melody_preview)

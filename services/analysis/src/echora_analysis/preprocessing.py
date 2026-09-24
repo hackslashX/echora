@@ -6,6 +6,8 @@ process lock. Consumers receive independent arrays, never mutable shared buffers
 """
 from __future__ import annotations
 
+from .settings import get_settings
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 import fcntl
@@ -32,9 +34,9 @@ def get_check():
 
 class AudioArtifactCache:
     def __init__(self, directory=None, *, max_bytes=None, ttl_seconds=None, check=None):
-        self.directory = Path(directory or os.getenv("ECHORA_PREPROCESS_DIR", "/data/preprocessed"))
-        self.max_bytes = int(max_bytes if max_bytes is not None else os.getenv("ECHORA_PREPROCESS_MAX_BYTES", str(20 * 1024**3)))
-        self.ttl_seconds = float(ttl_seconds if ttl_seconds is not None else os.getenv("ECHORA_PREPROCESS_TTL_SECONDS", str(7 * 86400)))
+        self.directory = Path(directory or get_settings().preprocess_dir)
+        self.max_bytes = int(max_bytes if max_bytes is not None else get_settings().preprocess_max_bytes)
+        self.ttl_seconds = float(ttl_seconds if ttl_seconds is not None else get_settings().preprocess_ttl_seconds)
         if self.max_bytes < 0 or self.ttl_seconds <= 0:
             raise ValueError("Preprocessing cache needs nonnegative max bytes and positive TTL")
         self.check = check or get_check()
@@ -50,7 +52,7 @@ class AudioArtifactCache:
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         # Lock files are stable: unlinking a held lock would allow two writers.
         with (self.directory / f"{key}.lock").open("a+b") as lock:
-            deadline = time.monotonic() + 1800
+            deadline = time.monotonic() + get_settings().preprocess_lock_timeout_seconds
             acquired = False
             try:
                 while not acquired:
@@ -64,7 +66,7 @@ class AudioArtifactCache:
                             return
                         if time.monotonic() >= deadline:
                             raise TimeoutError("Timed out waiting for an audio prerequisite")
-                        threading.Event().wait(0.05)
+                        threading.Event().wait(get_settings().preprocess_lock_poll_seconds)
                 yield True
             finally:
                 if acquired:

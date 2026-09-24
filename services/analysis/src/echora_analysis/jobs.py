@@ -6,13 +6,14 @@ serialize cancellation/aggregation without serializing unrelated jobs.
 """
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from uuid import UUID, uuid4
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+
+from .settings import get_settings
 
 ACTIVE = ('queued', 'running', 'waiting')
 TERMINAL = ('complete', 'partial', 'failed', 'cancelled')
@@ -29,7 +30,10 @@ def _uuid(value):
 
 
 def _db():
-    return psycopg.connect(os.environ['DATABASE_URL'], row_factory=dict_row)
+    database_url = get_settings().database_url
+    if not database_url:
+        raise RuntimeError('DATABASE_URL is required')
+    return psycopg.connect(database_url, row_factory=dict_row)
 
 
 def _public(row, existing=False):
@@ -80,12 +84,13 @@ def _family(db, job_id, attempt=False):
 
 def _insert(db, kind, worker_type, user_id, connection_id, payload, dedupe_key, parent_id):
     row = db.execute('''INSERT INTO jobs
-        (id,kind,worker_type,user_id,connection_id,payload,dedupe_key,parent_id)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+        (id,kind,worker_type,user_id,connection_id,payload,dedupe_key,parent_id,max_attempts)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (user_id,dedupe_key) WHERE dedupe_key IS NOT NULL
           AND status IN ('queued','running','waiting') DO NOTHING RETURNING *''',
         (uuid4(), kind, worker_type, _uuid(user_id), _uuid(connection_id),
-         Jsonb(payload if payload is not None else {}), dedupe_key, _uuid(parent_id))).fetchone()
+         Jsonb(payload if payload is not None else {}), dedupe_key, _uuid(parent_id),
+         get_settings().job_max_attempts)).fetchone()
     if row:
         return _public(row)
     row = db.execute('''SELECT * FROM jobs WHERE user_id=%s AND dedupe_key=%s
@@ -254,10 +259,12 @@ def cancel(job_id, user_id):
 
 
 def _lease(seconds):
+    if seconds is None:
+        seconds = get_settings().worker_lease_seconds
     return max(1, min(int(seconds), 86400))
 
 
-def claim(worker_type, worker_id, lease_seconds=120):
+def claim(worker_type, worker_id, lease_seconds=None):
     with _db() as db:
         candidates = db.execute('''SELECT id FROM jobs WHERE worker_type=%s AND
             ((status='queued' AND available_at<=now()) OR
@@ -308,7 +315,7 @@ def _ack_cancel(db, row):
     return False
 
 
-def heartbeat(job_id, token, lease_seconds=120):
+def heartbeat(job_id, token, lease_seconds=None):
     with _db() as db:
         row = _owned(db, job_id, token)
         if not row or _ack_cancel(db, row):
@@ -358,7 +365,7 @@ def finish(job_id, token, summary=None, status='complete'):
 def _retry(db, row, error):
     db.execute('''UPDATE jobs SET status='queued',token=NULL,worker_id=NULL,
         lease_until=NULL,error=%s,available_at=now()+(%s * interval '1 second'),
-        updated_at=now() WHERE id=%s''', (error, min(60, 2 ** row['attempts']), row['id']))
+        updated_at=now() WHERE id=%s''', (error, min(get_settings().job_retry_max_seconds, get_settings().job_retry_base_seconds ** row['attempts']), row['id']))
 
 
 def fail(job_id, token, error, retryable=True):
@@ -399,7 +406,8 @@ class JobCancelled(BaseException):
 
 
 class JobContext:
-    def __init__(self, job):
+    def __init__(self, job, *, lease_seconds=None):
+        self.lease_seconds = get_settings().worker_lease_seconds if lease_seconds is None else lease_seconds
         self.job = job
         self.job_id = job.get('job_id', job.get('id'))
         self.token = job.get('claim_token', job.get('token'))
@@ -409,7 +417,7 @@ class JobContext:
             raise JobCancelled()
 
     def check(self):
-        if not heartbeat(self.job_id, self.token):
+        if not heartbeat(self.job_id, self.token, self.lease_seconds):
             raise JobCancelled()
 
     def complete(self, summary=None, status='complete'):

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from .settings import get_settings, require_database_url
+
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 import hashlib
 import json
 import logging
 import math
-import os
 import platform
 import uuid
 
@@ -509,7 +510,7 @@ def build_audio_profiles(
         "model": model_name, "total": 0, "profiled": 0,
         "failed": 0, "profile_run_id": None,
     }
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection:
+    with psycopg.connect(require_database_url(), row_factory=dict_row) as connection:
         configure_representations(connection)
         profile_run_id = _create_profile_run(connection, model_name, parameters)
         summary["profile_run_id"] = str(profile_run_id)

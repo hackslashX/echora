@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .settings import get_settings
+
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -439,7 +441,7 @@ def store_track_contours(connection: psycopg.Connection, track_id: uuid.UUID, ru
 def build_corpus(corpus_id: uuid.UUID, user_id: uuid.UUID, credentials: tuple[str, str, str], track_limit: int = DEFAULT_CORPUS_SIZE, progress: Callable[[dict[str, object]], None] | None = None, track_ids: set[uuid.UUID] | None = None) -> dict[str, int]:
     report = progress or (lambda _: None)
     completed = failed = contours_stored = 0
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection:
         run_id = _create_run(connection, corpus_id)
         with connection.cursor() as cursor:
             cursor.execute("UPDATE hum_corpora SET run_id=%s,status='building' WHERE id=%s AND user_id=%s", (run_id, corpus_id, user_id))
@@ -532,7 +534,7 @@ def _capture_hum_diagnostic(
     query_mask: np.ndarray,
     results: list[dict[str, object]],
 ) -> str | None:
-    root = Path(os.getenv("HUM_DIAGNOSTIC_DIR", "/models/torch/hum-diagnostics"))
+    root = Path(get_settings().hum_diagnostic_dir)
     marker = root.parent / "capture-next-hum"
     try:
         marker.unlink()
@@ -580,12 +582,12 @@ def search_corpus(user_id: uuid.UUID, audio: bytes, limit: int = 10) -> dict[str
     query, query_mask = extract_hum_contour(audio)
     windows = _motif_windows(query, query_mask)
     prepared_motifs = _prepare_motifs(windows)
-    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as connection:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection:
         contours = _load_contours(connection, user_id)
         if not contours:
             raise ValueError("Build the melody hum index before searching")
 
-        workers = min(16, os.cpu_count() or 2)
+        workers = min(get_settings().hum_max_workers, os.cpu_count() or 2)
         best_by_window: list[dict[uuid.UUID, tuple[float, float, str]]] = [
             {} for _ in windows
         ]

@@ -1,5 +1,7 @@
 "use client";
 
+import { runtimeConfig } from "../runtime/runtimeConfig";
+
 import { AudioLines, Square, X } from "lucide-react";
 import { useEffect, useEffectEvent, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { RecordingAttempt } from "./recordingAttempt";
@@ -27,7 +29,7 @@ export default function RecordingSearchButton({ onResults, onError, onStart, ref
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lifecycle = useRef(new RecordingAttempt(cancelJob));
   function cancelJob(id: string) {
-    if (id) void fetch(`/analysis/library/recording/search/${encodeURIComponent(id)}`, { method: "DELETE", keepalive: true, signal: AbortSignal.timeout(10000) }).catch(() => {});
+    if (id) void fetch(`/analysis/library/recording/search/${encodeURIComponent(id)}`, { method: "DELETE", keepalive: true, signal: AbortSignal.timeout(runtimeConfig().recording_request_timeout_ms) }).catch(() => {});
   }
   useImperativeHandle(ref, () => ({ cancel: discard }));
   const callbacks = useRef({ onResults, onError });
@@ -42,7 +44,7 @@ export default function RecordingSearchButton({ onResults, onError, onStart, ref
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/analysis/library/recording/status", { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]), cache: "no-store" }).then(async response => {
+    fetch("/analysis/library/recording/status", { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(runtimeConfig().recording_request_timeout_ms)]), cache: "no-store" }).then(async response => {
       if (!response.ok) throw new Error("Recording search is unavailable");
       const value: Availability = await response.json();
       if (!controller.signal.aborted) setAvailability(value);
@@ -73,10 +75,10 @@ export default function RecordingSearchButton({ onResults, onError, onStart, ref
     let next: ReturnType<typeof setTimeout>;
     const attempt = lifecycle.current.generation;
     let failures = 0;
-    const deadline = setTimeout(() => { if (lifecycle.current.generation === attempt) { discardFromEffect(); callbacks.current.onError("Recording search timed out. Try again."); } }, 120000);
+    const deadline = setTimeout(() => { if (lifecycle.current.generation === attempt) { discardFromEffect(); callbacks.current.onError("Recording search timed out. Try again."); } }, runtimeConfig().recording_search_timeout_ms);
     async function poll() {
       try {
-        const response = await fetch(`/analysis/library/recording/search/${encodeURIComponent(jobId)}`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]), cache: "no-store" });
+        const response = await fetch(`/analysis/library/recording/search/${encodeURIComponent(jobId)}`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(runtimeConfig().recording_request_timeout_ms)]), cache: "no-store" });
         if (lifecycle.current.generation !== attempt || controller.signal.aborted) return;
         if ([401, 403, 404].includes(response.status)) {
           if (!controller.signal.aborted) { callbacks.current.onError("This search is no longer available. Sign in again or start another search."); discardFromEffect(); }
@@ -101,7 +103,7 @@ export default function RecordingSearchButton({ onResults, onError, onStart, ref
         if (++failures >= 3) { discardFromEffect(); callbacks.current.onError("Could not check recording search. Try again."); return; }
         callbacks.current.onError(reason instanceof Error ? reason.message : "Could not check recording search. Retrying...");
       }
-      next = setTimeout(poll, 1500);
+      next = setTimeout(poll, runtimeConfig().recording_poll_ms);
     }
     void poll();
     return () => { controller.abort(); clearTimeout(next); clearTimeout(deadline); };
@@ -120,7 +122,7 @@ export default function RecordingSearchButton({ onResults, onError, onStart, ref
     }
     setPhase("uploading");
     try {
-      const response = await fetch("/analysis/library/recording/search", { method: "POST", headers: { "content-type": audio.type || "application/octet-stream" }, body: audio, signal: AbortSignal.timeout(60000), keepalive: false });
+      const response = await fetch("/analysis/library/recording/search", { method: "POST", headers: { "content-type": audio.type || "application/octet-stream" }, body: audio, signal: AbortSignal.timeout(runtimeConfig().recording_upload_timeout_ms), keepalive: false });
       const body = await response.json().catch(() => null);
       if (response.status !== 202 || typeof body?.job_id !== "string" || !body.job_id) throw new Error(typeof body?.detail === "string" ? body.detail : `Could not start recording search (${response.status})`);
       if (!lifecycle.current.admit(attempt, body.job_id)) return;

@@ -7,6 +7,7 @@ import FullscreenPlayer from "./FullscreenPlayer";
 import { readPlaybackPreferences, streamUrlForQuality } from "./playbackPreferences";
 import { descriptorRhythm, validateVisualEnrichment, validateVisualFeatures, visualFrameAt, neutralVisualFrame, publishVisualFrame, type VisualFeatureTimeline } from "./visualFeatures";
 import { mediaUrl } from "../media/mediaOrigin";
+import { SESSION_EXPIRED_EVENT } from "../session/sessionUser";
 
 export type PlayerTrack = { id: string; title: string; artist?: string; album?: string; durationSeconds?: number; streamUrl: string; coverUrl?: string; connectionId?: string; sourceId?: string };
 
@@ -152,6 +153,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const player = new Audio(); audio.current = player;
+    // Native media events continue in background tabs, unlike animation frames.
+    const sessionPlayback = () => window.dispatchEvent(new CustomEvent("echora:session-playback", { detail: {
+      source: player.currentSrc, currentTime: player.currentTime, paused: player.paused || player.ended,
+      seeking: player.seeking, readyState: player.readyState,
+    } }));
+    const sessionEvents = ["timeupdate", "pause", "seeking", "emptied", "waiting", "ended"] as const;
+    sessionEvents.forEach(event => player.addEventListener(event, sessionPlayback));
+    const sessionExpired = () => { player.pause(); setExpanded(false); };
+    window.addEventListener(SESSION_EXPIRED_EVENT, sessionExpired);
     const time = () => { listenedRef.current = player.currentTime || 0; setCurrentTime(player.currentTime || 0); publishMediaPosition(player, trackRef.current?.durationSeconds); };
     const metadata = () => {
       const canonical = trackRef.current?.durationSeconds;
@@ -185,6 +195,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     player.addEventListener("loadstart", waiting); player.addEventListener("waiting", waiting);
     player.addEventListener("canplay", ready); player.addEventListener("playing", ready);
     return () => {
+      sessionEvents.forEach(event => player.removeEventListener(event, sessionPlayback));
+      window.removeEventListener(SESSION_EXPIRED_EVENT, sessionExpired);
       ([['timeupdate', time], ['durationchange', metadata], ['loadedmetadata', metadata], ['progress', progress],
         ['ended', ended], ['pause', paused], ['play', started], ['seeking', resetVisuals], ['emptied', resetVisuals],
         ['error', resetVisuals], ['loadstart', waiting], ['waiting', waiting], ['canplay', ready], ['playing', ready]] as const)

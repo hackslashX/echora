@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
-const source = stripTypeScriptTypes(readFileSync(new URL('./durableJobs.ts', import.meta.url), 'utf8'));
+import { runtimeConfigModule } from '../runtime/runtimeConfig.test-helper.mjs';
+const source = stripTypeScriptTypes(readFileSync(new URL('./durableJobs.ts', import.meta.url), 'utf8'))
+  .replace('"../runtime/runtimeConfig"', JSON.stringify(runtimeConfigModule));
 const { discoverJob, watchJob, isActiveJob, isTerminalJob, jobPresentation } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 const job = status => ({ id: 'job', job_id: 'job', status, phase: status, completed: 0, total: 1 });
 const response = body => ({ ok: true, json: async () => body });

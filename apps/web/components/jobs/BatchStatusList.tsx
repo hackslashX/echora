@@ -1,5 +1,7 @@
 "use client";
 
+import { runtimeConfig } from "../runtime/runtimeConfig";
+
 import { useEffect, useState } from "react";
 import { jobRequest } from "./durableJobs";
 import { batchStatus, type Batch } from "./batchStatus";
@@ -26,7 +28,7 @@ export default function BatchStatusList({ jobId, active }: { jobId: string; acti
         if (controller.signal.aborted) return;
         setError("Could not update batch status. Retrying."); retry = true;
       }
-      if (retry && !controller.signal.aborted) timer = setTimeout(poll, 1500);
+      if (retry && !controller.signal.aborted) timer = setTimeout(poll, runtimeConfig().batch_poll_ms);
     }
     void poll();
     return () => { controller.abort(); clearTimeout(timer); };

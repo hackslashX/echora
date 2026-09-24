@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .settings import get_settings
+
 from collections.abc import Callable
 import json
 import logging
@@ -407,20 +409,20 @@ def _stop_fa_kara_worker() -> None:
         return
     worker.terminate()
     try:
-        worker.wait(timeout=10)
+        worker.wait(timeout=get_settings().karaoke_shutdown_grace_seconds)
     except subprocess.TimeoutExpired:
         worker.kill()
-        worker.wait(timeout=5)
+        worker.wait(timeout=get_settings().karaoke_kill_grace_seconds)
 
 
-def _run_worker_job(worker: subprocess.Popen[str], argv: list[str], timeout: int = 1800) -> dict[str, object]:
+def _run_worker_job(worker: subprocess.Popen[str], argv: list[str], timeout: float | None = None) -> dict[str, object]:
     if worker.stdin is None or worker.stdout is None:
         raise RuntimeError("FA-Kara worker pipes are unavailable")
     worker.stdin.write(json.dumps({"argv": argv}, ensure_ascii=False) + "\n")
     worker.stdin.flush()
     selector = selectors.DefaultSelector()
     selector.register(worker.stdout, selectors.EVENT_READ)
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + (get_settings().karaoke_job_timeout_seconds if timeout is None else timeout)
     response_line = bytearray()
     try:
         # Read bytes rather than blocking on readline after a partial response.
@@ -441,7 +443,7 @@ def _run_worker_job(worker: subprocess.Popen[str], argv: list[str], timeout: int
     except BaseException:
         if worker.poll() is None:
             worker.kill()
-        worker.wait(timeout=5)
+        worker.wait(timeout=get_settings().karaoke_kill_grace_seconds)
         raise
     finally:
         selector.close()
@@ -457,8 +459,8 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
                  source_lines: list[dict[str, object]] | None = None,
                  separate_vocals: bool | None = None) -> dict[str, object]:
     vendor = Path(__file__).resolve().parents[2] / "vendor" / "fa_kara"
-    model_id = os.environ.get("FA_KARA_MODEL_ID", DEFAULT_MODEL_ID)
-    model_revision = os.environ.get("FA_KARA_REVISION", DEFAULT_MODEL_REVISION)
+    model_id = get_settings().fa_kara_model_id
+    model_revision = get_settings().fa_kara_revision
     snapshot = Path(os.environ.get("HF_HOME", "/models/huggingface")) / "hub" / f"models--{model_id.replace('/', '--')}" / "snapshots" / model_revision
     if not snapshot.is_dir():
         raise RuntimeError(f"FA-Kara model snapshot is missing: {model_id}@{model_revision}")
@@ -482,7 +484,7 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
         timeline = _anchored_source_lines(source_lines or [])
         input_text = "\n".join(str(line["text"]) for line in timeline) if timeline else lyrics_text.rstrip("\r\n")
         (work / "i.txt").write_text(input_text + "\n", encoding="utf-8")
-        aligner = os.environ.get("FA_KARA_ALIGNER", "yohane").lower()
+        aligner = get_settings().fa_kara_aligner.lower()
         if aligner not in {"yohane", "mms"}:
             raise ValueError("FA_KARA_ALIGNER must be 'yohane' or 'mms'")
         command = [
@@ -498,11 +500,11 @@ def _run_fa_kara(audio: bytes, lyrics_text: str, language: str | None,
         if timeline:
             (work / "timeline.json").write_text(json.dumps(timeline, ensure_ascii=False), encoding="utf-8")
             command.extend(["--timeline_json", "timeline.json"])
-        if os.environ.get("FA_KARA_REFINE_ALL_LINES", "false").lower() == "true":
+        if get_settings().fa_kara_refine_all_lines:
             command.append("--refine_all_lines")
-        if os.environ.get("FA_KARA_DURATION_AWARE_PRIORS", "false").lower() == "true":
+        if get_settings().fa_kara_duration_aware_priors:
             command.append("--duration_aware_priors")
-        audio_speed = float(os.environ.get("FA_KARA_AUDIO_SPEED", "1"))
+        audio_speed = float(get_settings().fa_kara_audio_speed)
         if not 0.5 <= audio_speed <= 1.5:
             raise ValueError("FA_KARA_AUDIO_SPEED must be between 0.5 and 1.5")
         if audio_speed != 1.0:
@@ -543,7 +545,7 @@ def backfill_karaoke(
     external_ids: list[str] | None = None,
 ) -> dict[str, int]:
     """Serialize alignment and release its resident model after the phase."""
-    while not _KARAOKE_LOCK.acquire(timeout=0.25):
+    while not _KARAOKE_LOCK.acquire(timeout=get_settings().karaoke_lock_poll_seconds):
         get_check()()
     try:
         get_check()()
@@ -565,11 +567,11 @@ def _backfill_karaoke(
     """Align only lyrics documents that arrived with line timestamps."""
     report = progress or (lambda _: None)
     summary = {"total": 0, "aligned": 0, "failed": 0}
-    with (psycopg.connect(os.environ["DATABASE_URL"]) as connection,
+    with (psycopg.connect(get_settings().database_url) as connection,
           NavidromeClient(url, username, password) as client):
         library_id = resolve_library_id(connection, url)
         model_revision = _stored_model_revision(
-            os.environ.get("FA_KARA_REVISION", DEFAULT_MODEL_REVISION)
+            get_settings().fa_kara_revision
         )
         planned = plan_karaoke(
             connection, KARAOKE_PIPELINE_REVISION, external_ids, model_revision, library_id=library_id

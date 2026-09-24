@@ -9,8 +9,9 @@ User identity belongs to the job envelope, not the payload.
 """
 from __future__ import annotations
 
+from .settings import get_settings
+
 from dataclasses import asdict
-import os
 import uuid
 
 import psycopg
@@ -24,7 +25,7 @@ OPERATIONS = frozenset({"navidrome_sync", "import", "lyrics_backfill", "voice_ba
 
 
 def _connect():
-    return psycopg.connect(os.environ["DATABASE_URL"])
+    return psycopg.connect(get_settings().database_url)
 
 
 def _source_rows(user_id, url, ids=None):
@@ -155,7 +156,7 @@ def execute(job: dict, context) -> dict | None:
                     'completed': 0, 'total': 1, 'unit': 'builds'})
             return build_semantic_fusion(progress=report)
         if kind != 'analysis_batch':
-            size = int(os.getenv('ECHORA_BATCH_SIZE', '128'))
+            size = int(get_settings().batch_size)
             if size <= 0:
                 raise ValueError('ECHORA_BATCH_SIZE must be positive')
             ids = payload.get('track_ids')

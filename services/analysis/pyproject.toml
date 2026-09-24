@@ -25,6 +25,7 @@ dependencies = [
   "numba==0.67.0",
   "numpy==2.5.2",
   "psycopg[binary]==3.3.4",
+  "pydantic-settings==2.15.0",
   "pykakasi==2.3.0",
   "pyphen==0.17.2",
   "pypinyin==0.55.0",

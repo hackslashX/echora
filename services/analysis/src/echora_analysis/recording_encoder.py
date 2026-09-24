@@ -31,6 +31,8 @@ non-silent rows must have nonzero finite embeddings and are L2 normalized. Input
 shorter than one second are rejected. No padding or amplitude normalization occurs.
 """
 
+from .settings import get_settings
+
 from collections import OrderedDict
 from dataclasses import dataclass
 from threading import RLock
@@ -138,8 +140,8 @@ def _session(data: dict, check: Callable[[], None]):
         check()
         import onnxruntime as ort
         options = ort.SessionOptions()
-        options.intra_op_num_threads = min(4, os.cpu_count() or 1)
-        options.inter_op_num_threads = 1
+        options.intra_op_num_threads = min(get_settings().recording_intra_op_threads, os.cpu_count() or 1)
+        options.inter_op_num_threads = get_settings().recording_inter_op_threads
         session = ort.InferenceSession(model, sess_options=options, providers=['CPUExecutionProvider'])
         check()
         _check_graph(session, data)
@@ -218,8 +220,9 @@ def load_config(manifest_path: str | Path) -> EncoderConfig:
 
 def config_from_env(environ: Mapping[str, str] | None = None) -> EncoderConfig | None:
     """Absent/empty env disables; an invalid configured path fails closed."""
-    env = os.environ if environ is None else environ
-    path = env.get("ECHORA_RECORDING_MODEL_MANIFEST")
+
+    path = (get_settings().recording_model_manifest if environ is None
+            else environ.get("ECHORA_RECORDING_MODEL_MANIFEST"))
     if path is None or not path.strip():
         return None
     return load_config(path)

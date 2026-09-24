@@ -1,3 +1,5 @@
+from echora_analysis.settings import get_settings
+
 from types import SimpleNamespace
 from unittest.mock import Mock
 import sys
@@ -16,6 +18,7 @@ def setup_main(monkeypatch):
 def test_default_batch_is_128(monkeypatch):
     ctx = setup_main(monkeypatch)
     monkeypatch.delenv('ECHORA_BATCH_SIZE', raising=False)
+    get_settings.cache_clear()
     jobs = SimpleNamespace(expand=Mock())
     monkeypatch.setitem(sys.modules, 'echora_analysis.jobs', jobs)
     monkeypatch.setattr(echora_analysis, 'jobs', jobs, raising=False)

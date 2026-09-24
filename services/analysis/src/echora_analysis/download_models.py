@@ -1,3 +1,5 @@
+
+from .settings import get_settings
 import argparse
 import hashlib
 import os
@@ -33,10 +35,8 @@ LEGACY_MANAGED_MODELS = {"NextFire/mms-300m-ForcedAligner-karaoke-ja-Latn"}
 
 def required_models() -> tuple[tuple[str, str, bool], ...]:
     """Return immutable model revisions required by the active service config."""
-    fa_model = os.environ.get(
-        "FA_KARA_MODEL_ID", "hcX02/echora-mms-300m-multilingual-lyrics-forced-aligner"
-    )
-    fa_revision = os.environ.get("FA_KARA_REVISION", "b46485a5d814dc26e3511cece3ccc98ebba2e9d0")
+    fa_model = get_settings().fa_kara_model_id
+    fa_revision = get_settings().fa_kara_revision
     from .transcription_config import transcription_model
     moss = transcription_model()
     return (*MODELS, (fa_model, fa_revision, False),
@@ -81,7 +81,7 @@ def _prune_huggingface_cache(required: tuple[tuple[str, str, bool], ...]) -> Non
 
 def _download_essentia() -> None:
     """Fetch the MTG-Jamendo voice/gender classifier files used by voice_pipeline."""
-    directory = Path(os.environ.get("ESSENTIA_MODELS_DIR", "/data/models/essentia"))
+    directory = Path(get_settings().essentia_models_dir)
     directory.mkdir(parents=True, exist_ok=True)
     for url, expected_sha256 in ESSENTIA_MODELS:
         target = directory / url.rsplit("/", 1)[-1]

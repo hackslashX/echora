@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Backdrop from "@/components/shell/Backdrop";
 import { PlayerProvider } from "@/components/player/PlayerProvider";
 import MotionPreferences from "@/components/shell/MotionPreferences";
+import RuntimeConfigBootstrap from "@/components/runtime/RuntimeConfigBootstrap";
+import SessionRenewal from "@/components/session/SessionRenewal";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -24,7 +26,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
           dangerouslySetInnerHTML={{ __html: `window.__ECHORA_MEDIA_BASE__=${JSON.stringify(mediaBase)};` }}
         />
       </head>
-      <body><div className="app-viewport"><MotionPreferences /><Backdrop /><PlayerProvider>{children}</PlayerProvider></div></body>
+      <body><div className="app-viewport"><RuntimeConfigBootstrap /><MotionPreferences /><Backdrop /><PlayerProvider><SessionRenewal />{children}</PlayerProvider></div></body>
     </html>
   );
 }

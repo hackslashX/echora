@@ -1,3 +1,5 @@
+
+import { runtimeConfig } from "../runtime/runtimeConfig";
 export type Job = { id?: string; kind?: string; parent_id?: string; job_id: string; connection_id?: string; curation_id?: string; status: string; dismissed_at?: string | null; phase: string; completed: number; total: number; message?: string; error?: string; cancel_requested?: boolean; unit?: string; track?: { id: string; title: string; artist?: string }; summary?: Record<string, number>; progress?: Record<string, unknown> };
 export const isActiveJob = (job: Job | null) => !!job && ["queued", "running", "waiting"].includes(job.status);
 export const isTerminalJob = (job: Job | null) => !!job && ["complete", "partial", "failed", "cancelled"].includes(job.status);
@@ -23,7 +25,7 @@ export async function discoverJob(connectionId: string, signal: AbortSignal): Pr
 }
 
 /** One in-flight request at a time; failures keep the same job and retry. */
-export function watchJob(connectionId: string, jobId: string | null, receive: (job: Job | null) => void, onError: (message: string) => void, delay = 1200) {
+export function watchJob(connectionId: string, jobId: string | null, receive: (job: Job | null) => void, onError: (message: string) => void, delay?: number) {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout>;
   let id = jobId;
@@ -39,7 +41,7 @@ export function watchJob(connectionId: string, jobId: string | null, receive: (j
       if (controller.signal.aborted) return;
       onError(`Connection error: ${reason instanceof Error ? reason.message : "Could not read job progress"}. Retrying…`);
     }
-    if (again && !controller.signal.aborted) timer = setTimeout(poll, delay);
+    if (again && !controller.signal.aborted) timer = setTimeout(poll, delay ?? runtimeConfig().job_poll_ms);
   }
   void poll();
   return () => { controller.abort(); clearTimeout(timer); };

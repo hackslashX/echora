@@ -11,7 +11,8 @@ useless Navidrome 'xxx') and stores the distribution under
 
 from __future__ import annotations
 
-import os
+from .settings import get_settings, require_database_url
+
 from collections.abc import Iterator
 
 import psycopg
@@ -19,8 +20,6 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from .language_detection import detect_distribution
-
-BATCH_SIZE = 200
 
 
 def _batches(connection: psycopg.Connection) -> Iterator[list[dict[str, object]]]:
@@ -30,17 +29,16 @@ def _batches(connection: psycopg.Connection) -> Iterator[list[dict[str, object]]
                WHERE text IS NOT NULL AND length(text) > 0
                ORDER BY track_id""")
         while True:
-            rows = cursor.fetchmany(BATCH_SIZE)
+            rows = cursor.fetchmany(get_settings().language_backfill_batch_size)
             if not rows:
                 return
             yield rows
 
 
 def backfill() -> None:
-    database_url = os.environ["DATABASE_URL"]
     updated = 0
     unconfident = 0
-    with psycopg.connect(database_url) as connection:
+    with psycopg.connect(require_database_url()) as connection:
         for batch in _batches(connection):
             payload = []
             for row in batch:

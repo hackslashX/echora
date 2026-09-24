@@ -1,7 +1,8 @@
 """Revalidate source identity without discarding valid canonical artifacts."""
 from __future__ import annotations
 
-import os
+from .settings import get_settings
+
 
 # Ignore per-user playback/star/rating fields. Catalog metadata is only a change
 # hint, not proof of byte identity: periodic rehashing handles unreported edits.
@@ -13,7 +14,7 @@ _CONTENT_HINTS = (
 
 
 def sources_needing_refresh(connection, library_id, external_ids, catalog=()):
-    interval = int(os.environ.get("ECHORA_SOURCE_RECHECK_SECONDS", "0"))
+    interval = int(get_settings().source_recheck_seconds)
     if interval < 0:
         raise ValueError("ECHORA_SOURCE_RECHECK_SECONDS must be nonnegative")
     current = {track.id: getattr(track, "raw", {}) or {} for track in catalog}

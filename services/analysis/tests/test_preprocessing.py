@@ -1,3 +1,5 @@
+from echora_analysis.settings import get_settings
+
 from concurrent.futures import ThreadPoolExecutor
 import io
 import json
@@ -112,6 +114,7 @@ def test_oversized_result_is_returned_without_retention(tmp_path):
 def test_decode_contracts_cached_only_in_session(monkeypatch, tmp_path):
     from echora_analysis import audio
     monkeypatch.setenv("ECHORA_PREPROCESS_DIR", str(tmp_path))
+    get_settings.cache_clear()
     raw = Mock(return_value=np.ones(10, dtype=np.float32))
     stereo = Mock(return_value=np.ones((10, 2), dtype=np.float32))
     monkeypatch.setattr(audio, "_decode_audio", raw)
@@ -133,6 +136,7 @@ def test_shared_vocals_for_transcription_and_karaoke(monkeypatch, tmp_path):
     from echora_analysis import audio, roformer
     import soundfile as sf
     monkeypatch.setenv("ECHORA_PREPROCESS_DIR", str(tmp_path))
+    get_settings.cache_clear()
     separate = Mock(side_effect=lambda waveform, check: waveform * 0.25)
     monkeypatch.setattr(roformer, "separate_vocals", separate)
     monkeypatch.setattr(audio, "_decode_audio_channels", Mock(return_value=np.ones((44100, 2), dtype=np.float32)))
@@ -158,6 +162,7 @@ def test_shared_vocals_for_transcription_and_karaoke(monkeypatch, tmp_path):
 
 def test_cancel_check_propagates_through_session(monkeypatch, tmp_path):
     monkeypatch.setenv("ECHORA_PREPROCESS_DIR", str(tmp_path))
+    get_settings.cache_clear()
     class Cancel(BaseException):
         pass
     with p.preprocessing_session(lambda: (_ for _ in ()).throw(Cancel())):
@@ -189,6 +194,7 @@ def test_audio_plan_prepares_only_pending_formats():
 def test_melody_reuses_shared_vocals_and_caches_residual(monkeypatch, tmp_path):
     from echora_analysis import audio, roformer
     monkeypatch.setenv("ECHORA_PREPROCESS_DIR", str(tmp_path))
+    get_settings.cache_clear()
     mix = np.random.default_rng(22).uniform(-2, 2, (44100, 2)).astype(np.float32)
     decode = Mock(return_value=mix.copy())
     separate = Mock(side_effect=lambda waveform, check: waveform * 0.25)
@@ -230,6 +236,7 @@ def test_prune_stops_checking_once_remaining_entries_are_retained(tmp_path):
 def test_karaoke_reference_matches_vocal_resampling_grid(monkeypatch, tmp_path, frames):
     from echora_analysis import audio, roformer
     monkeypatch.setenv("ECHORA_PREPROCESS_DIR", str(tmp_path))
+    get_settings.cache_clear()
     mix = np.random.default_rng(frames).uniform(-1, 1, (frames, 2)).astype(np.float32)
     decode = Mock(return_value=mix)
     separate = Mock(side_effect=lambda waveform, check: waveform.copy())
