@@ -180,5 +180,13 @@ def get_settings() -> Settings:
     return Settings()
 
 
+def require_database_url() -> str:
+    """Return the configured database URL or fail before a driver can use defaults."""
+    database_url = get_settings().database_url
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is required")
+    return database_url
+
+
 def public_ui_settings() -> dict[str, int]:
     return get_settings().public_ui()

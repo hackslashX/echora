@@ -5,7 +5,7 @@ held across remote I/O (not merely the selecting transaction). Publication inten
 outlives jobs: a fresh manual job cannot bypass an ambiguous playlist creation.
 """
 
-from .settings import get_settings
+from .settings import get_settings, require_database_url
 from contextlib import contextmanager
 import json
 import uuid
@@ -16,7 +16,7 @@ from psycopg.types.json import Jsonb
 
 
 def _connect():
-    return psycopg.connect(get_settings().database_url, row_factory=dict_row)
+    return psycopg.connect(require_database_url(), row_factory=dict_row)
 
 
 @contextmanager

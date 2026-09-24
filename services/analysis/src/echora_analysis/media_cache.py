@@ -10,6 +10,8 @@ import uuid
 import redis
 
 
+_STAGING_TTL_SECONDS = 3600
+
 
 def cache_key(kind: str, *parts: object) -> str:
     value = "\x1f".join(str(part) for part in parts).encode()
@@ -29,7 +31,7 @@ class StreamCacheWriter:
         self.staging_key = f"{key}:staging:{uuid.uuid4().hex}"
         self.enabled = False
         try:
-            self.client.set(self.staging_key, f"{content_type}\0".encode(), ex=get_settings().media_cache_ttl_seconds)
+            self.client.set(self.staging_key, f"{content_type}\0".encode(), ex=_STAGING_TTL_SECONDS)
             self.enabled = True
         except redis.RedisError:
             pass
@@ -38,7 +40,11 @@ class StreamCacheWriter:
         if not self.enabled:
             return
         try:
+            if not self.client.exists(self.staging_key):
+                self.abort()
+                return
             self.client.append(self.staging_key, chunk)
+            self.client.expire(self.staging_key, _STAGING_TTL_SECONDS)
         except redis.RedisError:
             self.abort()
 
@@ -47,6 +53,7 @@ class StreamCacheWriter:
             return
         try:
             self.client.rename(self.staging_key, self.key)
+            self.client.expire(self.key, get_settings().media_cache_ttl_seconds)
         except redis.RedisError:
             self.abort()
         else:

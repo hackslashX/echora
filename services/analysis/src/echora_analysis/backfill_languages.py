@@ -11,7 +11,7 @@ useless Navidrome 'xxx') and stores the distribution under
 
 from __future__ import annotations
 
-from .settings import get_settings
+from .settings import get_settings, require_database_url
 
 from collections.abc import Iterator
 
@@ -36,10 +36,9 @@ def _batches(connection: psycopg.Connection) -> Iterator[list[dict[str, object]]
 
 
 def backfill() -> None:
-    database_url = get_settings().database_url
     updated = 0
     unconfident = 0
-    with psycopg.connect(database_url) as connection:
+    with psycopg.connect(require_database_url()) as connection:
         for batch in _batches(connection):
             payload = []
             for row in batch:

@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from echora_analysis.settings import Settings, get_settings
+from echora_analysis.settings import Settings, get_settings, require_database_url
 
 
 @pytest.fixture(autouse=True)
@@ -29,6 +29,14 @@ def test_defaults_and_no_dotenv(tmp_path, monkeypatch):
     assert settings.worker_lease_seconds == 120
     assert settings.model_config['env_file'] is None
     assert Settings(unknown='ignored').batch_size == 128
+
+
+def test_database_url_is_required_by_connection_entry_points(monkeypatch):
+    with pytest.raises(RuntimeError, match="DATABASE_URL is required"):
+        require_database_url()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/echora")
+    get_settings.cache_clear()
+    assert require_database_url() == "postgresql://example.invalid/echora"
 
 
 def test_aliases_types_case_and_cache(monkeypatch):
