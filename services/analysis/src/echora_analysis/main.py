@@ -1170,13 +1170,12 @@ def update_track_lyrics(
             raise HTTPException(status_code=404, detail="Track is not in your library")
         cursor.execute("SELECT text, language FROM lyrics WHERE track_id=%s", (track_id,))
         existing = cursor.fetchone()
-        changed = existing is None or existing["text"] != lyric_text or existing["language"] != language
+        changed = existing is None or existing["text"] != lyric_text
         cursor.execute(
             """INSERT INTO lyrics (track_id, source, text, language, provenance, availability_status)
                VALUES (%s,'manual',%s,%s,jsonb_build_object('manual',true,'edited_at',now()::text),'available')
                ON CONFLICT (track_id) DO UPDATE SET source='manual', text=EXCLUDED.text,
-                 language=EXCLUDED.language, provenance=(CASE WHEN lyrics.text IS DISTINCT FROM EXCLUDED.text
-                   OR lyrics.language IS DISTINCT FROM EXCLUDED.language THEN
+                 language=EXCLUDED.language, provenance=(CASE WHEN lyrics.text IS DISTINCT FROM EXCLUDED.text THEN
                      coalesce(lyrics.provenance,'{}'::jsonb) - 'lines' - 'synced'
                    ELSE coalesce(lyrics.provenance,'{}'::jsonb) END)
                    || jsonb_build_object('manual',true,'edited_at',now()::text),

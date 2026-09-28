@@ -3,6 +3,7 @@ export type PlaybackQuality = "original" | "320" | "120";
 export type PlaybackPreferences = {
   quality: PlaybackQuality;
   wavesEnabled: boolean;
+  backdropOpacity: number;
   backdropPreset: BackdropPreset;
   bassReactivity: number;
   vocalReactivity: number;
@@ -15,6 +16,7 @@ export type PlaybackPreferences = {
 export const defaultPlaybackPreferences: PlaybackPreferences = {
   quality: "original",
   wavesEnabled: true,
+  backdropOpacity: 1,
   backdropPreset: "waves",
   bassReactivity: 1,
   vocalReactivity: 1,
@@ -31,7 +33,8 @@ export function readPlaybackPreferences(): PlaybackPreferences {
   try {
     const stored = JSON.parse(localStorage.getItem(storageKey) || "{}");
     if (stored.backdropPreset === "retrotrain") stored.backdropPreset = "lightningfall";
-    return { ...defaultPlaybackPreferences, ...stored };
+    const opacity = stored.backdropOpacity ?? stored.fullscreenBackdropOpacity;
+    return { ...defaultPlaybackPreferences, ...stored, backdropOpacity: typeof opacity === "number" && Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1 };
   } catch { return defaultPlaybackPreferences; }
 }
 

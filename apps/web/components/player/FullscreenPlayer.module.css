@@ -65,3 +65,14 @@
 .translationControls svg{width:16px;height:16px}
 .translationControls select{border:0;border-left:1px solid var(--glass-stroke);background:#070d13;color:var(--aqua);padding:0 8px;font:var(--type-label) var(--ui-font)}
 @media(max-width:1199px),(max-height:719px){.player .lyricsSizingControls{display:contents}.player .lyricsToolbar .translationControls{order:2;flex-shrink:0;height:36px;border-color:var(--glass-stroke)}.player .lyricsToolbar .translationControls button{width:34px;height:34px}}
+
+/* Fullscreen uses one inset for the playback grid and all desktop controls. */
+@media(min-width:1200px) and (min-height:720px){
+  .lyricsSizingControls{top:var(--fullscreen-inset);left:var(--fullscreen-inset);height:44px}
+  .lyricsModeControls{top:var(--fullscreen-inset);right:calc(var(--fullscreen-inset) + 56px);height:44px}
+  .close{top:var(--fullscreen-inset);right:var(--fullscreen-inset)}
+  .lyrics,.appleLyrics,.untimedStage{width:calc(100% - 2 * var(--fullscreen-inset))}
+  .lyrics,.appleLyrics{transform:none}
+  .bilingualLyrics button{text-align:center}
+  .bilingualLyrics button>span{text-align:center}
+}

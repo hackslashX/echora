@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDown, ArrowUp, Disc3, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, Disc3, RotateCcw, Search } from "lucide-react";
 import { coverArtUrl } from "../media/coverArt"
 import { mediaUrl } from "../media/mediaOrigin";
 import LoadingImage from "../media/LoadingImage";
@@ -124,7 +124,7 @@ export default function BrowseLibrary() {
     <section className={styles.layout} style={{ gridTemplateColumns: trackTemplate(columns, 160), gridTemplateRows: trackTemplate(rows, 88) }}>
       <MobilePivots label="Browse sections" active={mobilePane} onChange={setMobilePane} items={[{ key: "tracks", label: searchMode ? "matches" : "tracks", count: total }, { key: "filters", label: "filters" }]} />
       <aside className={`${styles.filters} ${mobilePane === "filters" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
-        <CardHeader as="h1" title="Filters" actions={<button type="button" className={styles.clearFilters} onClick={() => { setArtist(""); setAlbum(""); setArtistQuery(""); setAlbumQuery(""); setQuery(""); setMetadata({ ...emptyMetadataFilters }); resetResults(); }}>Clear all</button>} />
+        <CardHeader as="h1" title="Filters" actions={<button type="button" className={styles.clearFilters} onClick={() => { setArtist(""); setAlbum(""); setArtistQuery(""); setAlbumQuery(""); setQuery(""); setMetadata({ ...emptyMetadataFilters }); resetResults(); }}><RotateCcw aria-hidden="true" /><span>Clear all</span></button>} />
         <BrowseMetadataFilters value={metadata} onChange={next => { setMetadata(next); resetResults(); }} />
         <section className={styles.filterGroup}><span>Artists</span><input value={artistQuery} onChange={event => { invalidateSearches(); setArtistQuery(event.target.value); }} placeholder="Search artists" /><div><button type="button" className={!artist ? styles.selected : ""} onClick={() => { setArtist(""); setAlbum(""); resetResults(); }}>All artists</button>{artists.map(item => <button type="button" className={artist === item.name ? styles.selected : ""} onClick={() => { setArtist(item.name); setAlbum(""); resetResults(); }} key={item.name}>{item.name}<b>{item.tracks}</b></button>)}</div></section>
         <section className={styles.filterGroup}><span>Albums</span><input value={albumQuery} onChange={event => { invalidateSearches(); setAlbumQuery(event.target.value); }} placeholder="Search albums" /><div><button type="button" className={!album ? styles.selected : ""} onClick={() => { setAlbum(""); resetResults(); }}>All albums</button>{albums.map(item => <button type="button" className={album === item.name ? styles.selected : ""} onClick={() => { setAlbum(item.name); resetResults(); }} key={item.name}>{item.name}<b>{item.tracks}</b></button>)}</div></section>
