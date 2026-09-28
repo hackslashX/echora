@@ -25,7 +25,12 @@ export function useDialogFocus(ref: RefObject<HTMLElement | null>, open: boolean
     const controls = () => Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')).filter(element => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden");
     (controls()[0] || dialog).focus();
     const keydown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close.current(); }
+      if (event.key === "Escape") {
+        event.preventDefault(); event.stopPropagation();
+        const popover = dialog.querySelector<HTMLElement>("[popover]:popover-open");
+        if (popover) { popover.hidePopover(); return; }
+        close.current();
+      }
       if (event.key !== "Tab") return;
       const items = controls();
       const first = items[0], last = items[items.length - 1];

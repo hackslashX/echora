@@ -96,6 +96,7 @@ def backfill_lyrics(
     progress: Callable[[dict[str, object]], None] | None = None,
     external_ids: list[str] | None = None,
     only_missing: bool = False,
+    refresh_existing: bool = False,
 ) -> dict[str, int]:
     report = progress or (lambda _: None)
     summary = {"total": 0, "available": 0, "missing": 0, "unavailable": 0, "embedded": 0, "failed": 0}
@@ -103,6 +104,8 @@ def backfill_lyrics(
         library_id = resolve_library_id(connection, url)
         configure_representations(connection)
         planned = plan_lyrics(connection, external_ids, library_id=library_id).lyrics_external_ids
+        if refresh_existing and external_ids is not None:
+            planned = frozenset(external_ids)
         if not planned:
             report({"phase": "planning", "message": "Lyrics analysis already current",
                     "completed": 0, "total": 0, "unit": "tracks"})

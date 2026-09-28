@@ -1,0 +1,77 @@
+# External AI backend foundation
+
+Apply Alembic revision `0051_external_ai_translations` through the normal migration
+process. No configuration row is required: reads default to disabled. Downgrade
+drops configuration and translations (including encrypted keys) but never source
+lyrics. Back up these new tables before downgrading if their contents are needed.
+
+## Settings API
+
+`GET /settings/external-ai` and `PUT /settings/external-ai` require an authenticated
+administrator using the existing session cookie. PUT replaces configuration:
+
+```json
+{
+  "enabled": false,
+  "url": "http://localhost:8000/v1",
+  "model": "local-model",
+  "prompt": "Translate each lyric line faithfully, preserving meaning, tone and line boundaries. Do not add commentary.",
+  "language_pairs": [{"source": "ja", "target": "en"}],
+  "api_key": "replacement key"
+}
+```
+
+Omit/null `api_key` to preserve, send an empty string to clear, or supply a new
+value to replace. Encryption uses the existing credential Fernet key via `_cipher`;
+no new secret configuration is introduced. Responses expose only `has_key`, never
+plaintext or ciphertext. PUT validation errors are deliberately generic to avoid
+Pydantic echoing secret-bearing input. Language tags are trimmed, lowercased and
+underscore-to-hyphen normalized; duplicate pairs and same-language pairs fail.
+Omitting prompt restores the built-in default; custom prompts must be nonblank.
+
+The URL is an API base; `/chat/completions` is appended. Local/private HTTP
+endpoints are intentionally allowed. Administrators are trusted to control egress,
+including destinations on internal networks. Use network policy where this trust
+is inappropriate. HTTP can expose both lyrics and keys: prefer HTTPS off-host.
+Changing endpoint while preserving a key will send that key to the new endpoint.
+Userinfo, query strings, fragments, whitespace and non-HTTP(S) schemes are rejected.
+Requests use the official `openai` Python SDK, pinned to 3.19.2, with `max_completion_tokens`. SDK retries are disabled so future workers can control retry budgets and cancellation. Keyless local endpoints omit Authorization, and SDK organization/project/admin-key environment defaults are not used. Raw response streaming retains the size limit and strict JSON validation. The client disables redirects and environment proxies, uses finite connect/pool
+(5s) and read/write (30s) timeouts, checks a 60s budget between received chunks,
+and caps input/output size. A blocking read may last until its read timeout after
+the budget; this is not a strict wall-clock cancellation mechanism.
+
+## Translation contract and storage
+
+`lyric_translation.translate` is opt-in, refuses disabled settings/unconfigured
+pairs, and accepts ordered source lines. It sends them as untrusted JSON with
+zero-based IDs, requesting JSON-only output. Exact ID coverage is required;
+duplicates, unknown IDs, incorrect types, extra line fields, multiline outputs,
+empty translations of nonblank sources, malformed JSON, refusals, tools and
+non-`stop` completion reasons fail with safe error codes. Outputs are reordered by
+ID. There are no automatic retries or tools. Prompt instructions reduce injection
+risk but cannot guarantee linguistic fidelity; output is always inert data.
+
+`translation_storage` persists settings atomically and upserts translations by
+track, source/target pair, and provenance (`ai` versus `provider`). Each translation
+contains mapped lines, a checksum of the exact ordered source text, model, prompt
+hash, status and timestamps. AI writes cannot replace imported provider results.
+`load_translations` marks mismatched source checksums stale. This requires callers
+to pass the same canonical resolved source-line list used for translation. Original
+lyrics and karaoke timing are never modified.
+
+## Integrated behavior and remaining work
+
+The Settings UI uses separate admin-only GET/PUT routes:
+
+- `/settings/external-ai/endpoint`: enabled, URL, key replacement and redacted key status.
+- `/settings/external-ai/translation`: model, prompt and language pairs.
+
+The combined route remains available for compatibility. Section writes update only their own columns. API enablement requires a URL; translation execution also requires a model and language pairs.
+
+Sync invokes translation after lyrics processing. Current translations are reused by source checksum; changing the prompt alone does not regenerate them. The authenticated track lyrics API includes ready translations, which fullscreen renders alongside source text without translated karaoke timing.
+
+`DELETE /settings/external-ai/translations` requires admin access and refuses deletion while sync or lyrics jobs remain active. It deletes translations across the instance, not original lyrics. The UI uses an application confirmation dialog.
+
+Remaining: separate translated embeddings and curation retrieval, per-request retries/rate limits, safe persisted failure details, and translation-specific batch failure handling. Currently a translation failure increments the summary failure count, which can cause the worker to retry the whole batch.
+
+Tests include `test_external_ai.py`, `test_translation_pipeline.py`, `test_translation_storage.py` and `test_browse_filters.py`. PostgreSQL storage tests require `TEST_DATABASE_URL` and use an isolated schema. Migrations 0051 through 0054 add translation storage, update unchanged default prompts, and create Browse indexes concurrently.

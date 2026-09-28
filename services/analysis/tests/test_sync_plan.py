@@ -14,6 +14,8 @@ from echora_analysis import sync_plan
 
 @pytest.fixture
 def planner(monkeypatch):
+    from echora_analysis import translation_storage
+    monkeypatch.setattr(translation_storage, "load_settings", lambda: (SimpleNamespace(enabled=False), None))
     connection = MagicMock()
     cursor = connection.cursor.return_value.__enter__.return_value
     cursor.fetchone.return_value = (uuid4(),)
@@ -99,10 +101,10 @@ def test_parent_batches_selected_work_but_reconciles_full_catalog(monkeypatch, r
            'connection_id': 'connection', 'payload': {'mode': 'missing'}}
     assert analysis_jobs.execute(job, context) is None
     select.assert_called_once_with('db', 'https://music', catalog, 'missing',
-                                   catalog=client.__enter__.return_value.all_tracks.return_value)
+                                   catalog=client.__enter__.return_value.all_tracks.return_value, verify_audio_hashes=True)
     main._reconcile_user_tracks.assert_called_once_with('user', 'https://music', catalog)
     assert store.expand.call_args.args[2] == [
-        {'operation': 'navidrome_sync', 'connection_id': 'connection', 'track_ids': selected[i:i + 32]}
+        {'operation': 'navidrome_sync', 'connection_id': 'connection', 'track_ids': selected[i:i + 32], 'verify_audio_hashes': True, 'refresh_lyrics': False}
         for i in range(0, len(selected), 32)]
 
 
@@ -118,3 +120,11 @@ def test_entire_library_selects_recording_only_backfill_without_other_models(pla
                                             recording_fingerprint_external_ids=frozenset({"existing"}))
     assert sync_plan.select_sync_tracks(connection, "https://music", ["existing", "ready"], "all") == ["existing"]
     assert not audio.return_value.needs_muq and not audio.return_value.needs_mert
+
+
+def test_skip_hash_visits_known_tracks_for_metadata_and_translation(planner):
+    connection, cursor, audio, karaoke = planner
+    cursor.fetchall.return_value = [('known',)]
+    assert sync_plan.select_sync_tracks(connection, 'https://music', ['known', 'new'], verify_audio_hashes=False) == ['known', 'new']
+    audio.assert_not_called()
+    karaoke.assert_not_called()

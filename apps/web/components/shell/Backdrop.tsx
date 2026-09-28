@@ -17,6 +17,7 @@ import CloudVisualizer from "../player/CloudVisualizer";
 import MeshGridVisualizer from "../player/MeshGridVisualizer";
 import LightningFallVisualizer from "../player/LightningFallVisualizer";
 import styles from "./Backdrop.module.css";
+import { advanceWaveSpring } from "./waveSpring";
 import { readCompactLayoutPreference } from "./layoutPreference";
 
 type RenderLayer = { render: (time: number) => void };
@@ -204,6 +205,18 @@ function presetScene(ctx: CanvasRenderingContext2D, preset: BackdropPreset, widt
 }
 
 export default function Backdrop() {
+  const backdropRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const apply = (preferences: PlaybackPreferences) => {
+      const value = preferences.backdropOpacity;
+      const opacity = typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
+      backdropRef.current?.style.setProperty("--backdrop-opacity", String(opacity));
+    };
+    apply(readPlaybackPreferences());
+    const update = (event: Event) => apply((event as CustomEvent<PlaybackPreferences>).detail);
+    window.addEventListener("echora:playback-preferences", update);
+    return () => window.removeEventListener("echora:playback-preferences", update);
+  }, []);
   const glRef = useRef<HTMLCanvasElement>(null);
   const sceneRef = useRef<HTMLCanvasElement>(null);
 
@@ -273,6 +286,7 @@ export default function Backdrop() {
         spline: { layerAmplitudes: [...splineSettings.layerAmplitudes], opacity: splineSettings.opacity, layerColors: splineSettings.layerColors.map(color => [...color] as Color), background: [splineSettings.colorR, splineSettings.colorG, splineSettings.colorB] as Color },
         particles: { count: particleSettings.count },
       } : null;
+      const waveSprings = [0, 1, 2].map(layer => ({ position: baseline?.spline.layerAmplitudes[layer] ?? 0, velocity: 0 }));
       let previous = performance.now();
       let lastRendered = 0;
       let elapsed = 0;
@@ -314,9 +328,12 @@ export default function Backdrop() {
           presetScene(scene, preferences.backdropPreset, sceneCanvas.width, sceneCanvas.height, elapsed, now / 1000, frameDelta, sceneReactive, [...baseColor] as Color, [[...waveColors[0]], [...waveColors[1]], [...waveColors[2]]], curtainState);
         } else if (!rootsActive && !fallActive && !signalActive && baseline && splineSettings && particleSettings) {
           splineSettings.opacity = baseline.spline.opacity * opacityScale;
-          splineSettings.layerAmplitudes[0] = preferences.wavesEnabled && preferences.backdropPreset === "waves" ? baseline.spline.layerAmplitudes[0] + reactive.bass * 1.65 * preferences.bassReactivity : 0;
-          splineSettings.layerAmplitudes[1] = preferences.wavesEnabled && preferences.backdropPreset === "waves" ? baseline.spline.layerAmplitudes[1] + reactive.mid * 1.3 * preferences.vocalReactivity : 0;
-          splineSettings.layerAmplitudes[2] = preferences.wavesEnabled && preferences.backdropPreset === "waves" ? baseline.spline.layerAmplitudes[2] + reactive.treble * 1.05 * preferences.trebleReactivity : 0;
+          const waveLevels = [target.bass * preferences.bassReactivity, target.mid * preferences.vocalReactivity, target.treble * preferences.trebleReactivity];
+          for (let layer = 0; layer < 3; layer++) {
+            const desired = preferences.wavesEnabled && preferences.backdropPreset === "waves"
+              ? baseline.spline.layerAmplitudes[layer] + waveLevels[layer] * [1.65, 1.3, 1.05][layer] : 0;
+            splineSettings.layerAmplitudes[layer] = advanceWaveSpring(waveSprings[layer], desired, frameDelta, [7, 8, 9][layer]);
+          }
           particleSettings.count = preferences.wavesEnabled && preferences.backdropPreset === "waves" ? Math.round((baseline.particles.count + reactive.treble * 2600) / 100) * 100 : 0;
           splineSettings.colorR += (baseColor[0] - splineSettings.colorR) * .025;
           splineSettings.colorG += (baseColor[1] - splineSettings.colorG) * .025;
@@ -336,5 +353,5 @@ export default function Backdrop() {
     return () => { cancelled = true; cancelAnimationFrame(animation); removeResize(); window.removeEventListener("echora:audio-reactivity", receiveAudio); window.removeEventListener("echora:backdrop-mode", receiveMode); window.removeEventListener("echora:track-palette", receivePalette); window.removeEventListener("echora:playback-preferences", receivePreferences); };
   }, []);
 
-  return <div className={styles.backdrop} aria-hidden="true"><canvas ref={glRef} /><canvas ref={sceneRef} className={styles.scene} /><RootVisualizer /><SignalVisualizer /><CloudVisualizer /><LightningFallVisualizer /><MeshGridVisualizer /></div>;
+  return <div ref={backdropRef} className={styles.backdrop} aria-hidden="true"><canvas ref={glRef} /><canvas ref={sceneRef} className={styles.scene} /><RootVisualizer /><SignalVisualizer /><CloudVisualizer /><LightningFallVisualizer /><MeshGridVisualizer /></div>;
 }

@@ -58,6 +58,7 @@ from .navidrome import NavidromeClient, media_navidrome_client
 from .representations import configure_representations
 
 from .recording_routes import create_router as recording_router
+from .external_ai import router as external_ai_router
 
 app = FastAPI(title="Echora analysis", version="0.3.0")
 # Browser-facing media (covers, streams) is served cross-origin from the web app
@@ -102,6 +103,7 @@ class IngestRequest(Credentials):
 
 
 class SyncRequest(BaseModel):
+    verify_audio_hashes: bool = True
     mode: str = Field(default="all", pattern="^(all|missing)$")
 
 
@@ -340,6 +342,7 @@ def _session_user(token: str | None) -> dict[str, object]:
     return sessions.session_user(token)
 
 
+app.include_router(external_ai_router(require_user, _cipher))
 app.include_router(recording_router(require_user))
 app.include_router(sessions.router)
 
@@ -863,7 +866,7 @@ def start_navidrome_sync(
     connection_id: str, request: SyncRequest, echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     return _enqueue_connection_job("navidrome_sync", connection_id, _session_user(echora_session),
-                                   payload={"mode": request.mode})
+                                   payload={"mode": request.mode, "verify_audio_hashes": request.verify_audio_hashes})
 
 
 @app.post("/navidrome/connections/{connection_id}/recordings/backfill", status_code=202, dependencies=[Depends(require_user)])
@@ -1141,8 +1144,15 @@ def track_lyrics(track_id: uuid.UUID, echora_session: str | None = Cookie(defaul
     provenance = row.get("provenance") or {}
     source_lines = provenance.get("lines") or []
     karaoke_lines = row.get("karaoke_lines") or []
+    from .translation_pipeline import source_lines as translation_source_lines
+    from .translation_storage import load_translations
+    original_lines = translation_source_lines(row)
+    translations = [{"source_language": item["source_language"],
+                     "target_language": item["target_language"],
+                     "lines": item["lines"], "source_lines": original_lines}
+                    for item in load_translations(track_id, original_lines) if item["status"] == "ready"]
     return {"available": bool(row.get("text")), "availability_status": row.get("availability_status"), **row,
-            "lines": karaoke_lines or source_lines, "karaoke": bool(karaoke_lines)}
+            "lines": karaoke_lines or source_lines, "karaoke": bool(karaoke_lines), "translations": translations}
 
 
 @app.put("/library/tracks/{track_id}/lyrics", dependencies=[Depends(require_user)])
@@ -1160,13 +1170,12 @@ def update_track_lyrics(
             raise HTTPException(status_code=404, detail="Track is not in your library")
         cursor.execute("SELECT text, language FROM lyrics WHERE track_id=%s", (track_id,))
         existing = cursor.fetchone()
-        changed = existing is None or existing["text"] != lyric_text or existing["language"] != language
+        changed = existing is None or existing["text"] != lyric_text
         cursor.execute(
             """INSERT INTO lyrics (track_id, source, text, language, provenance, availability_status)
                VALUES (%s,'manual',%s,%s,jsonb_build_object('manual',true,'edited_at',now()::text),'available')
                ON CONFLICT (track_id) DO UPDATE SET source='manual', text=EXCLUDED.text,
-                 language=EXCLUDED.language, provenance=(CASE WHEN lyrics.text IS DISTINCT FROM EXCLUDED.text
-                   OR lyrics.language IS DISTINCT FROM EXCLUDED.language THEN
+                 language=EXCLUDED.language, provenance=(CASE WHEN lyrics.text IS DISTINCT FROM EXCLUDED.text THEN
                      coalesce(lyrics.provenance,'{}'::jsonb) - 'lines' - 'synced'
                    ELSE coalesce(lyrics.provenance,'{}'::jsonb) END)
                    || jsonb_build_object('manual',true,'edited_at',now()::text),
@@ -1426,19 +1435,28 @@ async def hum_search(
 @app.get("/library/tracks")
 def library_tracks(
     limit: int = 10, offset: int = 0, q: str = "", artist: str = "", album: str = "",
-    sort_by: str = "name", echora_session: str | None = Cookie(default=None),
+    sort_by: str = "name", sort_direction: str = "asc", echora_session: str | None = Cookie(default=None),
     track_id: uuid.UUID | None = None,
+    vocals: str = "", language: str = "", lyrics: str = "", translation: str = "", genre: str = "",
+    year_from: int | None = None, year_to: int | None = None,
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     limit = min(max(limit, 1), 100)
     offset = max(offset, 0)
-    ordering = {
-        "name": "lower(t.title), lower(coalesce(t.artist, '')), t.id",
-        "artist": "lower(t.artist) NULLS LAST, lower(t.title), t.id",
-        "released": "t.year DESC NULLS LAST, lower(t.title), t.id",
-    }.get(sort_by)
-    if ordering is None:
+    sort_columns = {
+        "name": "lower(t.title)",
+        "artist": "lower(t.artist)",
+        "released": "t.year",
+        "date_added": "source.date_added",
+    }
+    sort_column = sort_columns.get(sort_by)
+    if sort_column is None:
         raise HTTPException(status_code=422, detail="Unknown track sort order")
+    if sort_direction not in {"asc", "desc"}:
+        raise HTTPException(status_code=422, detail="Unknown sort direction")
+    direction = sort_direction.upper()
+    nulls = " NULLS LAST" if sort_by in {"artist", "released", "date_added"} else ""
+    ordering = f"{sort_column} {direction}{nulls}, lower(t.title), t.id"
     clauses: list[str] = [
         "EXISTS (SELECT 1 FROM user_track_links visible_links "
         "WHERE visible_links.track_id=t.id AND visible_links.user_id=%s)"
@@ -1456,6 +1474,11 @@ def library_tracks(
     if album:
         clauses.append("t.album = %s")
         parameters.append(album)
+    from .browse_filters import predicates
+    filter_clauses, filter_parameters = predicates(vocals=vocals, language=language, lyrics=lyrics,
+        translation=translation, genre=genre, year_from=year_from, year_to=year_to)
+    clauses.extend(filter_clauses)
+    parameters.extend(filter_parameters)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with session_scope() as session:
         named_parameters = {f"p{index}": value for index, value in enumerate(parameters)}
@@ -1469,6 +1492,7 @@ def library_tracks(
             text(f"""
             SELECT t.id, t.title, t.artist, t.album, t.year, t.duration_seconds,
                    t.genres, t.ingested_at, l.availability_status AS lyrics_status,
+                   source.date_added,
                    (SELECT count(DISTINCT e.run_id) FROM current_embeddings e
                     WHERE e.track_id=t.id AND e.embedding_type='audio-track') AS embedding_runs,
                    source.external_id AS source_id, source.album_id, source.cover_art
@@ -1476,7 +1500,8 @@ def library_tracks(
             LEFT JOIN lyrics l ON l.track_id=t.id
             LEFT JOIN LATERAL (
               SELECT ts.external_id, ts.source_data->>'albumId' AS album_id,
-                     ts.source_data->>'coverArt' AS cover_art
+                     ts.source_data->>'coverArt' AS cover_art,
+                     (ts.source_data->>'created')::timestamptz AS date_added
               FROM track_sources ts
               JOIN user_track_links source_links
                 ON source_links.user_id=:source_user_id AND source_links.library_id=ts.library_id
@@ -3009,6 +3034,27 @@ def preview_journey(
     return {"mode": request.mode, "semantic_weight": semantic_weight, "requested_length": request.length, "steps": steps}
 
 
+@app.get("/library/filter-options")
+def browse_filter_options(echora_session: str | None = Cookie(default=None)):
+    user = _session_user(echora_session)
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as db:
+        rows = db.execute("""WITH visible AS MATERIALIZED (
+            SELECT DISTINCT track_id FROM user_track_links WHERE user_id=%s
+        ), options AS (
+            SELECT 'language' AS kind, coalesce(nullif(l.language,''),'unknown') AS value, v.track_id
+            FROM visible v LEFT JOIN lyrics l ON l.track_id=v.track_id
+            UNION ALL
+            SELECT 'genre', g, v.track_id FROM visible v JOIN tracks t ON t.id=v.track_id
+            CROSS JOIN LATERAL unnest(t.genres) g WHERE g<>''
+            UNION ALL
+            SELECT 'translation', lt.target_language, v.track_id FROM visible v
+            JOIN lyric_translations lt ON lt.track_id=v.track_id WHERE lt.status='ready'
+        ) SELECT kind,value,count(DISTINCT track_id) AS tracks FROM options
+          GROUP BY kind,value ORDER BY kind,lower(value)""", (user['id'],)).fetchall()
+    return {kind: [{'name': row['value'], 'tracks': row['tracks']} for row in rows if row['kind']==kind]
+            for kind in ('language','genre','translation')}
+
+
 @app.get("/library/facets")
 def library_facets(
     artist_query: str = "", album_query: str = "", artist: str = "", limit: int = 20,
@@ -3058,6 +3104,15 @@ def list_user_jobs(
 def job(job_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
     value = jobs.get_job(job_id, user["id"])
+    if value is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return value
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+    user = _session_user(echora_session)
+    value = jobs.cancel(job_id, user["id"])
     if value is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return value

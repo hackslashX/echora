@@ -30,6 +30,8 @@ export default function SyncLibrary() {
   const { job, active, terminal, error: jobError, loading: jobLoading, track, dismiss, dismissing } = useDurableJob(connectionId);
   const [mode, setMode] = useState<"all" | "missing">("missing");
   const [confirmFullSync, setConfirmFullSync] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelledJobId, setCancelledJobId] = useState("");
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [mobilePane, setMobilePane, paneTransition] = useMobilePane<"status" | "method">("status", ["status", "method"]);
@@ -53,14 +55,26 @@ export default function SyncLibrary() {
     return () => window.clearTimeout(timer);
   }, [connectionId, terminal]);
 
-  async function start() {
+  async function start(verifyAudioHashes = true) {
     if (!connectionId || busy) return;
     setBusy(true); setError("");
     try {
-      const result = await api<{ job_id: string; status: string; existing: boolean }>(`/navidrome/connections/${connectionId}/sync`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode }) });
+      const result = await api<{ job_id: string; status: string; existing: boolean }>(`/navidrome/connections/${connectionId}/sync`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode, verify_audio_hashes: verifyAudioHashes }) });
       track(result.job_id);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not start synchronization"); }
     finally { setBusy(false); }
+  }
+
+  const jobId = job?.job_id || job?.id || "";
+  const cancellationRequested = Boolean(job?.cancel_requested || (jobId && cancelledJobId === jobId));
+  async function cancelSync() {
+    if (!active || !jobId || cancelling || cancellationRequested) return;
+    setCancelling(true); setError("");
+    try {
+      await api(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+      setCancelledJobId(jobId);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not cancel sync"); }
+    finally { setCancelling(false); }
   }
 
   const indeterminatePhases = new Set(["queued", "scanning", "starting", "planning", "models"]);
@@ -84,11 +98,11 @@ export default function SyncLibrary() {
       <section className={`${styles.workspace} ${mobilePane === "status" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
         <CardHeader title={active ? job?.kind === "semantic_fusion_build" ? "Building semantic fusion" : "Processing library" : busy ? "Scanning Navidrome" : "Library scan complete"} actions={<button onClick={() => connectionId && scan(connectionId)} disabled={busy || !!active}><RefreshCw /> RESCAN</button>} />
         <div className={styles.metrics}><div><Database /><strong>{status?.total ?? "—"}</strong><span>Navidrome tracks</span></div><div><Check /><strong>{status?.processed ?? "—"}</strong><span>In Echora</span></div><div><Waves /><strong>{status?.missing ?? "—"}</strong><span>New tracks</span></div></div>
-        {job ? <section className={`${styles.progress} ${indeterminate ? styles.indeterminate : ""}`}><div><span>{job?.phase?.toUpperCase()}</span><strong>{presentation.message}</strong><small>{progressDetail}</small></div><div className={styles.progressActions}>{terminal ? <button className={styles.dismiss} onClick={dismiss} disabled={dismissing} aria-label="Dismiss sync results">{dismissing ? "Dismissing…" : "Dismiss"}</button> : !indeterminate && presentation.showPercent && <b>{percent}%</b>}</div>{(indeterminate || presentation.showPercent) && <i role="progressbar" aria-label={indeterminate ? "Preparing analysis" : "Library sync progress"} aria-valuemin={indeterminate ? undefined : 0} aria-valuemax={indeterminate ? undefined : 100} aria-valuenow={indeterminate ? undefined : percent}><u style={indeterminate ? undefined : { width: `${percent}%` }} /></i>}{job?.error && <p>{job.error}</p>}{terminal && presentation.summary.length > 0 && <div className={styles.summary}>{presentation.summary.map(item => <span key={item}>{item}</span>)}</div>}</section> : <section className={styles.ready}><div className={styles.mode}><button aria-pressed={mode === "missing"} className={mode === "missing" ? styles.selected : ""} onClick={() => setMode("missing")}><strong>NEW TRACKS ONLY</strong><small>Process {status?.missing ?? "—"} {status?.missing === 1 ? "track" : "tracks"} not yet indexed</small></button><button aria-pressed={mode === "all"} className={mode === "all" ? styles.selected : ""} onClick={() => setMode("all")}><strong>ENTIRE LIBRARY</strong><small>Recheck source audio and fill missing analysis</small></button></div><button className={styles.start} onClick={() => { if (mode === "all") setConfirmFullSync(true); else void start(); }} disabled={busy || jobLoading || !!jobError || !status || (mode === "missing" && status.missing === 0)}>START PROCESSING <b>↗</b></button></section>}
+        {job ? <section className={`${styles.progress} ${indeterminate ? styles.indeterminate : ""}`}><div><span>{job?.phase?.toUpperCase()}</span><strong>{presentation.message}</strong><small>{progressDetail}</small></div><div className={styles.progressActions}>{active && <button type="button" className={styles.dismiss} disabled={cancelling || cancellationRequested} onClick={cancelSync}>{cancellationRequested ? "Cancellation requested" : cancelling ? "Cancelling…" : "Cancel sync"}</button>}{terminal ? <button className={styles.dismiss} onClick={dismiss} disabled={dismissing} aria-label="Dismiss sync results">{dismissing ? "Dismissing…" : "Dismiss"}</button> : !indeterminate && presentation.showPercent && <b>{percent}%</b>}</div>{(indeterminate || presentation.showPercent) && <i role="progressbar" aria-label={indeterminate ? "Preparing analysis" : "Library sync progress"} aria-valuemin={indeterminate ? undefined : 0} aria-valuemax={indeterminate ? undefined : 100} aria-valuenow={indeterminate ? undefined : percent}><u style={indeterminate ? undefined : { width: `${percent}%` }} /></i>}{job?.error && <p>{job.error}</p>}{terminal && presentation.summary.length > 0 && <div className={styles.summary}>{presentation.summary.map(item => <span key={item}>{item}</span>)}</div>}</section> : <section className={styles.ready}><div className={styles.mode}><button aria-pressed={mode === "missing"} className={mode === "missing" ? styles.selected : ""} onClick={() => setMode("missing")}><strong>NEW TRACKS ONLY</strong><small>Process {status?.missing ?? "—"} {status?.missing === 1 ? "track" : "tracks"} not yet indexed</small></button><button aria-pressed={mode === "all"} className={mode === "all" ? styles.selected : ""} onClick={() => setMode("all")}><strong>ENTIRE LIBRARY</strong><small>Refresh metadata, lyrics, and missing analysis</small></button></div><button className={styles.start} onClick={() => { if (mode === "all") setConfirmFullSync(true); else void start(); }} disabled={busy || jobLoading || !!jobError || !status || (mode === "missing" && status.missing === 0)}>START PROCESSING <b>↗</b></button></section>}
         <section className={styles.queue}><header><span>{showBatches ? "SYNC BATCHES" : showJobDetails ? "PROCESSING DETAILS" : "WAITING IN NAVIDROME"}</span><b>{active ? job?.kind === "semantic_fusion_build" ? "Semantic fusion" : "Sync in progress" : pendingLabel}</b></header><div>{showBatches ? <BatchStatusList key={job.job_id || job.id} jobId={job.job_id || job.id!} active={active} /> : showJobDetails ? <div className={styles.queueEmpty}><RefreshCw className={styles.scanningIcon} aria-hidden="true" /><p>{job?.kind === "semantic_fusion_build" ? "Combining audio and lyrics embeddings across the Echora library. This step has no track batches." : "Preparing sync batches. Track progress will appear when processing begins."}</p></div> : status?.tracks.length ? status.tracks.map(track => <article key={track.id}><span>{track.title}</span><small>{track.artist || "Unknown artist"}</small><i>{track.album || "Unknown album"}</i></article>) : <div className={styles.queueEmpty}>{busy ? <RefreshCw className={styles.scanningIcon} aria-hidden="true" /> : <CircleCheck aria-hidden="true" />}<p>{busy ? "Scanning the catalog" : "No new tracks found"}</p></div>}</div></section>
         {(error || jobError) && <p role="alert" className={styles.error}>{error || jobError}</p>}
       </section>
     </main>
-    {confirmFullSync && <FullSyncWarning onClose={() => setConfirmFullSync(false)} onConfirm={() => { setConfirmFullSync(false); void start(); }} />}
+    {confirmFullSync && <FullSyncWarning onClose={() => setConfirmFullSync(false)} onConfirm={verifyAudioHashes => { setConfirmFullSync(false); void start(verifyAudioHashes); }} />}
   </AppShell>;
 }

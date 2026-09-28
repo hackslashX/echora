@@ -1,6 +1,6 @@
 "use client";
 
-import { Disc3, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, Disc3, RotateCcw, Search } from "lucide-react";
 import { coverArtUrl } from "../media/coverArt"
 import { mediaUrl } from "../media/mediaOrigin";
 import LoadingImage from "../media/LoadingImage";
@@ -19,6 +19,7 @@ import { canCurateRecording, curationHref, resultConnection, recordingQualityLab
 import TransitionLink from "../shell/TransitionLink";
 import TrackMenu from "./TrackMenu";
 import styles from "./BrowseLibrary.module.css";
+import BrowseMetadataFilters, { emptyMetadataFilters, type MetadataFilters } from "./BrowseMetadataFilters";
 
 type Track = { connection_id?: string; id: string; title: string; artist?: string; album?: string; duration_seconds: number; source_id?: string; cover_art?: string; similarity?: number; matched_at_seconds?: number; matched_source?: string; lyrics_status?: string; recording_score?: number; recording_confirmed?: boolean; recording_quality?: RecordingQuality };
 type Facet = { name: string; tracks: number };
@@ -36,6 +37,7 @@ export default function BrowseLibrary() {
   const [artists, setArtists] = useState<Facet[]>([]);
   const [albums, setAlbums] = useState<Facet[]>([]);
   const [total, setTotal] = useState(0);
+  const [metadata, setMetadata] = useState<MetadataFilters>(emptyMetadataFilters);
   const [query, setQuery] = useState("");
   const [artist, setArtist] = useState("");
   const [album, setAlbum] = useState("");
@@ -44,7 +46,8 @@ export default function BrowseLibrary() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [batch, setBatch] = useState(0);
-  const [sortBy, setSortBy] = useState<"name" | "artist" | "released">("name");
+  const [sortBy, setSortBy] = useState<"name" | "artist" | "released" | "date_added">("name");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [selectedConnectionId, setConnectionId] = useState("");
   const [recordingWarning, setRecordingWarning] = useState("");
   const [searchMode, setSearchMode] = useState<"hum" | "recording" | null>(null);
@@ -63,7 +66,8 @@ export default function BrowseLibrary() {
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setLoading(true); setError("");
-      const params = new URLSearchParams({ limit: String(pageSize), offset: String(batch * pageSize), q: query, artist, album, sort_by: sortBy });
+      const params = new URLSearchParams({ limit: String(pageSize), offset: String(batch * pageSize), q: query, artist, album, sort_by: sortBy, sort_direction: sortDirection });
+      for (const [key, value] of Object.entries(metadata)) if (value) params.set(key, value);
       fetch(`/analysis/library/tracks?${params}`, { signal: controller.signal }).then(async response => {
         const body = await response.json(); if (!response.ok) throw new Error(body.detail || "Could not load tracks");
         if (controller.signal.aborted) return;
@@ -72,7 +76,7 @@ export default function BrowseLibrary() {
       }).catch(reason => { if (reason.name !== "AbortError") setError(reason instanceof Error ? reason.message : "Could not load tracks"); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     }, batch === 0 ? 220 : 0);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [album, artist, batch, searchMode, query, refreshToken, sortBy]);
+  }, [album, artist, batch, searchMode, query, refreshToken, sortBy, sortDirection, metadata]);
 
   useEffect(() => {
     const root = listRef.current, sentinel = sentinelRef.current;
@@ -120,13 +124,14 @@ export default function BrowseLibrary() {
     <section className={styles.layout} style={{ gridTemplateColumns: trackTemplate(columns, 160), gridTemplateRows: trackTemplate(rows, 88) }}>
       <MobilePivots label="Browse sections" active={mobilePane} onChange={setMobilePane} items={[{ key: "tracks", label: searchMode ? "matches" : "tracks", count: total }, { key: "filters", label: "filters" }]} />
       <aside className={`${styles.filters} ${mobilePane === "filters" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
-        <CardHeader as="h1" title="Filters" />
+        <CardHeader as="h1" title="Filters" actions={<button type="button" className={styles.clearFilters} onClick={() => { setArtist(""); setAlbum(""); setArtistQuery(""); setAlbumQuery(""); setQuery(""); setMetadata({ ...emptyMetadataFilters }); resetResults(); }}><RotateCcw aria-hidden="true" /><span>Clear all</span></button>} />
+        <BrowseMetadataFilters value={metadata} onChange={next => { setMetadata(next); resetResults(); }} />
         <section className={styles.filterGroup}><span>Artists</span><input value={artistQuery} onChange={event => { invalidateSearches(); setArtistQuery(event.target.value); }} placeholder="Search artists" /><div><button type="button" className={!artist ? styles.selected : ""} onClick={() => { setArtist(""); setAlbum(""); resetResults(); }}>All artists</button>{artists.map(item => <button type="button" className={artist === item.name ? styles.selected : ""} onClick={() => { setArtist(item.name); setAlbum(""); resetResults(); }} key={item.name}>{item.name}<b>{item.tracks}</b></button>)}</div></section>
         <section className={styles.filterGroup}><span>Albums</span><input value={albumQuery} onChange={event => { invalidateSearches(); setAlbumQuery(event.target.value); }} placeholder="Search albums" /><div><button type="button" className={!album ? styles.selected : ""} onClick={() => { setAlbum(""); resetResults(); }}>All albums</button>{albums.map(item => <button type="button" className={album === item.name ? styles.selected : ""} onClick={() => { setAlbum(item.name); resetResults(); }} key={item.name}>{item.name}<b>{item.tracks}</b></button>)}</div></section>
       </aside>
       <section className={`${styles.listing} ${mobilePane === "tracks" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
         <CardHeader title={searchMode === "recording" ? "Recording results" : searchMode === "hum" ? "Hum matches" : "Tracks"} count={total} />
-        <div className={styles.search}><label><Search /><input value={query} onChange={event => { setQuery(event.target.value); resetResults(); }} placeholder="Search tracks" /></label><HumSearchButton ref={humRef} onStart={invalidateSearches} onResults={showHumResults} onError={setError} /><RecordingSearchButton ref={recordingRef} onResults={showRecordingResults} onError={setError} onStart={invalidateSearches} /><select aria-label="Sort tracks" value={sortBy} onChange={event => { setSortBy(event.target.value as "name" | "artist" | "released"); resetResults(); }}><option value="name">Name</option><option value="artist">Artist</option><option value="released">Date released</option></select></div>
+        <div className={styles.search}><label><Search /><input value={query} onChange={event => { setQuery(event.target.value); resetResults(); }} placeholder="Search tracks" /></label><HumSearchButton ref={humRef} onStart={invalidateSearches} onResults={showHumResults} onError={setError} /><RecordingSearchButton ref={recordingRef} onResults={showRecordingResults} onError={setError} onStart={invalidateSearches} /><select aria-label="Sort tracks" value={sortBy} onChange={event => { setSortBy(event.target.value as "name" | "artist" | "released" | "date_added"); resetResults(); }}><option value="name">Name</option><option value="artist">Artist</option><option value="released">Date released</option><option value="date_added">Date added</option></select><button type="button" className={styles.sortDirection} aria-label={`Sort ${sortDirection === "asc" ? "ascending" : "descending"}. Click to reverse`} title={sortDirection === "asc" ? "Ascending" : "Descending"} onClick={() => { setSortDirection(value => value === "asc" ? "desc" : "asc"); resetResults(); }}>{sortDirection === "asc" ? <ArrowUp aria-hidden="true" /> : <ArrowDown aria-hidden="true" />}</button></div>
         <div className={styles.list} ref={listRef}>{error && <div className={styles.feedback} role="alert">{error}</div>}{loading && tracks.length === 0 ? <div className={styles.empty}>Loading library</div> : tracks.length === 0 ? <div className={styles.empty}>No matching tracks</div> : <>{searchMode === "recording" && <RecordingMatchNotice message={recordingWarning} />}{tracks.map((track, index) => <article className={`${styles.row} ${player.track?.id === track.id ? styles.current : ""}`} key={track.id}>
           <button type="button" className={styles.playTrack} onClick={() => play(track)} disabled={!playerTrack(track)}>
             <span className={styles.art}>{track.cover_art && resultConnection(track, selectedConnectionId) ? <LoadingImage sizes="48px" alt="" src={coverArtUrl(resultConnection(track, selectedConnectionId), track.cover_art, 96)} /> : <Disc3 />}</span>

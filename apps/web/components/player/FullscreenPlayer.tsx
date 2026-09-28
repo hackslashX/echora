@@ -1,6 +1,6 @@
 "use client";
 
-import { AArrowDown, AArrowUp, Disc3, ListMusic, MicVocal, Pause, Play, SkipBack, SkipForward, Type, Volume2, VolumeX, X } from "lucide-react";
+import { AArrowDown, AArrowUp, Languages, Disc3, ListMusic, MicVocal, Pause, Play, SkipBack, SkipForward, Type, Volume2, VolumeX, X } from "lucide-react";
 import { sizedPlayerCoverArtUrl } from "../media/coverArt";
 import LoadingImage from "../media/LoadingImage";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -16,6 +16,7 @@ import { defaultPlaybackPreferences, readPlaybackPreferences, type PlaybackPrefe
 import { useDialogFocus } from "../shell/useDialogFocus";
 import { groupSyllablesByWord, lyricWordIsRtl as isRtlText } from "./lyricWords";
 import KaraokeLine from "./KaraokeLine";
+import LyricTranslationLine from "./LyricTranslationLine";
 
 const DESKTOP_INSET = 80;
 const stamp = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
@@ -53,6 +54,8 @@ export default function FullscreenPlayer() {
   const player = usePlayer();
   const dialogRef = useRef<HTMLElement>(null);
   useDialogFocus(dialogRef, Boolean(player.track), () => close());
+  const [showTranslation, setShowTranslation] = useState(false);
+  const [translationLanguage, setTranslationLanguage] = useState("");
   const [karaokeMode, setKaraokeMode] = useState(true);
   const [highlightStyle, setHighlightStyle] = useState(defaultPlaybackPreferences.karaokeHighlightStyle);
   useEffect(() => {
@@ -71,6 +74,8 @@ export default function FullscreenPlayer() {
   useEffect(() => { document.body.classList.add("echora-fullscreen-player"); return () => { document.body.classList.remove("echora-fullscreen-player"); document.body.classList.remove("echora-fullscreen-player-closing"); }; }, []);
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
+      setShowTranslation(localStorage.getItem("echora:lyrics-translation") === "true");
+      setTranslationLanguage(localStorage.getItem("echora:lyrics-translation-language") || "");
       const stored = localStorage.getItem(lyricsSizeStorageKey);
       if (stored === "small" || stored === "normal" || stored === "large") setLyricsTextSize(stored);
     });
@@ -99,6 +104,9 @@ export default function FullscreenPlayer() {
   const lyricFragments = useMemo(() => new Map<LyricsLine, ReturnType<typeof groupSyllablesByWord>[number]>(
     (currentLyrics?.lines || []).map(line => [line, groupSyllablesByWord(line.syllables || []).flat()])
   ), [currentLyrics?.lines]);
+  const translations = currentLyrics?.translations || [];
+  const translation = translations.find(item => item.target_language === translationLanguage) || translations[0];
+  const translationVisible = showTranslation && Boolean(translation);
   const aiLyrics = currentLyrics?.provenance?.ai_generated === true;
   const karaokeAvailable = Boolean(currentLyrics?.karaoke && currentLyrics.lines?.length);
   const karaokeLines = currentLyrics?.lines || [];
@@ -116,29 +124,42 @@ export default function FullscreenPlayer() {
   const spacerWeight = Math.min(.08, Math.max(.045, 72 / innerWidth), (1 - artworkWeight) * .2);
   const playbackWidth = Math.min(.9, Math.max(.64, artworkWeight + spacerWeight + .2));
   const columns = [artworkWeight, spacerWeight, playbackWidth - artworkWeight - spacerWeight, 1 - playbackWidth];
-  const mobileLyricsLayout = timedLines.length > 0 || player.lyricsLoading;
+  const mobileLyricsLayout = timedLines.length > 0 || Boolean(currentLyrics?.text) || translationVisible || player.lyricsLoading;
   function karaokeLine(line: LyricsLine, active: boolean) {
     if (!karaokeMode || !currentLyrics?.karaoke || !line.syllables?.length) return line.text || "...";
     const now = playbackTime * 1000;
     return <KaraokeLine fragments={lyricFragments.get(line) || []} now={now} active={active} highlightStyle={highlightStyle} />;
   }
 
+  function toggleTranslation() {
+    const next = !showTranslation;
+    setShowTranslation(next);
+    localStorage.setItem("echora:lyrics-translation", String(next));
+  }
+  function untimedTranslation() {
+    if (!translationVisible || !translation) return currentLyrics?.text ? <div className={`${styles.untimedTranslations} ${lyricsSizeClasses[lyricsTextSize]}`} aria-label="Lyrics">{currentLyrics.text.split("\n").map((line, index) => <p key={index} dir="auto">{line || "\u00a0"}</p>)}</div> : null;
+    return <div className={`${styles.untimedTranslations} ${lyricsSizeClasses[lyricsTextSize]}`} aria-label="Translated lyrics">{translation.source_lines.map((text, id) => <p key={id}><span dir="auto">{text}</span><LyricTranslationLine source={text} translation={translation} /></p>)}</div>;
+  }
+  function translatedLine(line: LyricsLine) {
+    return translationVisible && translation ? <LyricTranslationLine translation={translation} source={line.text} /> : null;
+  }
   function chooseLyricsTextSize(size: LyricsTextSize) { localStorage.setItem(lyricsSizeStorageKey, size); setLyricsTextSize(size); }
   function close() { if (closing) return; document.body.classList.add("echora-fullscreen-player-closing"); setClosing(true); const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches; window.setTimeout(() => player.setExpanded(false), reduced ? 0 : 280); }
-  return <main ref={dialogRef} tabIndex={-1} className={`${styles.player} ${motionStyles.surface} ${mobileLyricsLayout ? styles.hasMobileLyrics : ""} ${closing ? `${styles.closing} ${motionStyles.closing}` : ""}`} role="dialog" aria-modal="true" aria-label="Now playing">
+  return <main ref={dialogRef} tabIndex={-1} style={{ "--fullscreen-inset": `${DESKTOP_INSET}px` } as CSSProperties} className={`${styles.player} ${motionStyles.surface} ${mobileLyricsLayout ? styles.hasMobileLyrics : ""} ${closing ? `${styles.closing} ${motionStyles.closing}` : ""}`} role="dialog" aria-modal="true" aria-label="Now playing">
     <div className={styles.vignette} />
     <LyricsGlow container={dialogRef} playing={player.playing} />
     <section className={styles.unsupported}><strong>THIS VIEW NEEDS MORE ROOM</strong><p>Resize the window to at least 900 pixels wide or open Echora on a larger screen.</p></section>
     <button className={`${styles.close} ${motionStyles.content}`} onClick={close} aria-label="Close full screen player"><X /></button>
-    {timedLines.length > 0 && <div className={styles.sizeToggle} role="group" aria-label="Lyrics text size">{(["small", "normal", "large"] as LyricsTextSize[]).map(size => { const Icon = size === "small" ? AArrowDown : size === "large" ? AArrowUp : Type; return <button type="button" className={lyricsTextSize === size ? styles.selectedSize : ""} onClick={() => chooseLyricsTextSize(size)} aria-pressed={lyricsTextSize === size} key={size}><Icon />{size.toUpperCase()}</button>; })}</div>}
-    {karaokeAvailable && <div className={styles.lyricsModeControls}>{aiLyrics && <AiLyricsIndicator />}<div className={styles.modeToggle} role="group" aria-label="Lyrics timing mode"><button className={karaokeMode ? styles.selectedMode : ""} onClick={() => setKaraokeMode(true)} aria-pressed={karaokeMode}><MicVocal />KARAOKE</button><button className={!karaokeMode ? styles.selectedMode : ""} onClick={() => setKaraokeMode(false)} aria-pressed={!karaokeMode}><ListMusic />SYNCED</button></div></div>}
+    <div className={styles.lyricsToolbar}>
+    {(timedLines.length > 0 || translations.length > 0) && <div className={styles.lyricsSizingControls}><div className={styles.sizeToggle} role="group" aria-label="Lyrics text size">{(["small", "normal", "large"] as LyricsTextSize[]).map(size => { const Icon = size === "small" ? AArrowDown : size === "large" ? AArrowUp : Type; return <button type="button" className={lyricsTextSize === size ? styles.selectedSize : ""} onClick={() => chooseLyricsTextSize(size)} aria-pressed={lyricsTextSize === size} key={size}><Icon />{size.toUpperCase()}</button>; })}</div>{translation && <div className={styles.translationControls} role="group" aria-label="Lyrics translation"><button type="button" title="Show translated lyrics" aria-label="Show translated lyrics" aria-pressed={showTranslation} className={`${styles.translationToggle} ${showTranslation ? styles.selectedSize : ""}`} onClick={toggleTranslation}><Languages aria-hidden="true" /></button>{showTranslation && translations.length > 1 && <select aria-label="Translation language" value={translation.target_language} onChange={event => { setTranslationLanguage(event.target.value); localStorage.setItem("echora:lyrics-translation-language", event.target.value); }}>{Array.from(new Set(translations.map(item => item.target_language))).map(language => <option key={language} value={language}>{language.toUpperCase()}</option>)}</select>}</div>}</div>}
+    {(karaokeAvailable || aiLyrics || translations.length > 0) && <div className={styles.lyricsModeControls}><AiLyricsIndicator key={player.track.id} transcribed={aiLyrics} translatedLanguages={translations.map(item => item.target_language)} />{karaokeAvailable && <div className={styles.modeToggle} role="group" aria-label="Lyrics timing mode"><button className={karaokeMode ? styles.selectedMode : ""} onClick={() => setKaraokeMode(true)} aria-pressed={karaokeMode}><MicVocal />KARAOKE</button><button className={!karaokeMode ? styles.selectedMode : ""} onClick={() => setKaraokeMode(false)} aria-pressed={!karaokeMode}><ListMusic />SYNCED</button></div>}</div>}
+    </div>
     <section className={`${styles.mobilePlayer} ${motionStyles.content}`} aria-label="Mobile now playing">
       <header className={styles.mobileTrack}><div className={styles.mobileHeaderArt}>{mobileCover ? <LoadingImage sizes="260px" src={mobileCover} alt="" priority /> : <Disc3 />}</div><div><span>NOW PLAYING</span><h1><FullscreenMarquee>{player.track.title}</FullscreenMarquee></h1><strong>{player.track.artist || "Unknown artist"}</strong><p><FullscreenMarquee>{player.track.album || "Unknown album"}</FullscreenMarquee></p></div></header>
       <section className={styles.mobileStage}>
         {timedLines.length ? <div className={styles.mobileLyricsStage}>
-          {karaokeAvailable && <div className={styles.mobileLyricsControls}>{aiLyrics && <AiLyricsIndicator />}<div className={styles.mobileLyricsMode} role="group" aria-label="Lyrics timing mode"><button className={karaokeMode ? styles.selectedMobileView : ""} onClick={() => setKaraokeMode(true)} aria-label="Karaoke timing"><MicVocal /></button><button className={!karaokeMode ? styles.selectedMobileView : ""} onClick={() => setKaraokeMode(false)} aria-label="Synced lyrics"><ListMusic /></button></div></div>}
-          <div className={`${styles.mobileLyricsLines} ${lyricsSizeClasses[lyricsTextSize]}`}>{(() => { const index = activeLine >= 0 ? activeLine : 0, line = timedLines[index]; return line ? <button dir={isRtlText(line.text) ? "rtl" : "ltr"} className={styles.activeLine} style={{ paddingBottom: ".14em", overflow: "visible" }} data-lyric-singing={!karaokeMode && activeLine >= 0 ? "true" : undefined} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, true)}</button> : null; })()}</div>
-        </div> : player.lyricsLoading ? <div className={styles.mobileLyricsPlaceholder} /> : <div className={styles.mobileArtwork}>{mobileCover ? <LoadingImage sizes="min(100vw, 340px)" src={mobileCover} alt="" priority /> : <Disc3 />}</div>}
+          <div className={`${styles.mobileLyricsLines} ${lyricsSizeClasses[lyricsTextSize]}`}>{(() => { const index = activeLine >= 0 ? activeLine : 0, line = timedLines[index]; return line ? <button dir={isRtlText(line.text) ? "rtl" : "ltr"} className={styles.activeLine} style={{ paddingBottom: ".14em", overflow: "visible" }} data-lyric-singing={!karaokeMode && activeLine >= 0 ? "true" : undefined} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, true)}{activeLine >= 0 && translatedLine(line)}</button> : null; })()}</div>
+        </div> : (translationVisible || currentLyrics?.text) ? untimedTranslation() : player.lyricsLoading ? <div className={styles.mobileLyricsPlaceholder} /> : <div className={styles.mobileArtwork}>{mobileCover ? <LoadingImage sizes="min(100vw, 340px)" src={mobileCover} alt="" priority /> : <Disc3 />}</div>}
       </section>
       <section className={styles.mobileDock}><div className={styles.mobileTimeline}><WaveformSeek /><div><time>{stamp(player.currentTime)}</time><time>{stamp(player.duration)}</time></div></div><div className={styles.mobileControls}><button onClick={player.previous} aria-label="Previous track"><SkipBack /></button><button className={styles.mobilePlay} onClick={player.toggle} aria-label={player.playing ? "Pause" : "Play"}>{player.playing ? <Pause /> : <Play />}</button><button onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1} aria-label="Next track"><SkipForward /></button><button onClick={player.toggleMute} aria-label={player.muted ? "Unmute" : "Mute"}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div></section>
     </section>
@@ -150,8 +171,9 @@ export default function FullscreenPlayer() {
           <div className={styles.controls}><button aria-label="Previous track" onClick={player.previous}><SkipBack /></button><button aria-label={player.playing ? "Pause" : "Play"} className={styles.play} onClick={player.toggle}>{player.playing ? <Pause /> : <Play />}</button><button aria-label="Next track" onClick={player.next} disabled={player.queueIndex >= player.queue.length - 1}><SkipForward /></button><button aria-label={player.muted ? "Unmute" : "Mute"} onClick={player.toggleMute}>{player.muted ? <VolumeX /> : <Volume2 />}</button></div>
         </div></div>
       </section>
-      {timedLines.length > 0 && <aside className={`${styles.lyrics} ${styles.mobileLyricsVisible} ${lyricsSizeClasses[lyricsTextSize]}`} key={`${activeLine}-${karaokeMode}`}>
-        {[-1, 0, 1].map(offset => { const index = activeLine + offset, line = timedLines[index]; return line ? <button dir={isRtlText(line.text) ? "rtl" : "ltr"} className={offset === 0 ? styles.activeLine : offset < 0 ? styles.pastLine : styles.nextLine} key={`${line.start_ms}-${index}`} data-lyric-singing={offset === 0 && !karaokeMode ? "true" : undefined} onClick={() => player.seek(Number(line.start_ms) / 1000)}>{karaokeLine(line, offset === 0)}</button> : null; })}
+      {!timedLines.length && (translationVisible || currentLyrics?.text) && <aside className={styles.untimedStage}>{untimedTranslation()}</aside>}
+      {timedLines.length > 0 && <aside className={`${styles.lyrics} ${styles.mobileLyricsVisible} ${lyricsSizeClasses[lyricsTextSize]} ${translationVisible ? styles.bilingualLyrics : ""}`} key={`${activeLine}-${karaokeMode}`}>
+        {[-1, 0, 1].map(offset => { const index = activeLine + offset, line = timedLines[index]; return line ? <button dir="ltr" className={offset === 0 ? styles.activeLine : offset < 0 ? styles.pastLine : styles.nextLine} key={`${line.start_ms}-${index}`} data-lyric-singing={offset === 0 && !karaokeMode ? "true" : undefined} onClick={() => player.seek(Number(line.start_ms) / 1000)}><span dir={isRtlText(line.text) ? "rtl" : "ltr"} className={styles.originalLine}>{karaokeLine(line, offset === 0)}</span>{translatedLine(line)}</button> : null; })}
       </aside>}
     </section>
   </main>;

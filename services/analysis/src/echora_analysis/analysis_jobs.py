@@ -169,7 +169,7 @@ def execute(job: dict, context) -> dict | None:
                 from .sync_plan import select_sync_tracks
                 report({'phase': 'planning', 'message': 'Checking missing analysis before batching'})
                 with _connect() as connection:
-                    ids = select_sync_tracks(connection, credentials[0], catalog_ids, payload.get('mode', 'all'), catalog=catalog)
+                    ids = select_sync_tracks(connection, credentials[0], catalog_ids, payload.get('mode', 'all'), catalog=catalog, verify_audio_hashes=payload.get('verify_audio_hashes', True))
                 context.check()
                 main._attach_user_library(user_id, credentials[0])
                 # Reconcile the complete snapshot, never only the work selection.
@@ -203,6 +203,9 @@ def execute(job: dict, context) -> dict | None:
                         raise ValueError('Hum corpus ownership mismatch')
             # Whitelist fields: never forward arbitrary request data into the queue.
             base = {'operation': operation}
+            if operation == 'navidrome_sync':
+                base['verify_audio_hashes'] = payload.get('verify_audio_hashes', True)
+                base['refresh_lyrics'] = payload.get('mode', 'all') == 'all'
             if credentials:
                 base['connection_id'] = payload['connection_id']
             if operation == 'hum_corpus':
@@ -223,7 +226,7 @@ def execute(job: dict, context) -> dict | None:
         summary = {}
         if operation in {'navidrome_sync', 'import'}:
             from .ingest import ingest_navidrome
-            summary.update(asdict(ingest_navidrome(*credentials, ids, report)))
+            summary.update(asdict(ingest_navidrome(*credentials, ids, report, verify_audio_hashes=payload.get("verify_audio_hashes", True))))
             context.check()
             main._attach_user_library(user_id, credentials[0])
             summary['linked'] = _add_links(user_id, credentials[0], ids)
@@ -231,7 +234,10 @@ def execute(job: dict, context) -> dict | None:
             summary['audio_profiles'] = _profiles(canonical, report)
         if operation in {'navidrome_sync', 'import', 'lyrics_backfill', 'karaoke_backfill'}:
             from .lyrics_pipeline import backfill_lyrics
-            summary['lyrics'] = backfill_lyrics(*credentials, progress=report, external_ids=ids, only_missing=True)
+            summary['lyrics'] = backfill_lyrics(*credentials, progress=report, external_ids=ids, only_missing=True, refresh_existing=payload.get("refresh_lyrics", False))
+        if operation in {'navidrome_sync', 'import', 'lyrics_backfill'}:
+            from .translation_pipeline import backfill_translations
+            summary['translations'] = backfill_translations(user_id, credentials[0], ids, check=context.check, progress=report)
         if operation in {'navidrome_sync', 'import', 'lyrics_backfill', 'karaoke_backfill'}:
             from .karaoke_pipeline import backfill_karaoke
             summary['karaoke'] = backfill_karaoke(*credentials, progress=report, external_ids=ids)

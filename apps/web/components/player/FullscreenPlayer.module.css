@@ -30,3 +30,49 @@
 
 /* Use the same Arabic font in RTL, LTR, karaoke, and synced lines. */
 .lyrics button[dir],.mobileLyricsLines button[dir]{font-family:"Manrope","Noto Naskh Arabic","Noto Sans Arabic",sans-serif}
+
+.sizeToggle select{min-width:62px;border:0;border-left:1px solid var(--glass-stroke);background:#070d13;color:var(--aqua);padding:0 8px;font:var(--type-label) var(--ui-font)}
+.untimedStage{grid-area:2/1/auto/-1;place-self:center;width:min(1100px,100% - 96px);height:min(50vh,480px);min-height:0}
+.untimedTranslations{height:100%;width:100%;overflow:auto;text-align:center;font:500 36px/1.4 var(--ui-font);padding:16px;white-space:pre-wrap}
+.untimedTranslations p{margin:0 0 1em}.untimedTranslations.lyricsSmall{font-size:28px}.untimedTranslations.lyricsLarge{font-size:46px}
+@media(max-width:1199px),(max-height:719px){.player .sizeToggle.withTranslations{display:flex!important;top:58px;left:12px;height:36px}.player .sizeToggle.withTranslations button{width:36px;min-width:36px;height:34px;padding:0;font-size:0}.untimedTranslations{font-size:26px;padding-top:42px}.untimedTranslations.lyricsSmall{font-size:22px}.untimedTranslations.lyricsLarge{font-size:32px}}
+
+.sizeToggle button.translationToggle{min-width:40px;width:40px;padding:0;gap:0}
+
+@media(min-width:1200px) and (min-height:720px){.bilingualLyrics button{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:center;gap:48px;text-align:left}.bilingualLyrics button>span:nth-child(2){margin-top:0}.originalLine{min-width:0;overflow-wrap:anywhere}}
+@media(max-width:1199px),(max-height:719px){.mobileLyricsLines.lyricsSmall button{font-size:clamp(20px,5vw,26px)}.mobileLyricsLines.lyricsNormal button{font-size:clamp(24px,6vw,32px)}.mobileLyricsLines.lyricsLarge button{font-size:clamp(28px,7vw,38px)}}
+
+.originalLine{unicode-bidi:isolate}.originalLine[dir=rtl]{line-height:1.55}
+
+.lyricsToolbar{display:contents}
+@media(max-width:1199px),(max-height:719px){
+.player .lyricsToolbar{position:absolute;z-index:7;top:12px;left:12px;right:58px;display:flex;align-items:center;gap:8px;min-width:0;overflow-x:auto;scrollbar-width:thin}
+.player .lyricsToolbar .sizeToggle,.player .lyricsToolbar .modeToggle{position:static!important;display:flex!important;flex-shrink:0;width:auto;height:36px;gap:0;border:1px solid var(--glass-stroke);background:#070d13;backdrop-filter:none}
+.player .lyricsToolbar .lyricsModeControls{display:contents}
+.player .lyricsToolbar .modeToggle{order:0}
+.player .lyricsToolbar .sizeToggle{order:1}
+.player .lyricsToolbar .sizeToggle button,.player .lyricsToolbar .modeToggle button{box-sizing:border-box;flex:0 0 34px;width:34px;min-width:34px;height:34px;padding:0;gap:0;font-size:0;border:0!important;border-left:1px solid var(--glass-stroke)!important}
+.player .lyricsToolbar button:first-child{border-left:0!important}
+.player .lyricsToolbar button svg{width:16px;height:16px}
+.player .lyricsToolbar select{height:34px;min-width:52px}
+}
+
+.lyricsSizingControls{position:absolute;z-index:5;top:96px;left:160px;display:flex;align-items:center;gap:12px}
+.lyricsSizingControls .sizeToggle{position:static}
+.translationControls{display:flex;height:42px;border:1px solid rgb(var(--accent-rgb) / .38);background:#070d13}
+.translationControls button{display:grid;place-items:center;width:40px;height:40px;padding:0;border:0;background:transparent;color:#bdc7c4;cursor:pointer}
+.translationControls button:hover,.translationControls button.selectedSize{background:var(--aqua);color:#07100f}
+.translationControls svg{width:16px;height:16px}
+.translationControls select{border:0;border-left:1px solid var(--glass-stroke);background:#070d13;color:var(--aqua);padding:0 8px;font:var(--type-label) var(--ui-font)}
+@media(max-width:1199px),(max-height:719px){.player .lyricsSizingControls{display:contents}.player .lyricsToolbar .translationControls{order:2;flex-shrink:0;height:36px;border-color:var(--glass-stroke)}.player .lyricsToolbar .translationControls button{width:34px;height:34px}}
+
+/* Fullscreen uses one inset for the playback grid and all desktop controls. */
+@media(min-width:1200px) and (min-height:720px){
+  .lyricsSizingControls{top:var(--fullscreen-inset);left:var(--fullscreen-inset);height:44px}
+  .lyricsModeControls{top:var(--fullscreen-inset);right:calc(var(--fullscreen-inset) + 56px);height:44px}
+  .close{top:var(--fullscreen-inset);right:var(--fullscreen-inset)}
+  .lyrics,.appleLyrics,.untimedStage{width:calc(100% - 2 * var(--fullscreen-inset))}
+  .lyrics,.appleLyrics{transform:none}
+  .bilingualLyrics button{text-align:center}
+  .bilingualLyrics button>span{text-align:center}
+}

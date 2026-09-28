@@ -19,7 +19,8 @@ function scrobble(track: PlayerTrack | null, submission: boolean) {
   }).catch(() => {});
 }
 export type AudioQuality = { codec?: string; content_type?: string; bit_rate_kbps?: number; bit_depth?: number; sample_rate_hz?: number; channels?: number; lossless?: boolean; streamQuality: "original" | "320" | "120" };
-export type PlayerLyrics = { trackId: string; available: boolean; karaoke?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[]; text?: string; language?: string; provenance?: { ai_generated?: boolean; synced?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[] } };
+export type LyricTranslation = { source_language: string; target_language: string; source_lines: string[]; lines: { id: number; text: string }[] };
+export type PlayerLyrics = { translations?: LyricTranslation[]; trackId: string; available: boolean; karaoke?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[]; text?: string; language?: string; provenance?: { ai_generated?: boolean; synced?: boolean; lines?: { start_ms: number | null; end_ms?: number; text: string; syllables?: { start_ms: number; end_ms: number; text: string }[] }[] } };
 export type MelodyPreview = { source: string; points: { time_seconds: number; pitch: number | null }[] };
 
 type PlayerState = {
@@ -317,8 +318,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       lyricsGenerationRef.current.set(trackId, (lyricsGenerationRef.current.get(trackId) || 0) + 1);
       if (trackRef.current?.id === trackId) loadLyrics(trackRef.current);
     };
+    const clearTranslations = () => {
+      for (const [id, cached] of lyricsCacheRef.current) {
+        lyricsCacheRef.current.set(id, { ...cached, translations: [] });
+      }
+      const current = trackRef.current;
+      if (current) {
+        lyricsGenerationRef.current.set(current.id, (lyricsGenerationRef.current.get(current.id) || 0) + 1);
+        setLyrics(value => value ? { ...value, translations: [] } : value);
+      }
+    };
     window.addEventListener("echora:lyrics-update", invalidate);
-    return () => window.removeEventListener("echora:lyrics-update", invalidate);
+    window.addEventListener("echora:translations-cleared", clearTranslations);
+    return () => {
+      window.removeEventListener("echora:lyrics-update", invalidate);
+      window.removeEventListener("echora:translations-cleared", clearTranslations);
+    };
   }, []);
 
   return <PlayerContext.Provider value={{ track, waveform, melody, audioQuality, lyrics, lyricsLoading, playing, buffering, currentTime, duration, buffered, muted, expanded, queue, queueIndex, play, playQueue, playNext, next, previous, clearQueue, toggle, seek, toggleMute, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
