@@ -217,6 +217,7 @@ def ingest_navidrome(
     song_ids: list[str],
     progress: Callable[[dict[str, object]], None] | None = None,
     model_total: int = 2,
+    *, verify_audio_hashes: bool = True,
 ) -> IngestSummary:
     report = progress or (lambda _: None)
     summary = IngestSummary(requested=len(song_ids))
@@ -237,6 +238,27 @@ def ingest_navidrome(
             report({"phase": "identity", "message": "Resolving track identity"})
             try:
                 get_check()()
+                if not verify_audio_hashes:
+                    with connection.cursor() as cursor:
+                        cursor.execute("""SELECT ts.track_id, t.audio_hash FROM track_sources ts
+                            JOIN tracks t ON t.id=ts.track_id
+                            WHERE ts.library_id=%s AND ts.source_type='subsonic' AND ts.external_id=%s""",
+                            (library_id, song.id))
+                        known = cursor.fetchone()
+                        if known:
+                            # Reuse identity, but do not claim the bytes were verified.
+                            cursor.execute("""UPDATE track_sources SET source_data=%s
+                                WHERE library_id=%s AND source_type='subsonic' AND external_id=%s""",
+                                (Jsonb(song.raw), library_id, song.id))
+                            cursor.execute("""UPDATE tracks SET title=%s, artist=%s, album=%s, year=%s,
+                                duration_seconds=%s, genres=%s WHERE id=%s""",
+                                (song.title, song.artist, song.album, song.year, song.duration,
+                                 [song.genre] if song.genre else [], known[0]))
+                    if known:
+                        connection.commit()
+                        bindings[song.id] = (known[0], known[1])
+                        resolved_songs.append(song)
+                        continue
                 audio = navidrome.audio_bytes(song.id)
                 audio_hash = hashlib.sha256(audio).hexdigest()
                 track_id, inserted = _upsert_track(connection, library_id, song, audio_hash)

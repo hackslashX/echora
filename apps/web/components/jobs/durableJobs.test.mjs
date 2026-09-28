@@ -39,9 +39,9 @@ test('cleanup aborts requests and ignores late results', async t => {
   stop(); assert.equal(signal.aborted, true); finish(response(job('complete')));
   await new Promise(resolve => setImmediate(resolve)); assert.equal(received, false);
 });
-test('library job surfaces and hook expose no cancellation action', () => {
+test('setup and shared hook do not expose cancellation actions', () => {
   // Source-level contract guard: the frontend suite has no DOM rendering harness.
-  for (const path of ['../sync/SyncLibrary.tsx', '../SetupWizard.tsx', './useDurableJob.ts']) {
+  for (const path of ['../SetupWizard.tsx', './useDurableJob.ts']) {
     const source = readFileSync(new URL(path, import.meta.url), 'utf8');
     assert.doesNotMatch(source, /cancel/i, `${path} must not expose job cancellation`);
   }

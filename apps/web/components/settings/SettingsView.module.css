@@ -10,3 +10,10 @@
 @media(max-width:1199px),(max-height:719px){.preferenceSection>[data-card-header]{margin:0 -14px 16px}}
 
 @media(max-width:1199px),(max-height:719px){.page{grid-template-columns:minmax(0,1fr)!important;grid-template-rows:44px minmax(0,1fr)!important}.tabs{display:none}.content{grid-column:1;grid-row:2;min-width:0}}
+
+/* Shared form controls for settings panels. */
+.selectPreference textarea{box-sizing:border-box;width:100%;min-height:160px;padding:13px;border:1px solid #354047;border-radius:0;background:#0a1118;color:#eef4f1;font:var(--type-body)/1.5 var(--ui-font);resize:vertical}
+.selectPreference textarea:focus{border-color:var(--aqua)}
+.primaryAction,.secondaryAction{min-height:46px;padding:0 16px;border:1px solid var(--aqua);background:var(--aqua);color:#07100f;font:700 var(--type-label) var(--ui-font);cursor:pointer}
+.secondaryAction{background:transparent;color:var(--aqua)}
+.secondaryAction:hover:not(:disabled){background:rgb(var(--accent-rgb) / .14)}
