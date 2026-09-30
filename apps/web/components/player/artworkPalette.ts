@@ -37,6 +37,11 @@ function gamut(light: number, source: Color, scale = 1): Color {
   return fromLab([light, a * low, b * low]).map(n => Math.round(clamp(encoded(clamp(n))) * 255)) as Color;
 }
 
+/** A near-black panel tone that follows the artwork hue without lifting text backgrounds. */
+export function panelColorFromPalette(palette: TrackPalette): Color {
+  return gamut(.145, toLab(palette.accent), .1);
+}
+
 /** RGBA bytes in scan order. Preserve the canvas extractor's alpha >= 180 cutoff.
  * Empty/transparent artwork throws so the provider keeps its existing default palette.
  */

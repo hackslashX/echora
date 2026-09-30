@@ -69,7 +69,7 @@ export default function LyricsGlow({ container, playing }: { container: RefObjec
       const active = root.querySelectorAll<HTMLElement>('[data-lyric-singing="true"]');
       for (const element of active) boxes.push(...Array.from(element.getClientRects()));
       boxes = boxes.filter(box => box.width > 0 && box.height > 0).slice(0, 8);
-      // Synced mode uses the line itself. Karaoke rests intentionally have no glow.
+      // Only timed karaoke fragments emit light. Rests intentionally have no glow.
       const key = Array.from(active).map(element => element.textContent).join("|");
       visible = boxes.length > 0;
       if (!visible) return;

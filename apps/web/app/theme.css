@@ -1,0 +1,31 @@
+/* One dark surface family. Artwork changes hue, never panel brightness. */
+:root {
+  --surface-rgb: 7 13 19;
+  --surface-panel: rgb(var(--surface-rgb));
+  /* Full-page layers must let the backdrop through. Panels stay opaque. */
+  --surface-shell: rgb(var(--surface-rgb) / .14);
+  --surface-loading: rgb(var(--surface-rgb) / .35);
+  --surface-raised: color-mix(in srgb, var(--surface-panel) 98%, #fff);
+  --surface-control: color-mix(in srgb, var(--surface-panel) 82%, #000);
+  --surface-canvas: color-mix(in srgb, var(--surface-panel) 60%, #000);
+  --surface-hover: color-mix(in srgb, var(--surface-panel) 94%, var(--aqua));
+  --border-subtle: rgb(255 255 255 / .1);
+  --border-strong: rgb(255 255 255 / .18);
+  --text-primary: #f2f4f3;
+  --text-secondary: #bcc2c0;
+  --text-muted: #939b98;
+  --on-accent: #080b0a;
+  --status-success-surface: #091710;
+  --status-success-text: #a3ddb6;
+  --status-danger-surface: #1d0c10;
+  --status-danger-text: #ffb8bd;
+  --glass: var(--surface-panel);
+  --glass-strong: var(--surface-panel);
+  --art-panel: var(--surface-panel);
+  --ink: var(--text-primary);
+}
+
+select option {
+  background: var(--surface-control);
+  color: var(--text-primary);
+}

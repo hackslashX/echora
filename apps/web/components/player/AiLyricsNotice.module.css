@@ -6,7 +6,7 @@
   padding: 12px 16px;
   border: 1px solid rgba(251, 191, 36, .3);
   border-left: 3px solid #fbbf24;
-  background: #19150d;
+  background: var(--surface-panel);
   color: #fbbf24;
   text-align: left;
 }
@@ -22,7 +22,7 @@
 .copy span { font: 400 12px/1.5 var(--ui-font); color: #d8c7a2; }
 .copy .mobileCopy { display: none; }
 @media (max-width: 1199px), (max-height: 719px) {
-  .notice { align-items: center; gap: 8px; padding: 8px 10px; border: 0; background: rgba(25, 21, 13, .7); }
+  .notice { align-items: center; gap: 8px; padding: 8px 10px; border: 0; background: var(--surface-panel); }
   .icon { width: 16px; height: 16px; flex-basis: 16px; margin: 0; }
   .copy .desktopCopy { display: none; }
   .copy .mobileCopy { display: block; color: #e8c57b; }

@@ -2,7 +2,7 @@
 
 import { createContext, ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { sizedPlayerCoverArtUrl } from "../media/coverArt";
-import { paletteFromPixels, type TrackPalette } from "./artworkPalette";
+import { paletteFromPixels, panelColorFromPalette, type TrackPalette } from "./artworkPalette";
 import FullscreenPlayer from "./FullscreenPlayer";
 import { readPlaybackPreferences, streamUrlForQuality } from "./playbackPreferences";
 import { descriptorRhythm, validateVisualEnrichment, validateVisualFeatures, visualFrameAt, neutralVisualFrame, publishVisualFrame, type VisualFeatureTimeline } from "./visualFeatures";
@@ -39,11 +39,13 @@ const rgb = (color: [number, number, number]) => `rgb(${color.join(" ")})`;
 function publishPalette(palette: TrackPalette | null) {
   const root = document.documentElement;
   if (palette) {
+    root.style.setProperty("--surface-rgb", panelColorFromPalette(palette).join(" "));
     root.style.setProperty("--accent-rgb", palette.accent.join(" "));
     root.style.setProperty("--aqua", rgb(palette.accent));
     root.style.setProperty("--line", `rgb(${palette.accent.join(" ")} / .28)`);
     root.style.setProperty("--glass-stroke", `rgb(${palette.accent.join(" ")} / .38)`);
   } else {
+    root.style.removeProperty("--surface-rgb");
     root.style.removeProperty("--accent-rgb"); root.style.removeProperty("--aqua"); root.style.removeProperty("--line"); root.style.removeProperty("--glass-stroke");
   }
   window.dispatchEvent(new CustomEvent("echora:track-palette", { detail: { active: Boolean(palette), palette } }));

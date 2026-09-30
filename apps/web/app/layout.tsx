@@ -5,6 +5,7 @@ import MotionPreferences from "@/components/shell/MotionPreferences";
 import RuntimeConfigBootstrap from "@/components/runtime/RuntimeConfigBootstrap";
 import SessionRenewal from "@/components/session/SessionRenewal";
 import "./globals.css";
+import "./theme.css";
 
 export const metadata: Metadata = {
   title: "Echora",
