@@ -7,11 +7,25 @@ import { stripTypeScriptTypes } from 'node:module';
 // Node 22's built-in type stripping; no test runner or browser dependencies.
 const source = readFileSync(new URL('./artworkPalette.ts', import.meta.url), 'utf8');
 const outputText = stripTypeScriptTypes(source);
-const { paletteFromPixels } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
+const { paletteFromPixels, panelColorFromPalette } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
 const pixels = (...regions) => new Uint8ClampedArray(regions.flatMap(([rgb, count, alpha = 255]) => Array.from({ length: count }, () => [...rgb, alpha]).flat()));
 const lum = rgb => rgb.map(n => n / 255).map(n => n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4).reduce((sum, n, i) => sum + n * [.2126, .7152, .0722][i], 0);
 const contrast = (a, b) => (Math.max(lum(a), lum(b)) + .05) / (Math.min(lum(a), lum(b)) + .05);
 const spread = rgb => Math.max(...rgb) - Math.min(...rgb);
+
+test('panel tones follow artwork hue and keep readable contrast', () => {
+  for (const color of [[230, 30, 50], [20, 200, 80], [30, 70, 240], [210, 160, 20], [128, 128, 128]]) {
+    const palette = paletteFromPixels(pixels([color, 100]));
+    const panel = panelColorFromPalette(palette);
+    assert.ok(contrast([242, 244, 241], panel) >= 12);
+    assert.ok(contrast([137, 150, 145], panel) >= 4.5);
+    assert.ok(contrast(palette.accent, panel) >= 4.5);
+    assert.ok(Math.max(...panel) <= 20, `Panel must stay near-black: ${panel}`);
+    assert.ok(lum(panel) < .006, `Panel is too bright: ${panel}`);
+    if (spread(color) === 0) assert.ok(spread(panel) <= 1);
+    else assert.equal(panel.indexOf(Math.max(...panel)), color.indexOf(Math.max(...color)));
+  }
+});
 
 function valid(palette) {
   for (const rgb of [palette.accent, palette.background]) for (const n of rgb) assert.ok(Number.isInteger(n) && n >= 0 && n <= 255);

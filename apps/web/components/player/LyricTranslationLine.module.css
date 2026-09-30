@@ -1,2 +1,2 @@
 .translation{unicode-bidi:isolate;display:block;margin-top:.28em;font-family:var(--ui-font);font-size:.8em;line-height:1.35;font-weight:500;letter-spacing:normal;color:inherit;white-space:normal;overflow-wrap:anywhere;text-shadow:none;background:none}
-@media(max-width:1199px),(max-height:719px){.translation{margin-top:14px;font-size:max(18px,.72em);line-height:1.45;color:#e0e8e4;font-weight:400}}
+@media(max-width:1199px),(max-height:719px){.translation{margin-top:14px;font-size:max(18px,.72em);line-height:1.45;color:var(--text-primary);font-weight:400}}

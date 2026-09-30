@@ -16,6 +16,7 @@ import SignalVisualizer from "../player/SignalVisualizer";
 import CloudVisualizer from "../player/CloudVisualizer";
 import MeshGridVisualizer from "../player/MeshGridVisualizer";
 import LightningFallVisualizer from "../player/LightningFallVisualizer";
+import WaterDropVisualizer from "../player/WaterDropVisualizer";
 import styles from "./Backdrop.module.css";
 import { advanceWaveSpring } from "./waveSpring";
 import { readCompactLayoutPreference } from "./layoutPreference";
@@ -319,7 +320,7 @@ export default function Backdrop() {
         }
         const rootsActive = preferences.wavesEnabled && preferences.backdropPreset === "roots";
         const fallActive = preferences.wavesEnabled && preferences.backdropPreset === "lightningfall";
-        const signalActive = preferences.backdropPreset === "oscilloscope" || preferences.backdropPreset === "void" || preferences.backdropPreset === "clouds" || preferences.backdropPreset === "meshgrid";
+        const signalActive = preferences.backdropPreset === "oscilloscope" || preferences.backdropPreset === "void" || preferences.backdropPreset === "clouds" || preferences.backdropPreset === "meshgrid" || preferences.backdropPreset === "waterdrops";
         const sceneActive = preferences.wavesEnabled && preferences.backdropPreset !== "waves" && !rootsActive && !fallActive && !signalActive;
         sceneCanvas.style.opacity = sceneActive ? "1" : "0";
         canvas.style.opacity = sceneActive || rootsActive || fallActive || signalActive || (preferences.backdropPreset === "waves" && !preferences.wavesEnabled) ? "0" : "1";
@@ -353,5 +354,5 @@ export default function Backdrop() {
     return () => { cancelled = true; cancelAnimationFrame(animation); removeResize(); window.removeEventListener("echora:audio-reactivity", receiveAudio); window.removeEventListener("echora:backdrop-mode", receiveMode); window.removeEventListener("echora:track-palette", receivePalette); window.removeEventListener("echora:playback-preferences", receivePreferences); };
   }, []);
 
-  return <div ref={backdropRef} className={styles.backdrop} aria-hidden="true"><canvas ref={glRef} /><canvas ref={sceneRef} className={styles.scene} /><RootVisualizer /><SignalVisualizer /><CloudVisualizer /><LightningFallVisualizer /><MeshGridVisualizer /></div>;
+  return <div ref={backdropRef} className={styles.backdrop} aria-hidden="true"><canvas ref={glRef} /><canvas ref={sceneRef} className={styles.scene} /><RootVisualizer /><SignalVisualizer /><CloudVisualizer /><LightningFallVisualizer /><MeshGridVisualizer /><WaterDropVisualizer /></div>;
 }

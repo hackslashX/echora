@@ -1,4 +1,4 @@
-export type BackdropPreset = "waves" | "oscilloscope" | "void" | "curtain" | "ascii" | "roots" | "lightningfall" | "meshgrid" | "clouds";
+export type BackdropPreset = "waves" | "oscilloscope" | "void" | "curtain" | "ascii" | "roots" | "lightningfall" | "meshgrid" | "clouds" | "waterdrops";
 export type PlaybackQuality = "original" | "320" | "120";
 export type PlaybackPreferences = {
   quality: PlaybackQuality;

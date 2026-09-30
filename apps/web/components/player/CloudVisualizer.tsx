@@ -21,6 +21,7 @@ export default function CloudVisualizer() {
     let active = false, failed = false, playing = false, frame = 0, lastFrame = 0;
     const response = new CloudResponse();
     const targetTint = new THREE.Vector3(.38, .48, .63);
+    const targetSecondaryTint = new THREE.Vector3(.38, .34, .52);
     const scene = new THREE.Scene();
     const camera = new THREE.Camera();
     const geometry = new THREE.PlaneGeometry(2, 2);
@@ -29,6 +30,7 @@ export default function CloudVisualizer() {
       uniforms: {
         resolution: { value: new THREE.Vector2(1, 1) },
         tint: { value: targetTint.clone() },
+        secondaryTint: { value: targetSecondaryTint.clone() },
         travel: { value: 0 }, bass: { value: 0 }, mid: { value: 0 }, treble: { value: 0 },
         glow: { value: 0 }, strike: { value: 0 }, seed: { value: 1 },
       },
@@ -41,9 +43,9 @@ export default function CloudVisualizer() {
     const resize = () => {
       if (!renderer) return;
       const bounds = canvas.getBoundingClientRect();
-      // The shader stays below native retina resolution, but 1,200 pixels
-      // across retains the smaller cloud folds and lightning branches.
-      const scale = Math.min(.78, 1200 / Math.max(1, bounds.width));
+      // More pixels resolve eroded edges without paying for retina-sized ray marches.
+      // Bound both dimensions so tall displays cannot allocate an oversized target.
+      const scale = Math.min(.95, 1440 / Math.max(1, bounds.width), 1000 / Math.max(1, bounds.height));
       renderer.setPixelRatio(1);
       renderer.setSize(Math.max(1, Math.round(bounds.width * scale)), Math.max(1, Math.round(bounds.height * scale)), false);
       renderer.getDrawingBufferSize(material.uniforms.resolution.value);
@@ -59,6 +61,7 @@ export default function CloudVisualizer() {
       response.step(dt, now / 1000, playing, rate);
       for (const key of ["travel", "bass", "mid", "treble", "glow", "strike", "seed"] as const) material.uniforms[key].value = response[key];
       material.uniforms.tint.value.lerp(targetTint, 1 - Math.exp(-dt * .6));
+      material.uniforms.secondaryTint.value.lerp(targetSecondaryTint, 1 - Math.exp(-dt * .6));
       renderer.render(scene, camera);
     };
     const sync = () => {
@@ -86,9 +89,12 @@ export default function CloudVisualizer() {
     };
     const receivePalette = (event: Event) => {
       const detail = (event as CustomEvent<{ active: boolean; palette: { waves: number[][] } | null }>).detail;
-      const palette = detail.active ? detail.palette : null;
-      if (palette?.waves[0]) targetTint.fromArray(palette.waves[0]);
-      else targetTint.set(.38, .48, .63);
+      // Pause clears the shared accent. Keep cloud pigments until new artwork arrives.
+      const palette = detail.palette;
+      if (palette?.waves[0]) {
+        targetTint.fromArray(palette.waves[0]);
+        targetSecondaryTint.fromArray(palette.waves[1] || palette.waves[0]);
+      }
     };
     const receiveState = (event: Event) => {
       playing = Boolean((event as CustomEvent<boolean>).detail);
