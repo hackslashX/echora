@@ -17,3 +17,10 @@
 .primaryAction,.secondaryAction{min-height:46px;padding:0 16px;border:1px solid var(--aqua);background:var(--aqua);color:var(--on-accent);font:700 var(--type-label) var(--ui-font);cursor:pointer}
 .secondaryAction{background:transparent;color:var(--aqua)}
 .secondaryAction:hover:not(:disabled){background:rgb(var(--accent-rgb) / .14)}
+
+.integrations{display:grid;gap:28px}.integrations>[data-card-header]{margin:0 -20px}.integrations form+form{padding-top:8px}.integrations h3{margin:0;font:500 var(--type-section)/.9 var(--ui-font);letter-spacing:-2.5px}
+@media(max-width:1199px),(max-height:719px){.integrations{gap:24px}.integrations>[data-card-header]{margin:0 -14px}.integrations h3{font-size:28px;letter-spacing:-1px}}
+
+.pluginSettings{display:grid;gap:20px}.pluginSettings>[data-card-header]{margin:0 -20px}.pluginSettings p{margin:0;color:var(--text-muted);font:var(--type-caption)/1.5 var(--ui-font)}.pluginFields{display:grid;gap:18px;margin:0;padding:0;border:0}.pluginFields input[type=range]{padding:0;accent-color:var(--aqua)}.pluginSetup,.generatedKey{display:grid;gap:12px;padding:16px;border:1px solid var(--glass-stroke)}.generatedKey{background:rgb(var(--accent-rgb)/.07)}.generatedKey strong{font:600 var(--type-body) var(--ui-font)}.generatedKey small{color:var(--text-muted)}.integrationKeys{list-style:none;margin:0;padding:0;border:1px solid var(--glass-stroke)}.integrationKeys li{display:flex;align-items:center;gap:16px;padding:14px;border-bottom:1px solid var(--line)}.integrationKeys li:last-child{border-bottom:0}.integrationKeys li>div{display:grid;gap:5px;flex:1;min-width:0}.integrationKeys strong{overflow-wrap:anywhere;font:600 var(--type-body) var(--ui-font)}.integrationKeys small{color:var(--text-muted);font:var(--type-caption)/1.5 var(--ui-font)}
+@media(max-width:1199px),(max-height:719px){.pluginSettings>[data-card-header]{margin:0 -14px}.integrationKeys li{flex-wrap:wrap}}
+.pluginSettings p.message{color:var(--status-success-text)}.pluginSettings p.error{color:var(--status-danger-text)}

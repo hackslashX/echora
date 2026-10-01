@@ -159,6 +159,7 @@ def select_journey(
     end_index: int,
     artists: list[str | None],
     recording_groups: list[str | None],
+    max_per_artist: int = 2,
 ) -> list[tuple[int, float, float]]:
     matrix = normalize_rows(embeddings)
     selected = [start_index]
@@ -183,7 +184,7 @@ def select_journey(
             if candidate in used:
                 continue
             artist = artists[candidate].casefold() if artists[candidate] else None
-            if artist and artist_counts.get(artist, 0) >= 2:
+            if artist and artist_counts.get(artist, 0) >= max_per_artist:
                 continue
             group = recording_groups[candidate]
             if group and group in used_groups:

@@ -1,0 +1,28 @@
+{
+  "id": "echora",
+  "name": "Echora",
+  "author": "Echora",
+  "version": "0.1.0",
+  "description": "Sonic discovery, artist radio, transcribed lyrics, karaoke timing and translations from Echora.",
+  "config": {
+    "schema": {
+      "type": "object",
+      "properties": {
+        "apiUrl": {"type": "string", "title": "Echora plugin API URL", "description": "Copy the Plugin API URL from Echora Settings > Integrations."},
+        "apiKey": {"type": "string", "title": "Echora API key", "description": "User-scoped key generated in Echora Settings > Integrations."}
+      },
+      "required": ["apiUrl", "apiKey"]
+    },
+    "uiSchema": {
+      "type": "VerticalLayout",
+      "elements": [
+        {"type": "Control", "scope": "#/properties/apiUrl"},
+        {"type": "Control", "scope": "#/properties/apiKey", "options": {"format": "password"}}
+      ]
+    }
+  },
+  "permissions": {
+    "config": {"reason": "Read the Echora URL and API key configured by the administrator."},
+    "http": {"reason": "Connect to the configured Echora service, including self-hosted LAN addresses.", "requiredHosts": ["*"]}
+  }
+}
