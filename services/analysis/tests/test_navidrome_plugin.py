@@ -210,7 +210,7 @@ def test_native_parser_fixtures_match_current_export(format):
     assert exported == fixture.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("change", ["stale", "checksum", "line-count", "alignment"])
+@pytest.mark.parametrize("change", ["stale", "checksum", "line-count"])
 def test_invalid_translations_are_never_attached(change):
     row, translated = lyric_example()
     if change == "stale":
@@ -219,10 +219,100 @@ def test_invalid_translations_are_never_attached(change):
         translated["source_checksum"] = "0" * 64
     if change == "line-count":
         translated["lines"].pop()
-    if change == "alignment":
-        row["karaoke_lines"][0]["text"] = "Different segmentation"
     root = ET.fromstring(lyrics.ttml(row, [translated]))
     assert root.find(f".//{{{lyrics.TTM}}}translation") is None
+
+
+def test_karaoke_text_difference_does_not_discard_translation():
+    row, translated = lyric_example()
+    row["karaoke_lines"][0]["text"] = "Hello, world!"
+    root = ET.fromstring(lyrics.ttml(row, [translated]))
+    track = root.find(f".//{{{lyrics.TTM}}}translation")
+    assert [line.text for line in track] == ["Hola & mundo", "Hola"]
+
+
+@pytest.mark.parametrize("format", ["ttml", "lrc"])
+def test_changed_karaoke_segmentation_does_not_discard_source_translation_lines(format):
+    row, translated = lyric_example()
+    row["karaoke_lines"] = [{"text": "Hello & world こんにちは", "start_ms": 1000}]
+    result = lyrics.lyrics_response(row, [translated], auth.RankingProfile(lyrics_format=format))
+    if format == "ttml":
+        root = ET.fromstring(result["lyrics"][0]["text"])
+        track = root.find(f".//{{{lyrics.TTM}}}translation")
+        assert [line.text for line in track] == ["Hola & mundo", "Hola"]
+        paragraphs = root.findall(f".//{{{lyrics.TT}}}p")
+        assert [line.text for line in paragraphs] == ["Hello & world", "こんにちは"]
+        assert paragraphs[1].attrib["begin"] == "00:00:05.000"
+    else:
+        assert result["lyrics"][1]["text"] == "[00:01.000]Hola & mundo\n[00:05.000]Hola"
+
+
+@pytest.mark.parametrize("format", ["ttml", "lrc"])
+def test_translation_maps_source_ids_after_karaoke_removes_blank_stanzas(format):
+    row, translated = lyric_example()
+    # Mirrors alignment: blank stanza lines have no tokens, and edges are trimmed.
+    row["text"] = "  Hello & world  \n\nこんにちは\n\nHello & world"
+    row["provenance"] = {}
+    row["karaoke_lines"].append({"text": "Hello & world", "start_ms": 9000, "end_ms": 10000})
+    translated["source_checksum"] = lyrics.source_checksum(lyrics.original_lines(row))
+    translated["lines"] = [
+        {"id": 0, "text": "Hola & mundo"}, {"id": 1, "text": ""},
+        {"id": 2, "text": "Hola"}, {"id": 3, "text": ""},
+        {"id": 4, "text": "Hola de nuevo"},
+    ]
+    result = lyrics.lyrics_response(row, [translated], auth.RankingProfile(lyrics_format=format))
+    if format == "ttml":
+        root = ET.fromstring(result["lyrics"][0]["text"])
+        track = root.find(f".//{{{lyrics.TTM}}}translation")
+        assert [(line.attrib["for"], line.text) for line in track] == [
+            ("line-0", "Hola & mundo"), ("line-1", "Hola"), ("line-2", "Hola de nuevo")]
+        paragraphs = root.findall(f".//{{{lyrics.TT}}}p")
+        assert paragraphs[1].attrib["begin"] == "00:00:05.000"
+        assert paragraphs[2].attrib["begin"] == "00:00:09.000"
+        assert len(paragraphs[0].findall(f"{{{lyrics.TT}}}span")) == 2
+    else:
+        assert result["lyrics"][1]["text"] == (
+            "[00:01.000]Hola & mundo\n[00:05.000]Hola\n[00:09.000]Hola de nuevo")
+
+
+def test_blank_stanza_mapping_still_rejects_stale_translation():
+    row, translated = lyric_example()
+    row["text"] = "Hello & world\n\nこんにちは"
+    row["provenance"] = {}
+    # The old translation's checksum and IDs must not be reused for changed input.
+    root = ET.fromstring(lyrics.ttml(row, [translated]))
+    assert root.find(f".//{{{lyrics.TTM}}}translation") is None
+
+
+@pytest.mark.parametrize("format", ["ttml", "lrc"])
+def test_identical_translation_line_is_omitted_without_shifting_remaining_timing(format):
+    row, translated = lyric_example()
+    translated["lines"][0]["text"] = "  Hello & world  "
+    result = lyrics.lyrics_response(row, [translated], auth.RankingProfile(lyrics_format=format))
+    if format == "ttml":
+        root = ET.fromstring(result["lyrics"][0]["text"])
+        track = root.find(f".//{{{lyrics.TTM}}}translation")
+        assert len(track) == 1
+        assert track[0].attrib["for"] == "line-1"
+        assert track[0].text == "Hola"
+        assert len(root.findall(f".//{{{lyrics.TT}}}p")) == 2
+        fixture = (Path(__file__).resolve().parents[3]
+                   / "plugins/navidrome/contract-tests/testdata/lyrics-filtered.ttml")
+        assert result["lyrics"][0]["text"] == fixture.read_text(encoding="utf-8")
+    else:
+        assert result["lyrics"][1]["text"] == "[00:05.000]Hola"
+        assert "Hello & world" in result["lyrics"][0]["text"]
+
+
+@pytest.mark.parametrize("format", ["ttml", "lrc"])
+def test_entire_identical_translation_track_is_omitted(format):
+    row, translated = lyric_example()
+    translated["lines"] = [{"id": i, "text": text} for i, text in enumerate(lyrics.original_lines(row))]
+    result = lyrics.lyrics_response(row, [translated], auth.RankingProfile(lyrics_format=format))
+    assert len(result["lyrics"]) == 1
+    if format == "ttml":
+        root = ET.fromstring(result["lyrics"][0]["text"])
+        assert root.find(f".//{{{lyrics.TTM}}}translation") is None
 
 
 def test_plain_transcripts_lrc_fallback_and_lyrics_toggle():

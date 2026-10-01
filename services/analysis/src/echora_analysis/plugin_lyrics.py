@@ -56,18 +56,35 @@ def export_lines(row):
     source = original_lines(row)
     karaoke = row.get("karaoke_lines") or []
     provenance = (row.get("provenance") or {}).get("lines") or []
-    # Preserve karaoke even when its segmentation differs; translations must then
-    # be omitted rather than attaching line IDs to unrelated text.
+    # Alignment removes empty stanzas and trims line edges. Map original IDs to
+    # exported paragraphs explicitly instead of treating those changes as drift.
     if karaoke:
-        return karaoke, [line.get("text", "") for line in karaoke] == source
+        source_nonempty = [(i, text.strip()) for i, text in enumerate(source) if text.strip()]
+        karaoke_nonempty = [(i, line.get("text", "").strip()) for i, line in enumerate(karaoke)
+                            if line.get("text", "").strip()]
+        if len(source_nonempty) == len(karaoke_nonempty):
+            return karaoke, {source_id: exported_id for (source_id, _), (exported_id, _)
+                             in zip(source_nonempty, karaoke_nonempty)}
+        # TTML metadata must reference a real main paragraph. When segmentation
+        # differs, retain source paragraphs rather than discarding translations.
+        # Reuse karaoke cues where a source paragraph can be matched in order.
+        paragraphs = []
+        next_karaoke = 0
+        for index, text in enumerate(source):
+            paragraph = {**(provenance[index] if index < len(provenance) else {}), "text": text}
+            match = next((i for i in range(next_karaoke, len(karaoke))
+                          if karaoke[i].get("text", "").strip() == text.strip() and text.strip()), None)
+            if match is not None:
+                paragraph = {**karaoke[match], "text": text}
+                next_karaoke = match + 1
+            paragraphs.append(paragraph)
+        return paragraphs, {i: i for i in range(len(source))}
     if provenance:
-        return provenance, True
-    return [{"text": line} for line in source], True
+        return provenance, {i: i for i in range(len(source))}
+    return [{"text": line} for line in source], {i: i for i in range(len(source))}
 
 
-def safe_translations(row, translations, aligned):
-    if not aligned:
-        return []
+def safe_translations(row, translations, line_mapping):
     source = original_lines(row)
     checksum = source_checksum(source)
     selected = {}
@@ -85,17 +102,21 @@ def safe_translations(row, translations, aligned):
         # Prefer provider translations over AI when both exist in one language.
         language = item["target_language"]
         if language not in selected or item["provenance"] == "provider":
-            selected[language] = item
-    return [selected[key] for key in sorted(selected)]
+            selected[language] = {**item, "lines": [
+                {**line, "id": line_mapping[line["id"]]} for line in lines
+                if line["id"] in line_mapping
+                and line["text"].strip() != source[line["id"]].strip()
+            ]}
+    return [selected[key] for key in sorted(selected) if selected[key]["lines"]]
 
 
 def ttml(row, translations):
-    lines, aligned = export_lines(row)
+    lines, line_mapping = export_lines(row)
     root = ET.Element(f"{{{TT}}}tt", {f"{{{XML}}}lang": row.get("language") or "und"})
     if translations:
         head = ET.SubElement(root, f"{{{TT}}}head")
         metadata = ET.SubElement(head, f"{{{TT}}}metadata")
-        for item in safe_translations(row, translations, aligned):
+        for item in safe_translations(row, translations, line_mapping):
             track = ET.SubElement(
                 metadata, f"{{{TTM}}}translation", {f"{{{XML}}}lang": item["target_language"]}
             )
@@ -154,13 +175,13 @@ def lyrics_response(row, translations, profile):
                 }
             ]
         }
-    lines, aligned = export_lines(row)
+    lines, line_mapping = export_lines(row)
     result = [{"lang": language, "text": lrc(lines)}]
     if profile.include_translations:
-        for item in safe_translations(row, translations, aligned):
+        for item in safe_translations(row, translations, line_mapping):
             mapped = [
-                {**lines[index], "text": translated["text"], "syllables": []}
-                for index, translated in enumerate(item["lines"])
+                {**lines[translated["id"]], "text": translated["text"], "syllables": []}
+                for translated in item["lines"]
             ]
             result.append({"lang": item["target_language"], "text": lrc(mapped)})
     return {"lyrics": result}

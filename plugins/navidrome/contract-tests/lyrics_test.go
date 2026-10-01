@@ -58,3 +58,28 @@ func TestEchoraLRC(t *testing.T) {
 		t.Fatalf("bad LRC: %+v", tracks)
 	}
 }
+
+func TestFilteredTranslationKeepsOriginalLineTiming(t *testing.T) {
+	contents, err := os.ReadFile("testdata/lyrics-filtered.ttml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracks, err := model.ParseLyrics(context.Background(), "", "en", contents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tracks) != 2 {
+		t.Fatalf("expected main and translation: %+v", tracks)
+	}
+	main, translation := tracks[0], tracks[1]
+	if len(main.Line) != 2 || len(main.Line[0].Cue) != 2 {
+		t.Fatalf("main karaoke was altered: %+v", main)
+	}
+	if translation.Kind != model.LyricKindTranslation || translation.Lang != "es" || len(translation.Line) != 1 {
+		t.Fatalf("bad filtered translation: %+v", translation)
+	}
+	line := translation.Line[0]
+	if line.Value != "Hola" || line.Start == nil || *line.Start != 5000 || line.End == nil || *line.End != 6000 {
+		t.Fatalf("translation shifted to the wrong main line: %+v", line)
+	}
+}

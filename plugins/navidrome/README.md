@@ -101,8 +101,12 @@ sufficient, though a future cache or candidate index may improve performance.
 Lyrics requests use saved data only and never launch transcription, alignment or
 translation. TTML carries line/syllable timing plus translation tracks with their
 language and line mapping. Only completed translations with a matching source
-checksum and matching line IDs are served. If karaoke segmentation differs from
-the translated source, karaoke is retained and those translations are omitted.
+checksum and matching line IDs are served. Original line IDs are mapped to karaoke
+paragraphs, allowing blank stanza separators and trimmed line edges. Karaoke text
+differences do not suppress translations. If nonempty line counts differ, export
+uses source paragraphs and their timings, retaining karaoke cues for matching lines.
+Translated lines identical to their source after trimming surrounding whitespace
+are omitted to avoid duplicate display; empty translation tracks are omitted too.
 Incomplete predicted syllables fall back to the authoritative line text.
 
 LRC mode provides line timing and separate language variants. Navidrome and
