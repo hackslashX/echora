@@ -3,8 +3,6 @@
 import { toast } from "sonner";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
-import AppShell from "../shell/AppShell";
-import CopyrightFooter from "../shell/CopyrightFooter";
 import { useDurableJob } from "../jobs/useDurableJob";
 import { jobPresentation } from "../jobs/durableJobs";
 import BatchStatusList from "../jobs/BatchStatusList";
@@ -100,7 +98,7 @@ export default function SyncLibrary() {
     { value: "missing" as const, title: "New tracks only", detail: `Analyze ${status?.missing?.toLocaleString() ?? "—"} tracks not yet in Echora.` },
     { value: "all" as const, title: "Entire library", detail: "Refresh metadata and lyrics, and fill any missing analysis." },
   ];
-  return <AppShell title="Sync" footer={<CopyrightFooter />}>
+  return <>
     <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)] md:grid-cols-[340px_minmax(0,1fr)]">
       <div className="hidden min-h-0 border-r border-border bg-rail md:block"><SidePanel title="About sync" subtitle="What happens when you sync">{<SyncExplanation />}</SidePanel></div>
       <Pane className="bg-workspace" label="Sync" title={active ? job?.kind === "semantic_fusion_build" ? "Building semantic fusion" : "Processing library" : busy ? "Scanning Navidrome" : "Sync library"} subtitle="Reads Navidrome without changing it. Existing analysis is kept." actions={<Button variant="outline" onClick={() => connectionId && scan(connectionId)} disabled={busy || !!active}><RefreshCw className={busy ? "animate-spin" : undefined} />Rescan</Button>}>
@@ -134,5 +132,5 @@ export default function SyncLibrary() {
       </Pane>
     </div>
     {confirmFullSync && <FullSyncWarning onClose={() => setConfirmFullSync(false)} onConfirm={verifyAudioHashes => { setConfirmFullSync(false); void start(verifyAudioHashes); }} />}
-  </AppShell>;
+  </>;
 }

@@ -11,8 +11,6 @@ import { EmptyState } from "../layout/empty-state";
 import { SidePanel } from "../layout/side-panel";
 import { Pane, PaneSection, PaneSections, SectionAction } from "../layout/pane";
 import { LoadingState, Spinner } from "../ui/spinner";
-import AppShell from "../shell/AppShell";
-import CopyrightFooter from "../shell/CopyrightFooter";
 import FacetFilter from "./FacetFilter";
 import Artwork from "../ui/Artwork";
 import { Button } from "../ui/button";
@@ -182,7 +180,7 @@ export default function BrowseLibrary() {
     else updateMetadata({ ...metadata, [chip.group]: metadata[chip.group].filter(item => item !== chip.value) });
   }
   const activeTrack = (track: Track) => player.track?.id === track.id;
-  return <AppShell title="Library" footer={<CopyrightFooter />}>
+  return <>
     <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)] md:grid-cols-[300px_minmax(0,1fr)]">
       <div className="hidden min-h-0 border-r border-border bg-rail md:block">{filters}</div>
       <Pane className="bg-workspace" label="Tracks" title={searchMode === "recording" ? "Recording results" : searchMode === "hum" ? "Melody matches" : "Your library"} subtitle={searchMode ? "Ranked by similarity" : undefined}
@@ -224,5 +222,5 @@ export default function BrowseLibrary() {
         {tracks.length > 0 && <div className="flex justify-center pt-6 text-xs text-subtle-foreground">{loading ? <span role="status" className="flex items-center gap-2"><Spinner />Loading more tracks…</span> : canLoadMore ? <span>Scroll for more</span> : !searchMode && <span>All {tracks.length.toLocaleString()} tracks shown</span>}</div>}
       </Pane>
     </div>
-  </AppShell>;
+  </>;
 }

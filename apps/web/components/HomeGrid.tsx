@@ -7,8 +7,6 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { EmptyState } from "./layout/empty-state";
 import { Pane, PaneSection, PaneSections } from "./layout/pane";
-import AppShell from "./shell/AppShell";
-import CopyrightFooter from "./shell/CopyrightFooter";
 import TransitionLink from "./shell/TransitionLink";
 import { usePlayer, type PlayerTrack } from "./player/PlayerProvider";
 import { coverArtUrl } from "./media/coverArt";
@@ -139,7 +137,7 @@ export default function HomeGrid() {
     <div className="divide-y divide-border border border-border">{tools.map(({ title, note, href, Icon }) => <TransitionLink key={href} href={href} className="group flex items-center gap-3 p-3 transition-colors hover:bg-surface"><span className="grid size-9 shrink-0 place-items-center bg-raised text-primary"><Icon className="size-4" /></span><span className="min-w-0 flex-1"><strong className="block text-[13px] font-medium">{title}</strong><span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">{note}</span></span><ArrowUpRight className="size-4 text-subtle-foreground group-hover:text-foreground" /></TransitionLink>)}</div>
   </PaneSection>;
 
-  return <AppShell title="Home" footer={<CopyrightFooter />}>
+  return <>
     <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_360px]">
       <Pane className="bg-workspace" label="Home" title={firstName ? `Welcome back, ${firstName}` : "Welcome back"} subtitle="What's new in your library, and where to go next."
         actions={<>{total !== null && <span className="mr-1 text-lg leading-none font-semibold tracking-tight tabular-nums text-primary" aria-label={`${total.toLocaleString()} tracks in your library`} title="Tracks in your library">{total.toLocaleString()}</span>}<Button asChild variant="outline" size="sm"><TransitionLink href="/sync"><RefreshCw />Sync</TransitionLink></Button></>}>
@@ -153,7 +151,7 @@ export default function HomeGrid() {
         <Pane title="For you" subtitle="Your curations and shortcuts"><PaneSections>{curationsSection}{jumpSection}</PaneSections></Pane>
       </div>
     </div>
-  </AppShell>;
+  </>;
 }
 
 /** A horizontally scrolling row with paging buttons that appear only when there is more to see. */

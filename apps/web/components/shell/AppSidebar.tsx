@@ -1,7 +1,7 @@
 "use client";
 import { AudioLines, ChevronsUpDown, Home, LibraryBig, ListMusic, LogOut, Orbit, Plus, RefreshCw, Settings } from "lucide-react";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 import TransitionLink from "./TransitionLink";
 import packageInfo from "../../package.json";
@@ -15,18 +15,11 @@ const links = [
   { href: "/sync", label: "Sync", Icon: RefreshCw },
   { href: "/settings", label: "Settings", Icon: Settings },
 ];
-type SavedCuration = { id: string; name: string; tracks: unknown[] };
+import type { SidebarCuration } from "./sidebarCurations";
 
-export default function AppSidebar({ onboarding = false, displayName, initials, onNavigate, mobile = false }: { onboarding?: boolean; displayName: string; initials: string; onNavigate?: () => void; mobile?: boolean }) {
+export default function AppSidebar({ onboarding = false, displayName, initials, onNavigate, mobile = false, curations }: { onboarding?: boolean; displayName: string; initials: string; onNavigate?: () => void; mobile?: boolean; curations: SidebarCuration[] }) {
   const pathname = usePathname();
-  const [curations, setCurations] = useState<SavedCuration[]>([]);
   const [loggingOut, setLoggingOut] = useState(false);
-  useEffect(() => {
-    if (onboarding) return;
-    const abort = new AbortController();
-    fetch("/analysis/library/curations", { signal: abort.signal }).then(response => response.ok ? response.json() : null).then(body => { if (body && !abort.signal.aborted) setCurations(body.curations || []); }).catch(() => {});
-    return () => abort.abort();
-  }, [pathname, onboarding]);
   async function logout() { setLoggingOut(true); try { await fetch("/analysis/auth/logout", { method: "POST" }); } finally { window.location.assign(new URL("/login", window.location.origin)); } }
   const items = onboarding ? [{ href: "/connect", label: "Connect library", Icon: LibraryBig }] : links;
   const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`) || (href === "/library" && pathname.startsWith("/artists/"));

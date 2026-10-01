@@ -3,8 +3,6 @@
 import { setUrl, useSubPath } from "../shell/urlState";
 import { Palette, Sparkles, BrainCircuit, Clock3, Radio, Server, ShieldCheck, SlidersHorizontal, UserRound } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
-import AppShell from "../shell/AppShell";
-import CopyrightFooter from "../shell/CopyrightFooter";
 import { defaultPlaybackPreferences, PlaybackPreferences, readPlaybackPreferences, writePlaybackPreferences } from "../player/playbackPreferences";
 import { SectionHeading, Choice, ChoiceItem, Toggle } from "./Presentation";
 
@@ -169,7 +167,7 @@ export default function SettingsView() {
     <h3 className="mb-1.5 px-3 text-xs font-medium text-subtle-foreground">{group}</h3>
     <ul className="space-y-0.5">{tabs.filter(item => item.group === group).map(item => <li key={item.id}><button type="button" onClick={() => selectTab(item.id)} aria-current={tab === item.id ? "page" : undefined} className={cn("relative flex h-9 w-full items-center gap-3 px-3 text-left text-[13px] font-medium transition-colors", tab === item.id ? "bg-raised text-foreground before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-primary" : "text-muted-foreground hover:bg-surface hover:text-foreground")}><item.icon className={cn("size-4", tab === item.id && "text-primary")} />{item.label}</button></li>)}</ul>
   </div>)}</nav></SidePanel>;
-  return <AppShell title="Settings" footer={<CopyrightFooter />}>
+  return <>
     <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)] md:grid-cols-[260px_minmax(0,1fr)]">
       <div className="hidden min-h-0 border-r border-border bg-rail md:block">{navigation}</div>
       <Pane className="bg-workspace" label={current?.label || "Settings"} title={current?.label || "Settings"} subtitle={descriptions[tab]}
@@ -196,5 +194,5 @@ export default function SettingsView() {
         </>}</section>
       </Pane>
     </div>
-  </AppShell>;
+  </>;
 }

@@ -24,6 +24,8 @@ Use existing shared components before adding page-specific presentation. Special
 - No desktop top bar. Account actions live in the navigation footer.
 - Desktop sidebar: 232px, reducing to 208px below 1100px. Below 768px it moves into a sheet opened from a 56px top bar.
 - Player: 80px desktop, 72px mobile. Playback state remains in the root `PlayerProvider`.
+- Authenticated routes share `app/(authenticated)/layout.tsx`. The shell, sidebar, and player bar stay mounted when the page changes. Pages render only their workspace content. Onboarding keeps its separate shell.
+- The shell loads sidebar curations once. Successful curation loads after saves, deletes, and job completion publish the updated list through `publishCurations`, without a navigation-triggered refetch.
 - Page gutter (`--gutter`): 32px, 24px below 1100px, 16px below 768px.
 - Typography scale (never set sizes ad hoc):
   - Page title (`PageHeader`): 28px, for single-column pages only.

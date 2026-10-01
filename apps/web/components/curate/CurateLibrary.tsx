@@ -1,4 +1,5 @@
 "use client";
+import { publishCurations } from "../shell/sidebarCurations";
 
 import { setUrl, useSubPath } from "../shell/urlState";
 import Artwork from "../ui/Artwork";
@@ -10,8 +11,6 @@ import { coverArtUrl } from "../media/coverArt"
 import { mediaUrl } from "../media/mediaOrigin";
 import { useEffect, useState, type ReactNode } from "react";
 import { usePlayer, type PlayerTrack } from "../player/PlayerProvider";
-import AppShell from "../shell/AppShell";
-import CopyrightFooter from "../shell/CopyrightFooter";
 import TagInput, { type Tag } from "./TagInput";
 import TrackReferencePicker, { type ReferenceTrack } from "./TrackReferencePicker";
 import { useCurationJobs } from "../jobs/useCurationJobs";
@@ -105,12 +104,13 @@ export default function CurateLibrary() {
     const body = await api<{ curations: Curation[] }>("/library/curations", { signal });
     if (signal.aborted) return;
     setCurations(body.curations);
+    publishCurations(body.curations);
     const selected = body.curations.find(item => item.id === selectedCurationId);
     if (selected && detailKind === "saved") setPreview(value => value ? { ...value, tracks: selected.tracks } : value);
   });
   const busy = busyAction !== null;
 
-  function loadCurations() { return api<{ curations: Curation[] }>("/library/curations").then(body => setCurations(body.curations)).catch(reason => toast.error("Could not load curations", { description: reason.message })).finally(() => setCurationsLoaded(true)); }
+  function loadCurations() { return api<{ curations: Curation[] }>("/library/curations").then(body => { setCurations(body.curations); publishCurations(body.curations); }).catch(reason => toast.error("Could not load curations", { description: reason.message })).finally(() => setCurationsLoaded(true)); }
   useEffect(() => { api<{ navidrome_connection_id?: string }>("/auth/me").then(user => setConnectionId(user.navidrome_connection_id || "")); api<{ lastfm: { connected: boolean } }>("/settings").then(body => setHistoryConnected(body.lastfm.connected)).catch(() => {}); loadCurations(); }, []);
 
   useEffect(() => {
@@ -329,7 +329,7 @@ export default function CurateLibrary() {
 
   const saved = <Column tone="saved" title="Saved" subtitle={`${curations.length} ${curations.length === 1 ? "curation" : "curations"}`}>{savedList}</Column>;
 
-  return <AppShell title="Curations" footer={<CopyrightFooter />}>
+  return <>
     <div className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 border-b border-border bg-rail p-2 md:hidden"><Tabs value={pane} onValueChange={value => setPane(value as typeof pane)}><TabsList aria-label="Curation panes" className="w-full"><TabsTrigger value="build" className="flex-1">Build</TabsTrigger><TabsTrigger value="songs" className="flex-1">Songs{preview ? ` · ${shown.length}` : ""}</TabsTrigger><TabsTrigger value="saved" className="flex-1">Saved</TabsTrigger></TabsList></Tabs></div>
       <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] md:grid-cols-[minmax(400px,46%)_minmax(0,1fr)] xl:grid-cols-[minmax(460px,560px)_minmax(0,1fr)] 2xl:grid-cols-[580px_minmax(0,1fr)_320px]">
@@ -339,7 +339,7 @@ export default function CurateLibrary() {
       </div>
     </div>
       <Dialog open={Boolean(deleteTarget)} onOpenChange={open => { if (!open && !busy) setDeleteTarget(null); }}><DialogContent onEscapeKeyDown={event => { if (busy) event.preventDefault(); }} onInteractOutside={event => { if (busy) event.preventDefault(); }}><DialogHeader><DialogTitle>Delete {deleteTarget?.name}?</DialogTitle><DialogDescription>Choose whether to keep the synced playlist in Navidrome.</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" disabled={busy} onClick={() => removeCuration(false)}>Delete from Echora only</Button><Button variant="destructive" loading={busyAction === "delete"} disabled={busy} onClick={() => removeCuration(true)}><Trash2 />Delete both</Button></DialogFooter></DialogContent></Dialog>
-  </AppShell>;
+  </>;
 }
 
 const toneClasses = { build: "bg-[#0e0e0e]", songs: "bg-workspace", saved: "bg-rail" } as const;

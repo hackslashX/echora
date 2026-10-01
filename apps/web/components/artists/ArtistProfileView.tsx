@@ -4,8 +4,6 @@ import { ArrowLeft, Disc3 } from "lucide-react";
 import { Button } from "../ui/button";
 import { LoadingState } from "../ui/spinner";
 import { useEffect, useState } from "react";
-import AppShell from "../shell/AppShell";
-import CopyrightFooter from "../shell/CopyrightFooter";
 import TransitionLink from "../shell/TransitionLink";
 import { Workspace, WorkspaceBody } from "../layout/workspace";
 import { PageHeader } from "../layout/page-header";
@@ -51,7 +49,7 @@ export default function ArtistProfileView({ artist }: { artist: string }) {
     return () => controller.abort();
   }, [artist, model]);
 
-  return <AppShell title="Artist" footer={<CopyrightFooter />}>
+  return <>
     <Workspace>
       <PageHeader eyebrow="Artist" title={artist} description="The distinct sounds in this catalogue, and the artists connected to them." actions={<Button variant="outline" asChild><TransitionLink href="/library"><ArrowLeft />Library</TransitionLink></Button>} />
       <WorkspaceBody>
@@ -70,5 +68,5 @@ export default function ArtistProfileView({ artist }: { artist: string }) {
       </Tabs>
       </WorkspaceBody>
     </Workspace>
-  </AppShell>;
+  </>;
 }

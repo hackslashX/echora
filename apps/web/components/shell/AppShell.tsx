@@ -4,6 +4,7 @@ import { Menu } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { ReactNode, useEffect, useState } from "react";
 import AppSidebar from "./AppSidebar";
+import { useSidebarCurations } from "./sidebarCurations";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "../ui/sheet";
@@ -12,6 +13,7 @@ import { cacheUser, getCachedUser, invalidateSessionUser, sessionGeneration, SES
 
 export default function AppShell({ title, footer, children, onboarding = false }: { title: string; footer: ReactNode; children: ReactNode; flush?: boolean; fullPage?: boolean; breadcrumb?: boolean; onboarding?: boolean; animate?: boolean }) {
   const router = useRouter();
+  const curations = useSidebarCurations(onboarding);
   const [user, setUser] = useState<ShellUser | null>(getCachedUser);
   const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => {
@@ -54,7 +56,7 @@ export default function AppShell({ title, footer, children, onboarding = false }
   const initials = displayName.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join("").toUpperCase() || "EC";
 
   return <div aria-label={title} className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto] bg-nav md:grid-cols-[var(--sidebar-width)_minmax(0,1fr)]">
-    <div className="hidden min-h-0 border-r border-border md:block"><AppSidebar onboarding={onboarding} displayName={displayName} initials={initials} /></div>
+    <div className="hidden min-h-0 border-r border-border md:block"><AppSidebar curations={curations} onboarding={onboarding} displayName={displayName} initials={initials} /></div>
     <div className="flex min-h-0 min-w-0 flex-col">
       <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-nav px-2 md:hidden">
         <Button variant="ghost" size="icon" aria-label="Open navigation" onClick={() => setMenuOpen(true)}><Menu /></Button>
@@ -66,7 +68,7 @@ export default function AppShell({ title, footer, children, onboarding = false }
     <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
       <SheetContent side="left" className="w-[280px] gap-0 p-0 [&>button]:hidden">
         <SheetHeader className="sr-only"><SheetTitle>Navigation</SheetTitle><SheetDescription>Main navigation and account menu.</SheetDescription></SheetHeader>
-        <AppSidebar mobile onboarding={onboarding} displayName={displayName} initials={initials} onNavigate={() => setMenuOpen(false)} />
+        <AppSidebar curations={curations} mobile onboarding={onboarding} displayName={displayName} initials={initials} onNavigate={() => setMenuOpen(false)} />
       </SheetContent>
     </Sheet>
   </div>;
