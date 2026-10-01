@@ -1,6 +1,6 @@
 # Interface migration
 
-The approved visual reference lives in `design-lab/`. The application uses the same header and side-panel implementations in `apps/web/components/layout/`.
+The application header and side-panel implementations live in `apps/web/components/layout/`.
 
 ## Shared components
 

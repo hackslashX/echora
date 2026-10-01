@@ -1,1 +1,0 @@
-{"name":"echora-design-lab","private":true,"scripts":{"dev":"next dev --port 3100","build":"next build"}}
