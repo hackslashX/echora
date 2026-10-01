@@ -15,6 +15,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
 
 from .settings import get_settings
+from .navidrome_lyrics_sources import lyrics_paused
 
 
 class RankingProfile(BaseModel):
@@ -116,10 +117,17 @@ def settings_router(require_user):
                 FROM navidrome_api_keys WHERE user_id=%s ORDER BY created_at DESC""",
                 (user["id"],),
             ).fetchall()
+            connection_id = row["connection_id"] if row else user.get("navidrome_connection_id")
+            connection = db.execute(
+                "SELECT url FROM navidrome_connections WHERE id=%s AND owner_user_id=%s",
+                (connection_id, user["id"]),
+            ).fetchone()
+            paused = bool(connection and lyrics_paused(db, connection["url"]))
         return {
             **profile_from(row).model_dump(),
             "enabled": bool(row and row["enabled"]),
-            "connection_id": row["connection_id"] if row else user.get("navidrome_connection_id"),
+            "connection_id": connection_id,
+            "lyrics_paused": paused,
             "keys": keys,
         }
 
@@ -142,6 +150,20 @@ def settings_router(require_user):
             old = db.execute(
                 "SELECT * FROM navidrome_integrations WHERE user_id=%s", (user["id"],)
             ).fetchone()
+            if connection_id and body.enabled and body.serve_lyrics:
+                url = db.execute(
+                    "SELECT url FROM navidrome_connections WHERE id=%s", (connection_id,)
+                ).fetchone()["url"]
+                enabling = (
+                    not old
+                    or not old["enabled"]
+                    or not profile_from(old).serve_lyrics
+                    or old["connection_id"] != connection_id
+                )
+                if enabling and lyrics_paused(db, url):
+                    raise HTTPException(
+                        409, "Lyrics cannot be enabled until active sync and lyrics jobs finish"
+                    )
             if old and old["connection_id"] != connection_id:
                 db.execute(
                     "UPDATE navidrome_api_keys SET revoked_at=now() WHERE user_id=%s AND revoked_at IS NULL",

@@ -12,7 +12,7 @@ type Profile = {
   max_per_artist: number; key_expiry_days: number; serve_lyrics: boolean;
   include_translations: boolean; lyrics_format: "ttml" | "lrc";
 };
-type Settings = Profile & { keys: Key[] };
+type Settings = Profile & { keys: Key[]; lyrics_paused: boolean };
 type GeneratedKey = { secret: string; expires_at: string };
 const initial: Profile = { enabled: false, connection_id: null, musical_weight: 80, musical_semantic_weight: 70, missing_lyrics: "audio", max_per_artist: 2, key_expiry_days: 90, serve_lyrics: true, include_translations: true, lyrics_format: "ttml" };
 const endpoint = "/analysis/settings/integrations/navidrome";
@@ -32,23 +32,38 @@ export default function NavidromePluginSettings({ connectionId }: { connectionId
   const [apiUrl, setApiUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [lyricsPaused, setLyricsPaused] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
   async function load(refreshProfile = true) {
-    const { keys: storedKeys, ...storedProfile } = await request<Settings>("");
+    const { keys: storedKeys, lyrics_paused, ...storedProfile } = await request<Settings>("");
     if (refreshProfile) setProfile(storedProfile);
     setKeys(storedKeys); setLoaded(true);
+    setLyricsPaused(lyrics_paused);
     return storedProfile;
   }
   useEffect(() => {
     let cancelled = false;
-    request<Settings>("").then(({ keys: storedKeys, ...storedProfile }) => {
+    request<Settings>("").then(({ keys: storedKeys, lyrics_paused, ...storedProfile }) => {
       if (cancelled) return;
       setProfile(storedProfile); setKeys(storedKeys); setLoaded(true);
+      setLyricsPaused(lyrics_paused);
       setApiUrl(`${window.location.origin}/analysis/integrations/navidrome/v1`);
     }).catch(reason => { if (!cancelled) setError(reason.message); });
     return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const refreshStatus = () => {
+      if (document.hidden) return;
+      request<Settings>("").then(value => {
+        if (!cancelled) { setLyricsPaused(value.lyrics_paused); setKeys(value.keys); }
+      }).catch(() => { /* Keep the last known state; the backend always enforces the pause. */ });
+    };
+    const timer = window.setInterval(refreshStatus, 10000);
+    document.addEventListener("visibilitychange", refreshStatus);
+    return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener("visibilitychange", refreshStatus); };
   }, []);
 
   async function run(action: () => Promise<void>) {
@@ -78,9 +93,10 @@ export default function NavidromePluginSettings({ connectionId }: { connectionId
         <label className={styles.selectPreference}><span>Musical evidence balance</span><input aria-label="Musical semantics percentage" type="range" min="0" max="100" step="1" value={profile.musical_semantic_weight} onChange={event => update("musical_semantic_weight", Number(event.target.value))} /><small>{profile.musical_semantic_weight}% musical character · {100 - profile.musical_semantic_weight}% acoustic detail</small></label>
         <label className={styles.selectPreference}><span>Missing lyrical analysis</span><select value={profile.missing_lyrics} onChange={event => update("missing_lyrics", event.target.value as Profile["missing_lyrics"])}><option value="audio">Use musical evidence only</option><option value="exclude">Exclude tracks without lyrical analysis</option></select></label>
         <label className={styles.selectPreference}><span>Maximum tracks per artist</span><input type="number" min="1" max="20" required value={profile.max_per_artist} onChange={event => update("max_per_artist", Number(event.target.value))} /></label>
-        <button type="button" className={styles.switch} role="switch" aria-checked={profile.serve_lyrics} onClick={() => update("serve_lyrics", !profile.serve_lyrics)}><span>Provide Echora lyrics</span><b>{profile.serve_lyrics ? "ON" : "OFF"}</b></button>
-        <button type="button" className={styles.switch} role="switch" aria-checked={profile.include_translations} disabled={!profile.serve_lyrics} onClick={() => update("include_translations", !profile.include_translations)}><span>Include available translations</span><b>{profile.include_translations ? "ON" : "OFF"}</b></button>
-        <label className={styles.selectPreference}><span>Lyrics format</span><select disabled={!profile.serve_lyrics} value={profile.lyrics_format} onChange={event => update("lyrics_format", event.target.value as Profile["lyrics_format"])}><option value="ttml">Enhanced timing and translation tracks (TTML)</option><option value="lrc">Line timing and language variants (LRC)</option></select><small>Enhanced lyrics require a compatible Navidrome version and client. Existing transcripts and translations are served without starting new analysis.</small></label>
+        <button type="button" className={styles.switch} role="switch" aria-checked={profile.serve_lyrics && !lyricsPaused} disabled={lyricsPaused} onClick={() => update("serve_lyrics", !profile.serve_lyrics)}><span>Provide Echora lyrics</span><b>{lyricsPaused ? "PAUSED" : profile.serve_lyrics ? "ON" : "OFF"}</b></button>
+        {lyricsPaused && <p role="status">Lyrics are temporarily paused while sync or lyrics jobs are active. Navidrome uses its next configured source. {profile.serve_lyrics ? "Echora lyrics resume automatically when all jobs finish." : "Your saved preference is off and will remain off."}</p>}
+        <button type="button" className={styles.switch} role="switch" aria-checked={profile.include_translations} disabled={!profile.serve_lyrics || lyricsPaused} onClick={() => update("include_translations", !profile.include_translations)}><span>Include available translations</span><b>{profile.include_translations ? "ON" : "OFF"}</b></button>
+        <label className={styles.selectPreference}><span>Lyrics format</span><select disabled={!profile.serve_lyrics || lyricsPaused} value={profile.lyrics_format} onChange={event => update("lyrics_format", event.target.value as Profile["lyrics_format"])}><option value="ttml">Enhanced timing and translation tracks (TTML)</option><option value="lrc">Line timing and language variants (LRC)</option></select><small>Enhanced lyrics require a compatible Navidrome version and client. Existing transcripts and translations are served without starting new analysis.</small></label>
       </fieldset>
       <section className={styles.pluginKeys} aria-label="API keys">
         <CardHeader as="h3" icon={<KeyRound />} title="API keys" count={keys.filter(key => key.status === "active").length} description="Manage access to this account’s discovery and lyrics." />

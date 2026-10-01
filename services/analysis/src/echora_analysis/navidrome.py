@@ -149,7 +149,10 @@ class NavidromeClient:
             payload = self._request("getLyricsBySongId", id=song_id)
             entries = payload.get("lyricsList", {}).get("structuredLyrics", [])
             if entries:
-                entry = entries[0]
+                entry = next((item for item in entries if item.get("kind", "main") in ("main", "")), None)
+                if entry is None:
+                    return {"status": "missing", "text": None, "language": None, "synced": False,
+                            "lines": [], "source": "getLyricsBySongId", "structured_lyrics": entries}
                 lines = entry.get("line", [])
                 text = "\n".join(str(line.get("value") or "") for line in lines).strip()
                 return {
@@ -157,6 +160,7 @@ class NavidromeClient:
                     "language": entry.get("lang"), "synced": bool(entry.get("synced")),
                     "lines": [{"start_ms": line.get("start"), "text": line.get("value") or ""} for line in lines],
                     "source": "getLyricsBySongId",
+                    "structured_lyrics": entries,
                 }
         except Exception:
             pass

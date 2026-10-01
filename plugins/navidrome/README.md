@@ -44,7 +44,8 @@ key to rotate it. Removing the owning account/connection removes its credentials
 ## Install
 
 1. Deploy the Echora web and analysis changes and apply Alembic migration
-   `0055_navidrome_integration` using the project's normal migration workflow.
+   `0056_navidrome_original_lyrics` (including its predecessor) using the project's
+   normal migration workflow. Update the analysis workers as well as the API.
 2. Connect the intended Navidrome server in Echora Settings → Integrations,
    enable Echora Navidrome plugin access, and copy the generated key and Plugin
    API URL. That URL must be reachable from Navidrome, including its container.
@@ -109,15 +110,33 @@ clients determine display support: ordinary text remains available through nativ
 lyrics APIs, while syllable highlighting and explicit translation tracks require
 compatible versions/clients. The legacy `getLyrics` endpoint selects main lyrics.
 
-## Deferred sync feedback guard
+## Sync lyrics guard and original sources
 
-If Echora refreshes lyrics through Navidrome with this plugin first in
-`LyricsPriority`, it can receive its own exported lyrics. There is no recursive
-analysis: the plugin reads saved data only. However, reimporting that output can
-replace transcription provenance or richer timing metadata. A guard to recognize
-self-exported lyrics and preserve the original data is deferred. Until that guard
-is implemented, put the plugin after the desired original sources or temporarily
-disable plugin lyrics while running Echora lyric retrieval/refresh.
+Echora temporarily pauses plugin lyrics while a sync, import, lyrics backfill or
+karaoke backfill job is queued, running or waiting for batches on that Navidrome
+server. The provider returns `{lyrics: []}`, which tells Navidrome to try the next
+source in `LyricsPriority`. Sonic and metadata discovery remain available.
+Ensure the priority list includes the original sources you want after `echora`.
+During the pause, other Navidrome clients receive those fallback sources too.
+
+The pause is derived from the durable queue rather than toggling the saved
+preference. It covers overlapping jobs, including other Echora accounts using the
+same configured Navidrome URL, and stays in place across worker restarts/retries.
+The UI shows PAUSED and prevents manual re-enabling. Once all matching jobs are
+terminal (complete, partial, failed or cancelled), the saved preference takes
+effect automatically: previously enabled lyrics resume; previously disabled
+lyrics stay off. A worker outage keeps lyrics paused until queued jobs are
+completed, recovered or cancelled. Different URL aliases for the same Navidrome
+instance must be consolidated to one connection URL for this scope to match.
+
+Each actual provider retrieval archives the Navidrome response separately in
+`navidrome_lyrics_sources`, keyed by source library and song ID. It preserves the
+original structured tracks, language variants and timing cues independently of
+manual overrides, AI transcripts, karaoke and translations in Echora. The latest
+retrieval status and the last response with available main lyrics are both kept,
+so an unavailable result does not erase the previous original. Existing data is
+archived on its next retrieval; this does not retroactively reconstruct provenance
+already overwritten before the guard existed.
 
 ## API contracts
 

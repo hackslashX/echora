@@ -10,6 +10,7 @@ from xml.etree import ElementTree as ET
 
 from .navidrome_integration import connect
 from .plugin_ranking import library_namespace
+from .navidrome_lyrics_sources import lyrics_paused
 
 TT = "http://www.w3.org/ns/ttml"
 TTM = "http://www.w3.org/ns/ttml#metadata"
@@ -169,6 +170,10 @@ def load_lyrics(principal, source_id):
     if not principal["profile"].serve_lyrics:
         return {"lyrics": []}
     with connect() as db:
+        if lyrics_paused(db, principal["url"]):
+            # Empty is Navidrome's normal provider fallback signal. Never change
+            # the saved preference or revoke the key to suppress lyrics alone.
+            return {"lyrics": []}
         row = db.execute(
             """SELECT t.id,l.text,l.language,l.provenance,k.lines AS karaoke_lines
             FROM user_source_memberships visible

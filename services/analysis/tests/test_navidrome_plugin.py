@@ -275,14 +275,17 @@ def database(monkeypatch):
             CREATE TABLE lyric_translations(track_id uuid,status text,source_checksum text,target_language text,
                 source_language text,provenance text,lines jsonb);
         """)
-        migration_path = (
-            Path(__file__).parents[1] / "alembic/versions/0055_navidrome_integration.py"
-        )
-        spec = importlib.util.spec_from_file_location("integration_migration", migration_path)
-        migration = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(migration)
-        migration.op = SimpleNamespace(execute=db.execute)
-        migration.upgrade()
+        for filename in (
+            "0034_jobs.py",
+            "0055_navidrome_integration.py",
+            "0056_navidrome_original_lyrics.py",
+        ):
+            migration_path = Path(__file__).parents[1] / "alembic/versions" / filename
+            spec = importlib.util.spec_from_file_location("integration_migration", migration_path)
+            migration = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(migration)
+            migration.op = SimpleNamespace(execute=db.execute)
+            migration.upgrade()
         owner, other, conn = uuid4(), uuid4(), uuid4()
         db.execute("INSERT INTO users(id) VALUES (%s),(%s)", (owner, other))
         db.execute(
@@ -451,3 +454,251 @@ def test_sql_corpus_and_lyrics_are_scoped_before_ranking(database):
         json={"song": {"id": "owned"}, "count": 10000},
     )
     assert response.status_code == 422
+
+
+def seed_saved_lyrics(db):
+    from psycopg.types.json import Jsonb
+
+    principal = auth.authenticate("Bearer " + enable(db))
+    library, track = uuid4(), uuid4()
+    with db.connect() as connection:
+        connection.execute(
+            "INSERT INTO libraries VALUES (%s,%s)", (library, ranking.library_namespace(principal))
+        )
+        connection.execute("INSERT INTO tracks VALUES (%s,'Song','Artist','Album',180)", (track,))
+        connection.execute(
+            "INSERT INTO track_sources VALUES (%s,'song',%s,'subsonic','{}')", (library, track)
+        )
+        connection.execute(
+            "INSERT INTO user_source_memberships VALUES (%s,%s,'song')", (db.owner, library)
+        )
+        connection.execute(
+            "INSERT INTO lyrics VALUES (%s,'Saved AI transcript','en',%s)",
+            (track, Jsonb({"ai_generated": True})),
+        )
+    return principal, library, track
+
+
+def insert_sync(
+    db, *, connection_id=None, owner=None, kind="navidrome_sync", status="queued", operation=None
+):
+    from psycopg.types.json import Jsonb
+
+    job_id = uuid4()
+    with db.connect() as connection:
+        connection.execute(
+            """INSERT INTO jobs(id,kind,worker_type,user_id,connection_id,status,payload)
+            VALUES (%s,%s,'analysis',%s,%s,%s,%s)""",
+            (
+                job_id,
+                kind,
+                owner or db.owner,
+                connection_id or db.connection,
+                status,
+                Jsonb({"operation": operation} if operation else {}),
+            ),
+        )
+    return job_id
+
+
+@pytest.mark.parametrize("terminal", ["complete", "partial", "failed", "cancelled"])
+def test_sync_pause_restores_saved_preference_on_every_terminal_state(
+    database, terminal, monkeypatch
+):
+    db = database
+    principal, _, _ = seed_saved_lyrics(db)
+    job = insert_sync(db)
+    assert db.client.get("/settings/integrations/navidrome").json()["lyrics_paused"] is True
+    assert lyrics.load_lyrics(principal, "song") == {"lyrics": []}
+    # The key and discovery API stay usable while only lyrics fall through.
+    monkeypatch.setattr(
+        ranking,
+        "load_corpus",
+        lambda _: ranking.corpus_from_rows(
+            [row("song", "a", [1, 0]), row("neighbor", "b", [1, 0])]
+        ),
+    )
+    with db.connect() as connection:
+        key = auth.issue_key(connection, db.owner, db.connection, "Test", 1)
+    headers = {"Authorization": "Bearer " + key["secret"]}
+    response = db.client.post(
+        "/integrations/navidrome/v1/lyrics", headers=headers, json={"track": {"id": "song"}}
+    )
+    assert response.status_code == 200 and response.json() == {"lyrics": []}
+    assert db.client.post(
+        "/integrations/navidrome/v1/similar-tracks", headers=headers, json={"song": {"id": "song"}}
+    ).json()["matches"]
+    with db.connect() as connection:
+        connection.execute("UPDATE jobs SET status=%s WHERE id=%s", (terminal, job))
+    settings = db.client.get("/settings/integrations/navidrome").json()
+    assert settings["serve_lyrics"] is True and settings["lyrics_paused"] is False
+    assert "Saved AI transcript" in lyrics.load_lyrics(principal, "song")["lyrics"][0]["text"]
+
+
+def test_pause_covers_overlapping_accounts_batches_and_expired_worker_leases(database):
+    db = database
+    principal, _, _ = seed_saved_lyrics(db)
+    same_server, foreign_server = uuid4(), uuid4()
+    with db.connect() as connection:
+        connection.execute(
+            "INSERT INTO navidrome_connections VALUES (%s,%s,'http://navidrome/'),(%s,%s,'http://different-server')",
+            (same_server, db.other, foreign_server, db.other),
+        )
+    foreign = insert_sync(db, connection_id=foreign_server, owner=db.other)
+    assert lyrics.load_lyrics(principal, "song")["lyrics"]
+    first = insert_sync(db, status="waiting")
+    second = insert_sync(
+        db,
+        connection_id=same_server,
+        owner=db.other,
+        kind="analysis_batch",
+        status="running",
+        operation="lyrics_backfill",
+    )
+    with db.connect() as connection:
+        connection.execute(
+            "UPDATE jobs SET lease_until=now()-interval '1 hour' WHERE id=%s", (second,)
+        )
+        connection.execute("UPDATE jobs SET status='complete' WHERE id=%s", (first,))
+    # A lost worker stays paused through retry/recovery, and a second owner is covered.
+    assert lyrics.load_lyrics(principal, "song") == {"lyrics": []}
+    with db.connect() as connection:
+        connection.execute("UPDATE jobs SET status='failed' WHERE id=%s", (second,))
+    assert lyrics.load_lyrics(principal, "song")["lyrics"]
+    assert foreign
+
+
+def test_manual_enable_is_blocked_and_off_preference_is_not_restored_as_on(database):
+    db = database
+    principal, _, _ = seed_saved_lyrics(db)
+    body = {"enabled": True, "connection_id": str(db.connection), "serve_lyrics": False}
+    assert db.client.put("/settings/integrations/navidrome", json=body).status_code == 200
+    job = insert_sync(db)
+    assert (
+        db.client.put(
+            "/settings/integrations/navidrome", json={**body, "serve_lyrics": True}
+        ).status_code
+        == 409
+    )
+    # Other settings can be saved while paused, including a preference already on.
+    assert (
+        db.client.put(
+            "/settings/integrations/navidrome", json={**body, "musical_weight": 65}
+        ).status_code
+        == 200
+    )
+    with db.connect() as connection:
+        connection.execute("UPDATE jobs SET status='cancelled' WHERE id=%s", (job,))
+    settings = db.client.get("/settings/integrations/navidrome").json()
+    assert not settings["serve_lyrics"] and not settings["lyrics_paused"]
+    principal["profile"] = auth.RankingProfile(serve_lyrics=False)
+    assert lyrics.load_lyrics(principal, "song") == {"lyrics": []}
+
+
+def test_original_snapshots_keep_full_structure_last_available_and_enriched_lyrics(database):
+    from echora_analysis.navidrome_lyrics_sources import store_original
+
+    db = database
+    _, library, track = seed_saved_lyrics(db)
+    result = {
+        "status": "available",
+        "text": "Original lyrics",
+        "source": "getLyricsBySongId",
+        "structured_lyrics": [
+            {
+                "kind": "main",
+                "lang": "en",
+                "line": [
+                    {
+                        "value": "Original lyrics",
+                        "start": 1000,
+                        "end": 3000,
+                        "cue": [{"value": "Original", "start": 1000, "end": 2000}],
+                    }
+                ],
+            }
+        ],
+    }
+    with db.connect() as connection:
+        store_original(connection, library, "song", track, result)
+        saved = connection.execute("SELECT * FROM navidrome_lyrics_sources").fetchone()
+        assert saved["result"] == result and saved["last_available"] == result
+        store_original(connection, library, "song", track, {"status": "unavailable", "text": None})
+        saved = connection.execute("SELECT * FROM navidrome_lyrics_sources").fetchone()
+        assert saved["result"]["status"] == "unavailable" and saved["last_available"] == result
+        enriched = connection.execute("SELECT * FROM lyrics WHERE track_id=%s", (track,)).fetchone()
+        assert enriched["text"] == "Saved AI transcript" and enriched["provenance"]["ai_generated"]
+        foreign = uuid4()
+        connection.execute("INSERT INTO libraries VALUES (%s,%s)", (foreign, uuid4()))
+        store_original(
+            connection,
+            foreign,
+            "song",
+            track,
+            {"status": "available", "text": "Different server original"},
+        )
+        assert (
+            connection.execute("SELECT count(*) AS n FROM navidrome_lyrics_sources").fetchone()["n"]
+            == 2
+        )
+
+
+def test_import_archives_provider_before_preserving_manual_lyrics_without_model_imports():
+    """Execute the actual ingestion function with its GPU dependencies replaced."""
+    import ast
+    from contextlib import nullcontext
+    from unittest.mock import Mock
+    from collections.abc import Callable
+
+    path = Path(__file__).parents[1] / "src/echora_analysis/lyrics_pipeline.py"
+    tree = ast.parse(path.read_text())
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "backfill_lyrics"
+    )
+    connection, cursor, client = Mock(), Mock(), Mock()
+    connection.cursor.side_effect = lambda: nullcontext(cursor)
+    track, library = uuid4(), uuid4()
+    cursor.fetchall.return_value = [(track, "source-song", "Song")]
+    cursor.fetchone.return_value = ("Manual authoritative text", {}, "available", "manual")
+    original = {
+        "text": "Original Navidrome text",
+        "status": "available",
+        "source": "getLyricsBySongId",
+    }
+    client.lyrics.return_value = original
+    events = []
+    archived = Mock(side_effect=lambda *args: events.append("archive"))
+    model = Mock()
+    embedding_write = Mock(side_effect=lambda *args: events.append("embed"))
+    globals_ = {
+        "Callable": Callable,
+        "uuid": __import__("uuid"),
+        "psycopg": SimpleNamespace(connect=lambda _: nullcontext(connection)),
+        "NavidromeClient": lambda *args: nullcontext(client),
+        "get_settings": lambda: SimpleNamespace(
+            database_url="unused", lyrics_model_id="unused", lyrics_revision="unused"
+        ),
+        "resolve_library_id": lambda *args: library,
+        "configure_representations": Mock(),
+        "plan_lyrics": lambda *args, **kwargs: SimpleNamespace(lyrics_external_ids={"source-song"}),
+        "store_original": archived,
+        "_store_lyrics": Mock(),
+        "torch": SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
+        "LyricsEmbeddingModel": lambda *args: model,
+        "_create_run": Mock(),
+        "start_attempt": Mock(),
+        "record_track": Mock(),
+        "finish_attempt": Mock(),
+        "release_model": Mock(),
+        "_store_embeddings": embedding_write,
+    }
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), globals_)
+    result = globals_["backfill_lyrics"]("http://navidrome", "user", "password")
+    assert result["failed"] == 0 and result["embedded"] == 1
+    assert events == ["archive", "embed"]
+    archived.assert_called_once_with(connection, library, "source-song", track, original)
+    model.embed.assert_called_once_with("Manual authoritative text")
+    globals_["_store_lyrics"].assert_not_called()
+    client.lyrics.assert_called_once_with("source-song")
