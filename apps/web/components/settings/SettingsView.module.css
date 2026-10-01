@@ -22,7 +22,7 @@
 @media(max-width:1199px),(max-height:719px){.integrations{gap:24px}.integrations>[data-card-header]{margin:0 -14px}.integrations h3{font-size:28px;letter-spacing:-1px}}
 
 /* Plugin preferences and the nested API keys section. */
-.pluginSettings{width:min(100%,860px);min-width:0;display:grid;gap:12px}
+.pluginSettings{width:100%;min-width:0;display:grid;gap:12px}
 .pluginSettings>[data-card-header]{margin:0 -20px}
 .pluginSettings>[data-card-header] h3{font-size:28px;line-height:1.25;letter-spacing:-1px}
 .pluginSettings p{margin:0;color:var(--text-muted);font:var(--type-caption)/1.5 var(--ui-font)}
