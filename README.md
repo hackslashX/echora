@@ -30,6 +30,7 @@ Screenshots show a real example library for illustration. Visible account names,
 - **Bring in listening history.** An optional Last.fm connection lets curations balance familiar tracks with discovery and use recurring listening periods, such as your evening listening habits.
 - **Search by humming.** Record a short melody and search the indexed library. This is experimental and depends on the quality of both the recording and the extracted melody.
 - **Follow the track.** Precomputed waveform bars show changes in audio energy. An optional melody line uses existing hum-search pitch contours. When source lyrics support it, karaoke processing adds syllable timing.
+- **Use Echora from Navidrome.** The [Echora plugin](plugins/navidrome/README.md) supplies sonic discovery, artist radio and saved lyrics through Navidrome's native APIs. Configure its ranking balance and expiring API keys under **Settings → Integrations**. Enhanced lyrics display depends on your Navidrome build and client.
 
 Echora supports multiple users. Each user signs in through your identity provider and connects their music library. Analysis can be reused for shared tracks, while user-library links control visibility.
 

@@ -17,6 +17,7 @@ from .lyrics_analysis import LyricsEmbeddingModel
 from .language_detection import detect_distribution
 from .models import release_model
 from .navidrome import NavidromeClient
+from .navidrome_lyrics_sources import store_original
 from .processing_plan import plan_lyrics, resolve_library_id
 from .representations import configure_representations, embedding_config
 from .analysis_attempts import start_attempt, record_track, finish_attempt
@@ -138,9 +139,12 @@ def backfill_lyrics(
 
         for index, (track_id, external_id, title) in enumerate(tracks):
             try:
+                provider_lyrics = client.lyrics(external_id)
+                store_original(connection, library_id, external_id, track_id, provider_lyrics)
+                connection.commit()
                 stored = None
-                # Manual edits are authoritative. Do not ask a provider or AI model to
-                # replace them when their embedding needs to be rebuilt.
+                # Archive the provider separately; manual edits remain authoritative
+                # when their embedding needs to be rebuilt.
                 with connection.cursor() as cursor:
                     cursor.execute("SELECT text, provenance, availability_status, source FROM lyrics WHERE track_id=%s", (track_id,))
                     stored = cursor.fetchone()
@@ -163,7 +167,7 @@ def backfill_lyrics(
                     continue
                 else:
                     stored = None
-                    lyrics = client.lyrics(external_id)
+                    lyrics = provider_lyrics
                     # A retrieval miss must not erase a previous AI transcript or lyrics
                     # that merely need embedding with a newer embedding model.
                     if not str(lyrics.get('text') or '').strip():

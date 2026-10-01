@@ -59,6 +59,8 @@ from .representations import configure_representations
 
 from .recording_routes import create_router as recording_router
 from .external_ai import router as external_ai_router
+from .navidrome_integration import settings_router as navidrome_integration_router
+from .plugin_routes import router as navidrome_plugin_router
 
 app = FastAPI(title="Echora analysis", version="0.3.0")
 # Browser-facing media (covers, streams) is served cross-origin from the web app
@@ -345,6 +347,8 @@ def _session_user(token: str | None) -> dict[str, object]:
 app.include_router(external_ai_router(require_user, _cipher))
 app.include_router(recording_router(require_user))
 app.include_router(sessions.router)
+app.include_router(navidrome_integration_router(require_user))
+app.include_router(navidrome_plugin_router)
 
 
 @app.on_event("startup")

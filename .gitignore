@@ -22,6 +22,9 @@ build/
 .coverage
 htmlcov/
 
+# Navidrome plugin build artifacts
+/plugins/navidrome/dist/
+
 # Runtime data and downloaded models
 data/
 testdata/music/**
