@@ -1,18 +1,24 @@
 "use client";
 
-import { Check, CircleCheck, Database, RefreshCw, Server, Waves } from "lucide-react";
+import { toast } from "sonner";
+import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import AppShell from "../shell/AppShell";
 import CopyrightFooter from "../shell/CopyrightFooter";
-import { trackTemplate } from "../shell/gridGeometry";
-import MobilePivots from "../shell/MobilePivots";
-import { useMobilePane } from "../shell/useMobilePane";
 import { useDurableJob } from "../jobs/useDurableJob";
 import { jobPresentation } from "../jobs/durableJobs";
 import BatchStatusList from "../jobs/BatchStatusList";
-import CardHeader from "../ui/CardHeader";
+import { Button } from "../ui/button";
+import { Notice } from "../ui/notice";
+import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from "../ui/table";
+import { Pane } from "../layout/pane";
+import { LoadingState } from "../ui/spinner";
 import FullSyncWarning from "./FullSyncWarning";
-import styles from "./SyncLibrary.module.css";
+import { SidePanel } from "../layout/side-panel";
+import { SectionHeader } from "../layout/section-header";
+import { EmptyState } from "../layout/empty-state";
+import SyncExplanation from "./SyncExplanation";
+
 
 type Track = { id: string; title: string; artist?: string; album?: string };
 type Status = { server: string; total: number; processed: number; missing: number; tracks: Track[] };
@@ -33,8 +39,8 @@ export default function SyncLibrary() {
   const [cancelling, setCancelling] = useState(false);
   const [cancelledJobId, setCancelledJobId] = useState("");
   const [busy, setBusy] = useState(true);
+  const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
-  const [mobilePane, setMobilePane, paneTransition] = useMobilePane<"status" | "method">("status", ["status", "method"]);
 
   function scan(connection: string) {
     setBusy(true); setError("");
@@ -57,23 +63,24 @@ export default function SyncLibrary() {
 
   async function start(verifyAudioHashes = true) {
     if (!connectionId || busy) return;
-    setBusy(true); setError("");
+    setBusy(true); setStarting(true);
     try {
       const result = await api<{ job_id: string; status: string; existing: boolean }>(`/navidrome/connections/${connectionId}/sync`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode, verify_audio_hashes: verifyAudioHashes }) });
       track(result.job_id);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not start synchronization"); }
-    finally { setBusy(false); }
+      if (result.existing) toast.info("A sync is already running", { description: "Showing its progress." });
+    } catch (reason) { toast.error("Could not start synchronization", { description: reason instanceof Error ? reason.message : undefined }); }
+    finally { setBusy(false); setStarting(false); }
   }
 
   const jobId = job?.job_id || job?.id || "";
   const cancellationRequested = Boolean(job?.cancel_requested || (jobId && cancelledJobId === jobId));
   async function cancelSync() {
     if (!active || !jobId || cancelling || cancellationRequested) return;
-    setCancelling(true); setError("");
+    setCancelling(true);
     try {
       await api(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
       setCancelledJobId(jobId);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not cancel sync"); }
+    } catch (reason) { toast.error("Could not cancel sync", { description: reason instanceof Error ? reason.message : undefined }); }
     finally { setCancelling(false); }
   }
 
@@ -89,20 +96,43 @@ export default function SyncLibrary() {
   const showBatches = active && job?.unit === "batches";
   const showJobDetails = active && !showBatches;
   const pendingLabel = `${status?.missing ?? "—"} new ${status?.missing === 1 ? "track" : "tracks"}`;
-  const columns = [0.32, 0.04, 0.64];
-  const rows = [1];
-  return <AppShell title="Sync" footer={<CopyrightFooter />} breadcrumb flush fullPage grid={{ columns, rows }}>
-    <main className={styles.page} style={{ gridTemplateColumns: trackTemplate(columns, 160), gridTemplateRows: trackTemplate(rows, 88) }}>
-      <MobilePivots label="Sync sections" active={mobilePane} onChange={setMobilePane} items={[{ key: "status", label: "status" }, { key: "method", label: "how it works" }]} />
-      <section className={`${styles.intro} ${mobilePane === "method" ? `${styles.mobileActive} ${paneTransition}` : ""}`}><CardHeader as="h1" title="Sync, step by step." description="Sync reads your server without changing its library. Echora keeps existing analysis and processes only the work each track still needs." /><ol className={styles.steps}><li><b>1</b><div><strong>Read the catalog</strong><small>Load track IDs, metadata, artwork references, and the current library count from Navidrome.</small></div></li><li><b>2</b><div><strong>Resolve track identity</strong><small>Stream the source audio and use its SHA-256 content hash to link duplicates without merging recordings.</small></div></li><li><b>3</b><div><strong>Analyze missing representations</strong><div className={styles.models}><p><b>MuQ-MuLan</b><span>Maps musical meaning, style, mood, vocals, and instrumentation.</span></p><p><b>MERT</b><span>Measures acoustic structure, timbre, rhythm, pitch, and production.</span></p><p><b>BGE-M3</b><span>Maps lyric language, themes, imagery, and narrative.</span></p><p><b>Essentia</b><span>Identifies instrumental music and female or male lead vocals.</span></p><p><b>Demucs + MELODIA</b><span>Extracts full-mix, vocal, and accompaniment contours for hum search.</span></p><p><b>NMFP</b><span>Builds recording fingerprints from audio segments. Recognition remains separately gated.</span></p><p><b>Echora aligner</b><span>Aligns time-synced lyrics to syllable-level karaoke timing.</span></p></div></div></li><li><b>4</b><div><strong>Commit the results</strong><small>Store embeddings, recording fingerprints, karaoke lyrics, and provenance, then make the tracks available to Browse, Galaxy, concepts, journeys, and the player.</small></div></li></ol><div className={styles.server}><Server /><div><small>Connected server</small><strong>{status?.server || "Reading connection"}</strong></div></div></section>
-      <section className={`${styles.workspace} ${mobilePane === "status" ? `${styles.mobileActive} ${paneTransition}` : ""}`}>
-        <CardHeader title={active ? job?.kind === "semantic_fusion_build" ? "Building semantic fusion" : "Processing library" : busy ? "Scanning Navidrome" : "Library scan complete"} actions={<button onClick={() => connectionId && scan(connectionId)} disabled={busy || !!active}><RefreshCw /> RESCAN</button>} />
-        <div className={styles.metrics}><div><Database /><strong>{status?.total ?? "—"}</strong><span>Navidrome tracks</span></div><div><Check /><strong>{status?.processed ?? "—"}</strong><span>In Echora</span></div><div><Waves /><strong>{status?.missing ?? "—"}</strong><span>New tracks</span></div></div>
-        {job ? <section className={`${styles.progress} ${indeterminate ? styles.indeterminate : ""}`}><div><span>{job?.phase?.toUpperCase()}</span><strong>{presentation.message}</strong><small>{progressDetail}</small></div><div className={styles.progressActions}>{active && <button type="button" className={styles.dismiss} disabled={cancelling || cancellationRequested} onClick={cancelSync}>{cancellationRequested ? "Cancellation requested" : cancelling ? "Cancelling…" : "Cancel sync"}</button>}{terminal ? <button className={styles.dismiss} onClick={dismiss} disabled={dismissing} aria-label="Dismiss sync results">{dismissing ? "Dismissing…" : "Dismiss"}</button> : !indeterminate && presentation.showPercent && <b>{percent}%</b>}</div>{(indeterminate || presentation.showPercent) && <i role="progressbar" aria-label={indeterminate ? "Preparing analysis" : "Library sync progress"} aria-valuemin={indeterminate ? undefined : 0} aria-valuemax={indeterminate ? undefined : 100} aria-valuenow={indeterminate ? undefined : percent}><u style={indeterminate ? undefined : { width: `${percent}%` }} /></i>}{job?.error && <p>{job.error}</p>}{terminal && presentation.summary.length > 0 && <div className={styles.summary}>{presentation.summary.map(item => <span key={item}>{item}</span>)}</div>}</section> : <section className={styles.ready}><div className={styles.mode}><button aria-pressed={mode === "missing"} className={mode === "missing" ? styles.selected : ""} onClick={() => setMode("missing")}><strong>NEW TRACKS ONLY</strong><small>Process {status?.missing ?? "—"} {status?.missing === 1 ? "track" : "tracks"} not yet indexed</small></button><button aria-pressed={mode === "all"} className={mode === "all" ? styles.selected : ""} onClick={() => setMode("all")}><strong>ENTIRE LIBRARY</strong><small>Refresh metadata, lyrics, and missing analysis</small></button></div><button className={styles.start} onClick={() => { if (mode === "all") setConfirmFullSync(true); else void start(); }} disabled={busy || jobLoading || !!jobError || !status || (mode === "missing" && status.missing === 0)}>START PROCESSING <b>↗</b></button></section>}
-        <section className={styles.queue}><header><span>{showBatches ? "SYNC BATCHES" : showJobDetails ? "PROCESSING DETAILS" : "WAITING IN NAVIDROME"}</span><b>{active ? job?.kind === "semantic_fusion_build" ? "Semantic fusion" : "Sync in progress" : pendingLabel}</b></header><div>{showBatches ? <BatchStatusList key={job.job_id || job.id} jobId={job.job_id || job.id!} active={active} /> : showJobDetails ? <div className={styles.queueEmpty}><RefreshCw className={styles.scanningIcon} aria-hidden="true" /><p>{job?.kind === "semantic_fusion_build" ? "Combining audio and lyrics embeddings across the Echora library. This step has no track batches." : "Preparing sync batches. Track progress will appear when processing begins."}</p></div> : status?.tracks.length ? status.tracks.map(track => <article key={track.id}><span>{track.title}</span><small>{track.artist || "Unknown artist"}</small><i>{track.album || "Unknown album"}</i></article>) : <div className={styles.queueEmpty}>{busy ? <RefreshCw className={styles.scanningIcon} aria-hidden="true" /> : <CircleCheck aria-hidden="true" />}<p>{busy ? "Scanning the catalog" : "No new tracks found"}</p></div>}</div></section>
-        {(error || jobError) && <p role="alert" className={styles.error}>{error || jobError}</p>}
+  const modes = [
+    { value: "missing" as const, title: "New tracks only", detail: `Analyze ${status?.missing?.toLocaleString() ?? "—"} tracks not yet in Echora.` },
+    { value: "all" as const, title: "Entire library", detail: "Refresh metadata and lyrics, and fill any missing analysis." },
+  ];
+  return <AppShell title="Sync" footer={<CopyrightFooter />}>
+    <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)] md:grid-cols-[340px_minmax(0,1fr)]">
+      <div className="hidden min-h-0 border-r border-border bg-rail md:block"><SidePanel title="About sync" subtitle="What happens when you sync">{<SyncExplanation />}</SidePanel></div>
+      <Pane className="bg-workspace" label="Sync" title={active ? job?.kind === "semantic_fusion_build" ? "Building semantic fusion" : "Processing library" : busy ? "Scanning Navidrome" : "Sync library"} subtitle="Reads Navidrome without changing it. Existing analysis is kept." actions={<Button variant="outline" onClick={() => connectionId && scan(connectionId)} disabled={busy || !!active}><RefreshCw className={busy ? "animate-spin" : undefined} />Rescan</Button>}>
+      <div className="grid gap-10 pt-1">
+      <details className="border border-border bg-rail p-4 md:hidden"><summary className="cursor-pointer text-[13px] font-medium">About sync and analysis models</summary><div className="mt-4"><SyncExplanation /></div></details>
+      <section aria-label="Library totals">
+        <p className="mb-3 truncate text-xs text-muted-foreground">{status?.server || "Reading connection…"}</p>
+        <dl className="grid grid-cols-3 border border-border bg-surface/60 max-sm:grid-cols-1">{([["In Navidrome", status?.total, false], ["In Echora", status?.processed, false], ["Not yet analyzed", status?.missing, true]] as const).map(([label, value, highlight]) => <div key={label} className="border-border px-5 py-4 not-first:border-l max-sm:not-first:border-t max-sm:not-first:border-l-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className={`mt-1 text-[28px] leading-tight font-semibold tabular-nums ${highlight && value ? "text-primary" : ""}`}>{typeof value === "number" ? value.toLocaleString() : "—"}</dd></div>)}</dl>
       </section>
-    </main>
+      {job ? <section aria-label="Current sync job" className="border border-border bg-surface/60">
+        <div className="flex flex-wrap items-start justify-between gap-4 p-5">
+          <div className="min-w-0 space-y-1"><p className="text-xs font-medium tracking-wide text-primary uppercase">{job.phase}</p><p className="text-[15px] font-semibold">{presentation.message}</p><p className="text-[13px] text-muted-foreground">{progressDetail}</p></div>
+          <div className="flex items-center gap-3">{!terminal && !indeterminate && presentation.showPercent && <span className="text-2xl font-semibold tabular-nums">{percent}%</span>}{active && <Button variant="outline" loading={cancelling} disabled={cancellationRequested} onClick={cancelSync}>{cancellationRequested ? "Cancellation requested" : cancelling ? "Cancelling…" : "Cancel sync"}</Button>}{terminal && <Button variant="outline" onClick={dismiss} loading={dismissing} aria-label="Dismiss sync results">{dismissing ? "Dismissing…" : "Dismiss"}</Button>}</div>
+        </div>
+        {(indeterminate || presentation.showPercent) && <div role="progressbar" aria-label={indeterminate ? "Preparing analysis" : "Library sync progress"} aria-valuemin={indeterminate ? undefined : 0} aria-valuemax={indeterminate ? undefined : 100} aria-valuenow={indeterminate ? undefined : percent} className="h-1 overflow-hidden bg-raised"><div className={`h-full bg-primary transition-[width] ${indeterminate ? "animate-pulse" : ""}`} style={{ width: indeterminate ? "100%" : `${percent}%`, opacity: indeterminate ? 0.5 : 1 }} /></div>}
+        {(job.error || (terminal && presentation.summary.length > 0)) && <div className="space-y-2 border-t border-border p-5">{job.error && <p role="alert" className="text-[13px] text-destructive">{job.error}</p>}{terminal && <ul className="space-y-1 text-[13px] text-muted-foreground">{presentation.summary.map(item => <li key={item}>{item}</li>)}</ul>}</div>}
+        <p className="border-t border-border px-5 py-3 text-xs break-all text-subtle-foreground">Job {jobId} · {job.status}</p>
+      </section> : <section aria-label="Sync controls">
+        <SectionHeader title="What to sync" />
+        <div role="radiogroup" aria-label="Sync mode" className="grid gap-3 sm:grid-cols-2">{modes.map(option => <button key={option.value} type="button" role="radio" aria-checked={mode === option.value} onClick={() => setMode(option.value)} className={`flex items-start gap-3 border p-4 text-left transition-colors ${mode === option.value ? "border-primary/70 bg-primary/[.07]" : "border-border bg-surface/60 hover:border-border-strong hover:bg-surface"}`}><span className={`mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border ${mode === option.value ? "border-primary" : "border-[#555]"}`}>{mode === option.value && <span className="size-2 rounded-full bg-primary" />}</span><span><strong className="block text-sm font-semibold">{option.title}</strong><span className="mt-1 block text-[13px] leading-relaxed text-muted-foreground">{option.detail}</span></span></button>)}</div>
+        <div className="mt-4 flex justify-end"><Button size="lg" loading={starting} onClick={() => { if (mode === "all") setConfirmFullSync(true); else void start(); }} disabled={busy || jobLoading || !!jobError || !status || (mode === "missing" && status.missing === 0)}>Start sync</Button></div>
+      </section>}
+      {error && <Notice tone="error" title="Could not load sync status">{error}</Notice>}
+      <section className="min-w-0"><SectionHeader title={showBatches ? "Sync batches" : showJobDetails ? "Processing details" : "Waiting in Navidrome"} actions={!active && status?.tracks.length ? <span>{pendingLabel}</span> : undefined} />
+        {showBatches ? <BatchStatusList key={job.job_id || job.id} jobId={job.job_id || job.id!} active={active} />
+          : showJobDetails ? <p className="text-[13px] text-muted-foreground">{job?.kind === "semantic_fusion_build" ? "Combining audio and lyrics embeddings across the Echora library. This step has no track batches." : "Preparing sync batches. Track progress appears when processing begins."}</p>
+          : status?.tracks.length ? <div className="border border-border"><Table className="table-fixed"><TableHeader><TableRow className="hover:bg-transparent"><TableHead>Track</TableHead><TableHead>Artist</TableHead><TableHead className="max-md:hidden">Album</TableHead></TableRow></TableHeader><TableBody>{status.tracks.map(track => <TableRow key={track.id}><TableCell className="truncate font-medium">{track.title}</TableCell><TableCell className="truncate text-muted-foreground">{track.artist || "Unknown artist"}</TableCell><TableCell className="truncate text-muted-foreground max-md:hidden">{track.album || "Unknown album"}</TableCell></TableRow>)}</TableBody></Table></div>
+          : busy && !status ? <LoadingState label="Scanning Navidrome for new tracks…" /> : <div role="status" className="border border-dashed border-border"><EmptyState title={busy ? "Scanning the catalog" : error || jobError ? "Catalog unavailable" : "Everything is analyzed"} description={busy ? "Checking Navidrome for tracks that need analysis." : error || jobError ? "Resolve the connection error, then rescan your library." : "Rescan after adding music, or sync the entire library to refresh metadata."} /></div>}
+      </section>
+      </div>
+      </Pane>
+    </div>
     {confirmFullSync && <FullSyncWarning onClose={() => setConfirmFullSync(false)} onConfirm={verifyAudioHashes => { setConfirmFullSync(false); void start(verifyAudioHashes); }} />}
   </AppShell>;
 }

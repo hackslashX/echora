@@ -3,12 +3,15 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { usePlayer } from "./PlayerProvider";
 import styles from "./WaveformSeek.module.css";
+import { Button } from "../ui/button";
 
 const stamp = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 
-export default function WaveformSeek({ compact = false }: { compact?: boolean }) {
+/** When `showMelody` is supplied the caller owns the melody toggle and no inline button renders. */
+export default function WaveformSeek({ compact = false, showMelody: controlledMelody }: { compact?: boolean; showMelody?: boolean }) {
   const { track, waveform, melody, duration, currentTime, seek } = usePlayer();
-  const [showMelody, setShowMelody] = useState(true);
+  const [localMelody, setShowMelody] = useState(true);
+  const showMelody = controlledMelody ?? localMelody;
   const seekRef = useRef<HTMLSpanElement>(null);
   const [barCapacity, setBarCapacity] = useState(1);
   useEffect(() => {
@@ -57,5 +60,5 @@ export default function WaveformSeek({ compact = false }: { compact?: boolean })
     {path ? <><svg viewBox="0 0 1000 48" preserveAspectRatio="none" aria-hidden="true"><path d={path} /></svg><svg className={styles.played} viewBox="0 0 1000 48" preserveAspectRatio="none" aria-hidden="true"><path d={path} /></svg></> : <span className={styles.fallback} aria-hidden="true" />}
     {melodyPath && <svg className={styles.melody} viewBox="0 0 1000 48" preserveAspectRatio="none" aria-hidden="true"><path d={melodyPath} vectorEffect="non-scaling-stroke" /></svg>}
     <input type="range" min={0} max={maximum} step={0.1} value={position} disabled={!track || !maximum} onChange={event => seek(Number(event.target.value))} aria-label="Seek" aria-valuetext={`${stamp(position)} of ${stamp(maximum)}`} />
-  </span>{!compact && melody && <button type="button" className={styles.melodyToggle} aria-pressed={showMelody} onClick={() => setShowMelody(value => !value)} title="Pitch from precomputed hum-search analysis, not loudness">Melody · {melody.source.replaceAll("-", " ")} · {showMelody ? "on" : "off"}</button>}</span>;
+  </span>{!compact && melody && controlledMelody === undefined && <Button variant="ghost" size="sm" type="button" className={styles.melodyToggle} aria-pressed={showMelody} onClick={() => setShowMelody(value => !value)} title="Pitch from precomputed hum-search analysis, not loudness">Melody · {melody.source.replaceAll("-", " ")} · {showMelody ? "on" : "off"}</Button>}</span>;
 }

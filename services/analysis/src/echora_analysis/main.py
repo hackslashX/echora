@@ -6,6 +6,8 @@ import hashlib
 import logging
 import random
 import secrets
+import threading
+import time
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -23,7 +25,7 @@ from sklearn.metrics import adjusted_rand_score, silhouette_score
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, HttpUrl, SecretStr
@@ -48,7 +50,7 @@ from .settings import get_settings
 from .db_models import Curation, NavidromeConnection, OidcAllowedEmail, OidcSetting, User, UserPreference, UserSession
 from .hum_search import DEFAULT_CORPUS_SIZE, search_corpus
 from .journeys import normalize_rows as normalize_journey_rows, select_journey, select_multistop_journey, spherical_targets
-from .listening_history import recent_listens, track_listen_counts
+from .listening_history import TOP_TRACK_PERIODS, match_navidrome_play_counts, match_top_tracks, navidrome_play_counts, recent_listens, top_tracks, track_listen_counts
 from .language_detection import LANGUAGE_NAMES, PRIMARY_SHARE, language_affinity
 from .karaoke_pipeline import KARAOKE_PIPELINE_REVISION
 from .melody_config import MELODY_CONTOUR_REVISION
@@ -1441,7 +1443,11 @@ def library_tracks(
     limit: int = 10, offset: int = 0, q: str = "", artist: str = "", album: str = "",
     sort_by: str = "name", sort_direction: str = "asc", echora_session: str | None = Cookie(default=None),
     track_id: uuid.UUID | None = None,
-    vocals: str = "", language: str = "", lyrics: str = "", translation: str = "", genre: str = "",
+    vocals: list[str] | None = Query(default=None),
+    language: list[str] | None = Query(default=None),
+    lyrics: list[str] | None = Query(default=None),
+    translation: list[str] | None = Query(default=None),
+    genre: list[str] | None = Query(default=None),
     year_from: int | None = None, year_to: int | None = None,
 ) -> dict[str, object]:
     user = _session_user(echora_session)
@@ -3057,6 +3063,89 @@ def browse_filter_options(echora_session: str | None = Cookie(default=None)):
           GROUP BY kind,value ORDER BY kind,lower(value)""", (user['id'],)).fetchall()
     return {kind: [{'name': row['value'], 'tracks': row['tracks']} for row in rows if row['kind']==kind]
             for kind in ('language','genre','translation')}
+
+
+# Navidrome play counts need a full catalog scan, so keep each user's ranking briefly.
+_NAVIDROME_TOP_TTL_SECONDS = 300
+_navidrome_top_cache: dict[tuple[str, str], tuple[float, list[tuple[str, int]]]] = {}
+_navidrome_top_lock = threading.Lock()
+
+
+def _navidrome_ranking(user_id: str, connection_id: str) -> list[tuple[str, int]] | None:
+    key = (user_id, connection_id)
+    with _navidrome_top_lock:
+        cached = _navidrome_top_cache.get(key)
+    if cached and time.monotonic() - cached[0] < _NAVIDROME_TOP_TTL_SECONDS:
+        return cached[1]
+    credentials = _load_connection(connection_id, uuid.UUID(user_id))
+    if credentials is None:
+        return None
+    with NavidromeClient(*credentials) as client:
+        ranking = navidrome_play_counts([track.raw for track in client.all_tracks()])
+    with _navidrome_top_lock:
+        _navidrome_top_cache[key] = (time.monotonic(), ranking)
+    return ranking
+
+
+def _library_track_rows(user_id: object) -> list[dict[str, object]]:
+    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT t.id::text AS id, t.title, t.artist, t.album, t.duration_seconds,
+                      source.external_id AS source_id, source.cover_art
+               FROM tracks t
+               LEFT JOIN LATERAL (
+                 SELECT ts.external_id, ts.source_data->>'coverArt' AS cover_art
+                 FROM track_sources ts
+                 JOIN user_track_links links
+                   ON links.user_id=%s AND links.library_id=ts.library_id
+                  AND links.track_id=ts.track_id AND links.external_id=ts.external_id
+                 WHERE ts.track_id=t.id AND ts.source_type='subsonic'
+                 ORDER BY ts.id LIMIT 1
+               ) source ON true
+               WHERE EXISTS (SELECT 1 FROM user_track_links utl WHERE utl.track_id=t.id AND utl.user_id=%s)""",
+            (user_id, user_id),
+        )
+        return cursor.fetchall()
+
+
+@app.get("/library/top-tracks")
+def library_top_tracks(
+    limit: int = 10, period: str = "1month", echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    """The user's most played library tracks. Echora records no plays itself.
+
+    Last.fm supplies ranked listening periods. Without Last.fm, Navidrome's
+    per-song play counts give an all-time ranking (``source`` says which).
+    """
+    user = _session_user(echora_session)
+    limit = min(max(limit, 1), 50)
+    if period not in TOP_TRACK_PERIODS:
+        raise HTTPException(status_code=422, detail="Unknown listening period")
+    with session_scope() as session:
+        preference = session.get(UserPreference, user["id"])
+        username = preference.lastfm_username if preference else None
+        encrypted_key = bytes(preference.lastfm_api_key_encrypted) if preference and preference.lastfm_api_key_encrypted else None
+    if username and encrypted_key:
+        try:
+            # Ask for more than we show: some top tracks are not in this library.
+            entries = top_tracks(username, _cipher().decrypt(encrypted_key).decode(), period, min(limit * 5, 200))
+        except Exception as error:
+            raise HTTPException(status_code=502, detail=f"Could not read Last.fm listening history: {error}") from error
+        matched = match_top_tracks(_library_track_rows(user["id"]), entries)
+        return {"available": True, "source": "lastfm", "period": period,
+                "tracks": [{**row, "play_count": count} for row, count in matched[:limit]]}
+    connection_id = user.get("navidrome_connection_id")
+    if not connection_id:
+        return {"available": False, "source": None, "period": period, "tracks": []}
+    try:
+        ranking = _navidrome_ranking(str(user["id"]), str(connection_id))
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"Could not read Navidrome play counts: {error}") from error
+    if ranking is None:
+        return {"available": False, "source": None, "period": period, "tracks": []}
+    matched = match_navidrome_play_counts(_library_track_rows(user["id"]), ranking)
+    return {"available": True, "source": "navidrome", "period": "overall",
+            "tracks": [{**row, "play_count": count} for row, count in matched[:limit]]}
 
 
 @app.get("/library/facets")

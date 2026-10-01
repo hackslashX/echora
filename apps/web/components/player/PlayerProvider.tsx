@@ -3,6 +3,7 @@
 import { createContext, ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { sizedPlayerCoverArtUrl } from "../media/coverArt";
 import { paletteFromPixels, panelColorFromPalette, type TrackPalette } from "./artworkPalette";
+import { publishPlaybackTime, smoothPlaybackTime, type ClockAnchor } from "./playbackClock";
 import FullscreenPlayer from "./FullscreenPlayer";
 import { readPlaybackPreferences, streamUrlForQuality } from "./playbackPreferences";
 import { descriptorRhythm, validateVisualEnrichment, validateVisualFeatures, visualFrameAt, neutralVisualFrame, publishVisualFrame, type VisualFeatureTimeline } from "./visualFeatures";
@@ -24,15 +25,16 @@ export type PlayerLyrics = { translations?: LyricTranslation[]; trackId: string;
 export type MelodyPreview = { source: string; points: { time_seconds: number; pitch: number | null }[] };
 
 type PlayerState = {
-  track: PlayerTrack | null; audioQuality: AudioQuality | null; lyrics: PlayerLyrics | null; lyricsLoading: boolean; playing: boolean; buffering: boolean; currentTime: number; duration: number; buffered: number; muted: boolean; expanded: boolean;
+  track: PlayerTrack | null; audioQuality: AudioQuality | null; lyrics: PlayerLyrics | null; lyricsLoading: boolean; playing: boolean; buffering: boolean; currentTime: number; duration: number; buffered: number; muted: boolean; volume: number; expanded: boolean;
   waveform: number[] | null; melody: MelodyPreview | null;
   queue: PlayerTrack[]; queueIndex: number;
   play: (track: PlayerTrack) => void; playQueue: (tracks: PlayerTrack[], startIndex?: number) => void; playNext: (track: PlayerTrack) => void;
   next: () => void; previous: () => void; clearQueue: () => void;
-  toggle: () => void; seek: (seconds: number) => void; toggleMute: () => void; setExpanded: (value: boolean) => void;
+  toggle: () => void; seek: (seconds: number) => void; toggleMute: () => void; setVolume: (value: number) => void; setExpanded: (value: boolean) => void;
 };
 
 const PlayerContext = createContext<PlayerState | null>(null);
+const volumeStorageKey = "echora:volume";
 
 const rgb = (color: [number, number, number]) => `rgb(${color.join(" ")})`;
 
@@ -40,13 +42,14 @@ function publishPalette(palette: TrackPalette | null) {
   const root = document.documentElement;
   if (palette) {
     root.style.setProperty("--surface-rgb", panelColorFromPalette(palette).join(" "));
+    // The app accent follows the playing artwork. paletteFromPixels keeps it light
+    // enough for dark panels and for the dark text on accent fills.
+    root.style.setProperty("--accent", rgb(palette.accent));
     root.style.setProperty("--accent-rgb", palette.accent.join(" "));
-    root.style.setProperty("--aqua", rgb(palette.accent));
-    root.style.setProperty("--line", `rgb(${palette.accent.join(" ")} / .28)`);
-    root.style.setProperty("--glass-stroke", `rgb(${palette.accent.join(" ")} / .38)`);
   } else {
+    // Nothing playing: fall back to the Echora blue defined in globals.css.
     root.style.removeProperty("--surface-rgb");
-    root.style.removeProperty("--accent-rgb"); root.style.removeProperty("--aqua"); root.style.removeProperty("--line"); root.style.removeProperty("--glass-stroke");
+    root.style.removeProperty("--accent"); root.style.removeProperty("--accent-rgb");
   }
   window.dispatchEvent(new CustomEvent("echora:track-palette", { detail: { active: Boolean(palette), palette } }));
 }
@@ -150,12 +153,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [duration, setDuration] = useState(0);
   const [buffered, setBuffered] = useState(0);
   const [muted, setMuted] = useState(false);
+  const [volume, setVolumeState] = useState(1);
   const [expanded, setExpanded] = useState(false);
   const [queue, setQueue] = useState<PlayerTrack[]>([]);
   const [queueIndex, setQueueIndex] = useState(-1);
 
   useEffect(() => {
     const player = new Audio(); audio.current = player;
+    const storedVolume = Number(localStorage.getItem(volumeStorageKey));
+    if (localStorage.getItem(volumeStorageKey) !== null && Number.isFinite(storedVolume)) { player.volume = Math.min(1, Math.max(0, storedVolume)); queueMicrotask(() => setVolumeState(player.volume)); }
     // Native media events continue in background tabs, unlike animation frames.
     const sessionPlayback = () => window.dispatchEvent(new CustomEvent("echora:session-playback", { detail: {
       source: player.currentSrc, currentTime: player.currentTime, paused: player.paused || player.ended,
@@ -211,9 +217,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   function startAnalysis() {
     const player = audio.current;
     if (!player || analysisFrame.current) return;
+    let clock: ClockAnchor | null = null;
     const analyze = () => {
       analysisFrame.current = requestAnimationFrame(analyze);
-      window.dispatchEvent(new CustomEvent("echora:playback-time", { detail: player.currentTime || 0 }));
+      const running = !player.paused && !player.ended && !player.seeking && player.readyState >= 3;
+      const smoothed = smoothPlaybackTime(clock, player.currentTime || 0, performance.now(), running, player.playbackRate || 1);
+      clock = smoothed.anchor;
+      publishPlaybackTime(smoothed.time);
       if (player.paused || player.ended || player.seeking || player.readyState < 3) {
         if (previousVisualTime.current !== null) resetVisuals();
         return;
@@ -307,10 +317,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const end = Number.isFinite(player.duration) ? player.duration : trackRef.current?.durationSeconds ?? Infinity;
     const target = Math.max(0, Math.min(seconds, end));
     resetVisuals(); player.currentTime = target; setCurrentTime(target);
-    window.dispatchEvent(new CustomEvent("echora:playback-time", { detail: target }));
+    publishPlaybackTime(target);
     publishMediaPosition(player, trackRef.current?.durationSeconds);
   }
   function toggleMute() { const player = audio.current; if (!player) return; player.muted = !player.muted; setMuted(player.muted); }
+  function setVolume(value: number) {
+    const player = audio.current; if (!player) return;
+    const next = Math.min(1, Math.max(0, value));
+    player.volume = next; setVolumeState(next);
+    // Raising the level is an explicit request to hear audio again.
+    if (next > 0 && player.muted) { player.muted = false; setMuted(false); }
+    try { localStorage.setItem(volumeStorageKey, String(next)); } catch { /* storage may be unavailable */ }
+  }
 
   useEffect(() => {
     const invalidate = (event: Event) => {
@@ -338,7 +356,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  return <PlayerContext.Provider value={{ track, waveform, melody, audioQuality, lyrics, lyricsLoading, playing, buffering, currentTime, duration, buffered, muted, expanded, queue, queueIndex, play, playQueue, playNext, next, previous, clearQueue, toggle, seek, toggleMute, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
+  return <PlayerContext.Provider value={{ track, waveform, melody, audioQuality, lyrics, lyricsLoading, playing, buffering, currentTime, duration, buffered, muted, volume, expanded, queue, queueIndex, play, playQueue, playNext, next, previous, clearQueue, toggle, seek, toggleMute, setVolume, setExpanded }}>{children}{expanded && track && <FullscreenPlayer />}</PlayerContext.Provider>;
+}
+
+/** Which track is current and whether it is audible, without requiring a provider. */
+export function useNowPlaying(): { trackId: string | null; playing: boolean } {
+  const value = useContext(PlayerContext);
+  return { trackId: value?.track?.id ?? null, playing: Boolean(value?.playing) };
 }
 
 export function usePlayer() {

@@ -1,11 +1,21 @@
 "use client";
 
-import { Languages, Server } from "lucide-react";
+import { toast } from "sonner";
+import { Notice } from "../ui/notice";
+
+import { SettingsNotice } from "./SettingsNotice";
 import { FormEvent, useEffect, useState } from "react";
-import CardHeader from "../ui/CardHeader";
-import ClearTranslationsWarning from "./ClearTranslationsWarning";
+import { SectionHeading, Toggle } from "./Presentation";
+import { Button } from "../ui/button";
+import { LoadingState } from "../ui/spinner";
+import { Input } from "../ui/input";
+import { Label } from "../ui/label";
+import { Textarea } from "../ui/textarea";
+import { SettingRow } from "./SettingRow";
 import styles from "./ExternalAISettings.module.css";
-import settingsStyles from "./SettingsView.module.css";
+import layout from "./SettingsView.module.css";
+import ClearTranslationsWarning from "./ClearTranslationsWarning";
+
 
 type LanguagePair = { source: string; target: string };
 type Configuration = { enabled: boolean; url: string; model: string; prompt: string; language_pairs: LanguagePair[]; has_key: boolean };
@@ -49,40 +59,37 @@ async function request(options: RequestInit | undefined, section: "/endpoint" | 
 }
 
 export default function ExternalAISettings() {
-  return <div><SettingsSection section="endpoint" /><SettingsSection section="translation" /></div>;
+  return <div className={styles.sections}><SettingsSection section="endpoint" /><SettingsSection section="translation" /></div>;
 }
 
 function SettingsSection({ section }: { section: "endpoint" | "translation" }) {
   const [value, setValue] = useState<Configuration | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
-  const [clearError, setClearError] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
+  // Only a failed load stays on the page; action results are toasts.
+  const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
     request({ signal: controller.signal }, `/${section}`).then(result => { if (!controller.signal.aborted) setValue({ enabled: false, url: "", has_key: false, model: "", prompt: "", language_pairs: [], ...result }); })
-      .catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Could not load settings."); })
+      .catch(reason => { if (!controller.signal.aborted) setLoadError(reason instanceof Error ? reason.message : "Could not load settings."); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [attempt, section]);
 
   function update(patch: Partial<Configuration>) {
     setValue(current => current ? { ...current, ...patch } : current);
-    setMessage(""); setError("");
   }
   async function save(event: FormEvent) {
     event.preventDefault();
     if (!value || saving) return;
-    setMessage("");
     const invalid = validate(value, section);
-    if (invalid) { setError(invalid); return; }
-    setSaving(true); setError("");
+    if (invalid) { toast.error("Check these settings", { description: invalid }); return; }
+    setSaving(true);
     const payload = section === "endpoint" ? {
       enabled: value.enabled, url: value.url,
       ...(clearKey ? { api_key: "" } : apiKey ? { api_key: apiKey } : {}),
@@ -93,15 +100,14 @@ function SettingsSection({ section }: { section: "endpoint" | "translation" }) {
     try {
       const result = await request({ method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) }, `/${section}`);
       setValue(current => current ? { ...current, ...result } : current); setApiKey(""); setClearKey(false);
-      setMessage("External AI settings saved.");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save settings. Try again."); }
+      toast.success("External AI settings saved");
+    } catch (reason) { toast.error("Could not save External AI settings", { description: reason instanceof Error ? reason.message : undefined }); }
     finally { setSaving(false); }
   }
 
   async function clearTranslations() {
     if (saving) return;
-    setClearError("");
-    setSaving(true); setError(""); setMessage("");
+    setSaving(true);
     try {
       const response = await fetch(`${endpoint}/translations`, { method: "DELETE", credentials: "same-origin" });
       if (response.status === 409) throw new Error("Wait for active sync and lyrics jobs to stop, then try again.");
@@ -109,56 +115,51 @@ function SettingsSection({ section }: { section: "endpoint" | "translation" }) {
       const result = await response.json();
       window.dispatchEvent(new Event("echora:translations-cleared"));
       setConfirmClear(false);
-      setMessage(`Cleared ${result.deleted} translations. Save any prompt changes before running sync.`);
-    } catch (reason) { setClearError(reason instanceof Error ? reason.message : "Could not clear translations."); }
+      toast.success(`Cleared ${result.deleted} translations`, { description: "Save any prompt changes before running sync." });
+    } catch (reason) { toast.error("Could not clear translations", { description: reason instanceof Error ? reason.message : undefined }); }
     finally { setSaving(false); }
   }
 
   return <form className={styles.form} onSubmit={save} aria-busy={loading || saving}>
-    {loading ? <p role="status" className={settingsStyles.layoutHelp}>Loading External AI settings…</p> : value && <>
-      <fieldset className={styles.fields} disabled={saving}>
-        {section === "endpoint" && <section className={settingsStyles.preferenceSection} aria-labelledby="external-ai-endpoint-title">
-          <CardHeader icon={<Server />} title={<span id="external-ai-endpoint-title">API</span>} description="Configure the OpenAI-compatible endpoint shared by External AI features." />
-          <button type="button" className={settingsStyles.switch} role="switch" aria-checked={value.enabled} onClick={() => update({ enabled: !value.enabled })}><span>Enable External AI</span><b>{value.enabled ? "ON" : "OFF"}</b></button>
-          <div className={styles.endpointGrid}>
-            <div>
-              <label className={settingsStyles.selectPreference}><span>API base URL</span><input type="url" maxLength={2048} required={value.enabled} value={value.url} placeholder="http://localhost:8000/v1" onChange={event => update({ url: event.target.value })} aria-describedby="external-ai-url-help" /></label>
-              <p id="external-ai-url-help" className={settingsStyles.layoutHelp}>/chat/completions is appended. Local HTTP is allowed; prefer HTTPS off-host.</p>
+    {loading ? <LoadingState label={`Loading ${section === "endpoint" ? "API endpoint" : "lyrics translation"} settings…`} /> : value && <>
+      <fieldset disabled={saving}>
+        {section === "endpoint" && <section aria-labelledby="external-ai-endpoint-title">
+          <SectionHeading id="external-ai-endpoint-title" title="API endpoint" description="Configure the OpenAI-compatible endpoint shared by External AI features." />
+          <Toggle label="Enable External AI" checked={value.enabled} onChange={enabled => update({ enabled })} disabled={saving} />
+          <SettingRow label="API base URL" htmlFor="external-ai-url" description={<span id="external-ai-url-help">/chat/completions is appended. Local HTTP is allowed; prefer HTTPS off-host.</span>}>
+            <Input id="external-ai-url" type="url" maxLength={2048} required={value.enabled} value={value.url} placeholder="http://localhost:8000/v1" onChange={event => update({ url: event.target.value })} aria-describedby="external-ai-url-help" />
+          </SettingRow>
+          <SettingRow label="API key" htmlFor="external-ai-key" description="Leave blank to keep the stored key, or enter a replacement.">
+            <div className={styles.keyControls}>
+              <Input id="external-ai-key" type="password" autoComplete="new-password" maxLength={8192} disabled={clearKey} value={apiKey} placeholder={value.has_key && !clearKey ? "••••••••••••••••" : ""} aria-label={value.has_key ? "API key, stored key unchanged unless replaced" : "API key"} onChange={event => { setApiKey(event.target.value); }} />
+              <Button type="button" variant="outline" className="shrink-0" aria-pressed={clearKey} onClick={() => { setClearKey(current => !current); setApiKey(""); }}>{clearKey ? "Cancel removal" : "Clear on save"}</Button>
             </div>
-            <div>
-              <label className={settingsStyles.selectPreference} htmlFor="external-ai-key"><span>API key</span></label>
-              <div className={styles.keyRow}>
-                <input id="external-ai-key" type="password" autoComplete="new-password" maxLength={8192} disabled={clearKey} value={apiKey} placeholder={value.has_key && !clearKey ? "••••••••••••••••" : ""} aria-label={value.has_key ? "API key, stored key unchanged unless replaced" : "API key"} onChange={event => { setApiKey(event.target.value); setMessage(""); setError(""); }} />
-                <button type="button" className={styles.compactButton} aria-pressed={clearKey} onClick={() => { setClearKey(current => !current); setApiKey(""); setMessage(""); }}>{clearKey ? "Cancel removal" : "Clear on save"}</button>
-              </div>
-            </div>
-          </div>
-
+          </SettingRow>
         </section>}
-        {section === "translation" && <section className={settingsStyles.preferenceSection} aria-labelledby="external-ai-translation-title">
-          <CardHeader as="h3" icon={<Languages />} title={<span id="external-ai-translation-title">Lyrics translation</span>} description="Choose the translation model, language pairs, and instructions." />
-          <p className={styles.notice}>Missing translations are generated during sync when External AI is enabled. Player display is not connected yet.</p>
-          <label className={settingsStyles.selectPreference}><span>Model</span><input maxLength={200} value={value.model} onChange={event => update({ model: event.target.value })} aria-describedby="external-ai-model-help" /></label>
-          <p id="external-ai-model-help" className={settingsStyles.layoutHelp}>Use the model identifier provided by your endpoint.</p>
-          <section className={styles.pairs} aria-labelledby="external-ai-pairs-title"><div className={styles.pairHeading}><h4 id="external-ai-pairs-title">Language pairs</h4><button type="button" className={styles.compactButton} disabled={value.language_pairs.length >= 64} onClick={() => update({ language_pairs: [...value.language_pairs, { source: "", target: "" }] })}>+ Add</button></div>
-            <div className={styles.pairList}>
+        {section === "translation" && <section aria-labelledby="external-ai-translation-title">
+          <SectionHeading id="external-ai-translation-title" title="Lyrics translation" description="Missing translations are generated during sync when External AI is enabled." />
+          <SettingRow label="Model" htmlFor="external-ai-model" description={<span id="external-ai-model-help">Use the model identifier provided by your endpoint.</span>}>
+            <Input id="external-ai-model" maxLength={200} value={value.model} onChange={event => update({ model: event.target.value })} aria-describedby="external-ai-model-help" />
+          </SettingRow>
+          <SettingRow label="Language pairs" description="Choose source and target language tags, such as ja, en or pt-BR.">
+            <div className={styles.pairs}>
               {value.language_pairs.map((pair, index) => <div className={styles.pair} key={index}>
-                <label className={settingsStyles.selectPreference}><span>Source <span className={styles.srOnly}>{index + 1}</span></span><input required value={pair.source} placeholder="ja" onChange={event => update({ language_pairs: value.language_pairs.map((item, i) => i === index ? { ...item, source: event.target.value } : item) })} /></label>
-                <span className={styles.arrow} aria-hidden="true">→</span>
-                <label className={settingsStyles.selectPreference}><span>Target <span className={styles.srOnly}>{index + 1}</span></span><input required value={pair.target} placeholder="en" onChange={event => update({ language_pairs: value.language_pairs.map((item, i) => i === index ? { ...item, target: event.target.value } : item) })} /></label>
-                <button type="button" className={settingsStyles.secondaryAction} aria-label={`Remove language pair ${index + 1}`} onClick={() => update({ language_pairs: value.language_pairs.filter((_, i) => i !== index) })}>Remove</button>
+                <Label ><span>Source <span className="sr-only">{index + 1}</span></span><Input required value={pair.source} placeholder="ja" onChange={event => update({ language_pairs: value.language_pairs.map((item, i) => i === index ? { ...item, source: event.target.value } : item) })} /></Label>
+                <Label ><span>Target <span className="sr-only">{index + 1}</span></span><Input required value={pair.target} placeholder="en" onChange={event => update({ language_pairs: value.language_pairs.map((item, i) => i === index ? { ...item, target: event.target.value } : item) })} /></Label>
+                <Button type="button" variant="outline" aria-label={`Remove language pair ${index + 1}`} onClick={() => update({ language_pairs: value.language_pairs.filter((_, i) => i !== index) })}>Remove</Button>
               </div>)}
+              <Button type="button" variant="outline" disabled={value.language_pairs.length >= 64} onClick={() => update({ language_pairs: [...value.language_pairs, { source: "", target: "" }] })}>Add language pair</Button>
             </div>
-          </section>
-          <label className={settingsStyles.selectPreference}><span>Instruction prompt</span><textarea required maxLength={8000} rows={5} value={value.prompt} onChange={event => update({ prompt: event.target.value })} /></label>
+          </SettingRow>
+          <SettingRow label="Instruction prompt" htmlFor="external-ai-prompt" description="Instructions sent to the translation model.">
+            <Textarea className={styles.prompt} id="external-ai-prompt" required maxLength={8000} rows={5} value={value.prompt} onChange={event => update({ prompt: event.target.value })} />
+          </SettingRow>
         </section>}
-        <div className={settingsStyles.formActions}><button className={settingsStyles.primaryAction} type="submit">{saving ? "Saving…" : section === "endpoint" ? "Save API settings" : "Save translation settings"}</button></div>
-        {section === "translation" && <div className={styles.clearTranslations}><button type="button" disabled={saving} onClick={() => { setClearError(""); setConfirmClear(true); }}>Clear all translations</button><p>Instance-wide. Original lyrics and karaoke timing are kept.</p></div>}
+        <div className={layout.actions}><Button type="submit" loading={saving}>{saving ? "Saving…" : section === "endpoint" ? "Save API settings" : "Save translation settings"}</Button></div>
+        {section === "translation" && <section className={layout.group}><SectionHeading title="Stored translations" /><SettingsNotice tone="warning" title="Instance-wide deletion">Clearing translations affects every user and cannot be undone.</SettingsNotice><SettingRow label="Clear all translations" description="Instance-wide. Original lyrics and karaoke timing are kept."><Button variant="destructive" type="button" disabled={saving} onClick={() => setConfirmClear(true)}>Clear all translations</Button></SettingRow></section>}
       </fieldset>
     </>}
-    {confirmClear && <ClearTranslationsWarning busy={saving} error={clearError} onClose={() => setConfirmClear(false)} onConfirm={clearTranslations} />}
-    {error && <p className={styles.error} role="alert">{error}</p>}
-    {!loading && !value && <button type="button" onClick={() => { setLoading(true); setError(""); setAttempt(current => current + 1); }}>Retry loading</button>}
-    {message && <p className={styles.success} role="status">{message}</p>}
+    {confirmClear && <ClearTranslationsWarning busy={saving} onClose={() => setConfirmClear(false)} onConfirm={clearTranslations} />}
+    {!loading && !value && <Notice tone="error" title="Could not load External AI settings" action={<Button type="button" variant="outline" size="sm" onClick={() => { setLoading(true); setLoadError(""); setAttempt(current => current + 1); }}>Try again</Button>}>{loadError}</Notice>}
   </form>;
 }

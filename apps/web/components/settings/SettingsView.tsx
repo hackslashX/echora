@@ -1,20 +1,33 @@
 "use client";
 
-import { AudioLines, BrainCircuit, Captions, Clock3, Gauge, MicVocal, Plug, Radio, Server, ShieldCheck, SlidersHorizontal, UserRound } from "lucide-react";
+import { setUrl, useSubPath } from "../shell/urlState";
+import { Palette, Sparkles, BrainCircuit, Clock3, Radio, Server, ShieldCheck, SlidersHorizontal, UserRound } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import AppShell from "../shell/AppShell";
 import CopyrightFooter from "../shell/CopyrightFooter";
-import { trackTemplate } from "../shell/gridGeometry";
-import { readCompactLayoutPreference, writeCompactLayoutPreference } from "../shell/layoutPreference";
 import { defaultPlaybackPreferences, PlaybackPreferences, readPlaybackPreferences, writePlaybackPreferences } from "../player/playbackPreferences";
-import CardHeader from "../ui/CardHeader";
-import MobilePivots from "../shell/MobilePivots";
-import { useMobilePane } from "../shell/useMobilePane";
-import ExternalAISettings from "./ExternalAISettings";
-import NavidromePluginSettings from "./NavidromePluginSettings";
-import styles from "./SettingsView.module.css";
+import { SectionHeading, Choice, ChoiceItem, Toggle } from "./Presentation";
 
-type Tab = "integrations" | "playback" | "models" | "external-ai" | "appearance" | "timezone" | "account" | "oidc";
+import { Button } from "../ui/button";
+import { SettingsNotice } from "./SettingsNotice";
+import { RangeControl } from "./RangeControl";
+import { SettingRow } from "./SettingRow";
+import { SidePanel } from "../layout/side-panel";
+import { Pane } from "../layout/pane";
+import { Badge } from "../ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { cn } from "@/lib/utils";
+import styles from "./SettingsView.module.css";
+import { Input } from "../ui/input";
+import { LoadingState } from "../ui/spinner";
+import ExternalAISettings from "./ExternalAISettings";
+import { toast } from "sonner";
+import { Notice } from "../ui/notice";
+import NavidromePluginSettings from "./NavidromePluginSettings";
+
+
+const allTabs = ["server", "lastfm", "playback", "models", "external-ai", "appearance", "timezone", "account", "oidc"] as const;
+type Tab = typeof allTabs[number];
 type Settings = {
   profile: { username: string; email: string; display_name: string; is_admin: boolean };
   timezone: string;
@@ -31,10 +44,23 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
   return body as T;
 }
 
+const descriptions: Record<Tab, string> = {
+  "server": "Update the Navidrome server used for synchronization and playlist publishing.",
+  "lastfm": "Connect listening history for familiarity mixes and time-of-day curations.",
+  "playback": "Choose the stream sent by Navidrome.",
+  "models": "Choose which application-wide analysis jobs run during library synchronization.",
+  "external-ai": "Manage endpoints and AI features.",
+  "appearance": "Set motion, karaoke highlights, and audio-reactive backgrounds.",
+  "timezone": "Listening periods use this timezone rather than the server clock.",
+  "account": "Your email is your fixed username. Your display name can be changed.",
+  "oidc": "Provider credentials come from the container environment. Manage who Echora may provision."
+};
+
 const zones = ["UTC", "America/Los_Angeles", "America/Denver", "America/Chicago", "America/New_York", "America/Toronto", "America/Sao_Paulo", "Europe/London", "Europe/Paris", "Europe/Berlin", "Europe/Warsaw", "Africa/Johannesburg", "Asia/Dubai", "Asia/Kolkata", "Asia/Bangkok", "Asia/Shanghai", "Asia/Tokyo", "Asia/Seoul", "Australia/Sydney", "Pacific/Auckland"];
 
 export default function SettingsView() {
-  const [tab, setTab, paneTransition] = useMobilePane<Tab>("integrations", ["integrations", "playback", "models", "external-ai", "appearance", "timezone", "account", "oidc"]);
+  // The section lives in the path (/settings/appearance) so it can be linked and survives reloads.
+  const requestedTab = useSubPath("settings");
   const [settings, setSettings] = useState<Settings | null>(null);
   const [serverUrl, setServerUrl] = useState("");
   const [serverUsername, setServerUsername] = useState("");
@@ -46,10 +72,9 @@ export default function SettingsView() {
   const [oidc, setOidc] = useState<OidcSettings | null>(null);
   const [allowedEmail, setAllowedEmail] = useState("");
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
+  // Only load failures stay on the page; action results are toasts.
+  const [loadError, setLoadError] = useState("");
   const [playback, setPlayback] = useState<PlaybackPreferences>(defaultPlaybackPreferences);
-  const [forceCompactLayout, setForceCompactLayout] = useState(readCompactLayoutPreference);
   const [karaokeEnabled, setKaraokeEnabled] = useState(true);
   const [transcriptionEnabled, setTranscriptionEnabled] = useState(false);
   const [humEnabled, setHumEnabled] = useState(true);
@@ -61,52 +86,45 @@ export default function SettingsView() {
     setHumEnabled(value.models.hum_processing_enabled);
     setTranscriptionEnabled(value.models.transcription_processing_enabled);
     setPlayback(readPlaybackPreferences());
-    setForceCompactLayout(readCompactLayoutPreference());
   }
-  function load() { api<Settings>("/settings").then(apply).catch(reason => setError(reason.message)); }
-  function loadOidc() { api<OidcSettings>("/settings/oidc").then(setOidc).catch(reason => setError(reason.message)); }
+  function load() { api<Settings>("/settings").then(apply).catch(reason => setLoadError(reason.message)); }
+  function loadOidc() { api<OidcSettings>("/settings/oidc").then(setOidc).catch(reason => toast.error("Could not load sign-in settings", { description: reason.message })); }
   useEffect(load, []);
-  function savePlayback(next: PlaybackPreferences) { setPlayback(next); writePlaybackPreferences(next); setMessage("Playback preferences saved"); setError(""); }
+  function savePlayback(next: PlaybackPreferences) { setPlayback(next); writePlaybackPreferences(next); toast.success("Playback preferences saved", { id: "playback-preferences" }); }
   function saveAnimationSpeed(next: PlaybackPreferences["animationSpeed"]) {
     savePlayback({ ...playback, animationSpeed: next });
   }
-  function saveCompactLayout(next: boolean) {
-    setForceCompactLayout(next);
-    writeCompactLayoutPreference(next);
-    setMessage(next ? "Compact Metro interface enabled for this browser" : "Automatic layout selection restored");
-    setError("");
-    window.setTimeout(() => window.location.reload(), 120);
-  }
   async function saveKaraokeProcessing(next: boolean) {
-    setBusy(true); setError(""); setMessage("");
+    setBusy(true);
     try {
       const result = await api<{ pending: number }>("/settings/models/karaoke", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: next }) });
-      setKaraokeEnabled(next); setMessage(next ? `Karaoke processing enabled. ${result.pending} tracks will be processed during the next Entire Library sync.` : "Karaoke processing disabled. Existing karaoke lyrics remain available.");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save karaoke processing"); }
+      setKaraokeEnabled(next); toast.success(next ? "Karaoke processing enabled" : "Karaoke processing disabled", { description: next ? `${result.pending} tracks will be processed during the next Entire Library sync.` : "Existing karaoke lyrics remain available." });
+    } catch (reason) { fail("Could not save karaoke processing", reason); }
     finally { setBusy(false); }
   }
   async function saveTranscriptionProcessing(next: boolean) {
-    setBusy(true); setError(""); setMessage("");
+    setBusy(true);
     try {
       await api("/settings/models/transcription", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: next }) });
       setTranscriptionEnabled(next);
-      setMessage(next ? "AI lyrics generation enabled. Entire Library sync processes missing lyrics." : "AI lyrics generation disabled. The current track may finish; no further tracks will start. Existing lyrics remain available.");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save lyrics processing"); }
+      toast.success(next ? "AI lyrics generation enabled" : "AI lyrics generation disabled", { description: next ? "Entire Library sync processes missing lyrics." : "The current track may finish; no further tracks will start. Existing lyrics remain available." });
+    } catch (reason) { fail("Could not save lyrics processing", reason); }
     finally { setBusy(false); }
   }
   async function saveHumProcessing(next: boolean) {
-    setBusy(true); setError(""); setMessage("");
+    setBusy(true);
     try {
       const result = await api<{ pending: number }>("/settings/models/hum", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: next }) });
-      setHumEnabled(next); setMessage(next ? `Hum processing enabled. ${result.pending} tracks will be indexed during the next Entire Library sync.` : "Hum processing disabled. Existing melody contours remain searchable.");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save hum processing"); }
+      setHumEnabled(next); toast.success(next ? "Hum processing enabled" : "Hum processing disabled", { description: next ? `${result.pending} tracks will be indexed during the next Entire Library sync.` : "Existing melody contours remain searchable." });
+    } catch (reason) { fail("Could not save hum processing", reason); }
     finally { setBusy(false); }
   }
 
+  function fail(title: string, reason: unknown) { toast.error(title, { description: reason instanceof Error ? reason.message : undefined }); }
   async function submit(action: () => Promise<unknown>, success: string) {
-    setBusy(true); setError(""); setMessage("");
-    try { await action(); setMessage(success); load(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save settings"); }
+    setBusy(true);
+    try { await action(); toast.success(success); load(); }
+    catch (reason) { fail("Could not save settings", reason); }
     finally { setBusy(false); }
   }
   const serverCanSave = Boolean(serverUrl.trim() && serverUsername.trim() && serverPassword);
@@ -121,37 +139,62 @@ export default function SettingsView() {
   function updateOidc(action: () => Promise<unknown>, success: string) { submit(action, success).then(loadOidc); }
   function addAllowedEmail(event: FormEvent) { event.preventDefault(); if (!allowedEmail.trim()) return; updateOidc(() => api("/settings/oidc/allowed-emails", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: allowedEmail }) }), "User approved for OIDC sign-in"); setAllowedEmail(""); }
 
-  const columns = [0.27, 0.04, 0.69];
-  const tabs: { id: Tab; label: string; note: string; icon: typeof Server }[] = [
-    { id: "integrations", label: "Integrations", note: "Navidrome and Last.fm", icon: Plug },
-    { id: "playback", label: "Playback", note: "Audio quality and streaming", icon: SlidersHorizontal },
-    ...(settings?.profile.is_admin ? [{ id: "models" as Tab, label: "Models", note: "Analysis processing rules", icon: BrainCircuit }] : []),
-    ...(settings?.profile.is_admin ? [{ id: "external-ai" as Tab, label: "External AI", note: "Endpoints and AI features", icon: BrainCircuit }] : []),
-    { id: "appearance", label: "Appearance", note: "Visual and motion settings", icon: AudioLines },
-    { id: "timezone", label: "Timezone", note: "Local listening periods", icon: Clock3 },
-    { id: "account", label: "Account", note: "Email and display name", icon: UserRound },
-    ...(settings?.profile.is_admin ? [{ id: "oidc" as Tab, label: "OIDC", note: "Provisioning and access", icon: ShieldCheck }] : []),
+  const adminTabs: Tab[] = ["models", "external-ai", "oidc"];
+  const knownTab = (allTabs as readonly string[]).includes(requestedTab ?? "") ? requestedTab as Tab : "account";
+  // Admin sections fall back to Account for everyone else once we know who they are.
+  const tab: Tab = settings && !settings.profile.is_admin && adminTabs.includes(knownTab) ? "account" : knownTab;
+  // Sign-in settings load whenever that section opens, by click or by URL.
+  const oidcOpen = tab === "oidc";
+  useEffect(() => {
+    if (!oidcOpen) return;
+    api<OidcSettings>("/settings/oidc").then(setOidc).catch(reason => toast.error("Could not load sign-in settings", { description: reason.message }));
+  }, [oidcOpen]);
+  const tabs: { id: Tab; label: string; group: string; icon: typeof Server }[] = [
+    { id: "account", label: "Account", group: "You", icon: UserRound },
+    { id: "appearance", label: "Appearance", group: "You", icon: Palette },
+    { id: "playback", label: "Playback", group: "You", icon: SlidersHorizontal },
+    { id: "timezone", label: "Timezone", group: "You", icon: Clock3 },
+    { id: "server", label: "Music server", group: "Connections", icon: Server },
+    { id: "lastfm", label: "Listening history", group: "Connections", icon: Radio },
+    ...(settings?.profile.is_admin ? [
+      { id: "models" as Tab, label: "Analysis models", group: "Administration", icon: BrainCircuit },
+      { id: "external-ai" as Tab, label: "External AI", group: "Administration", icon: Sparkles },
+      { id: "oidc" as Tab, label: "Sign-in & users", group: "Administration", icon: ShieldCheck },
+    ] : []),
   ];
-  function selectTab(next: Tab) { setTab(next); setError(""); setMessage(""); if (next === "oidc") loadOidc(); }
-  return <AppShell title="Settings" footer={<CopyrightFooter />} breadcrumb flush fullPage grid={{ columns, rows: [1] }}>
-    <main className={styles.page} style={{ gridTemplateColumns: trackTemplate(columns, 160), gridTemplateRows: trackTemplate([1], 88) }}>
-      <MobilePivots label="Settings sections" active={tab} onChange={selectTab} items={tabs.map(item => ({ key: item.id, label: item.label }))} />
-      <aside className={styles.tabs}><CardHeader as="h1" title="Settings" description="Playback, appearance, connections, and account preferences." /><nav>{tabs.map(item => <button key={item.id} className={tab === item.id ? styles.active : ""} onClick={() => { selectTab(item.id); }}><item.icon /><span><strong>{item.label}</strong><small>{item.note}</small></span></button>)}</nav></aside>
-      <section key={tab} className={`${styles.content} ${paneTransition}`}>
+  const groups = Array.from(new Set(tabs.map(item => item.group)));
+  const current = tabs.find(item => item.id === tab);
+  function selectTab(next: Tab) { setUrl(`/settings/${next}`); }
+  const navigation = <SidePanel title="Settings"><nav aria-label="Settings sections" className="grid gap-6">{groups.map(group => <div key={group}>
+    <h3 className="mb-1.5 px-3 text-xs font-medium text-subtle-foreground">{group}</h3>
+    <ul className="space-y-0.5">{tabs.filter(item => item.group === group).map(item => <li key={item.id}><button type="button" onClick={() => selectTab(item.id)} aria-current={tab === item.id ? "page" : undefined} className={cn("relative flex h-9 w-full items-center gap-3 px-3 text-left text-[13px] font-medium transition-colors", tab === item.id ? "bg-raised text-foreground before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-primary" : "text-muted-foreground hover:bg-surface hover:text-foreground")}><item.icon className={cn("size-4", tab === item.id && "text-primary")} />{item.label}</button></li>)}</ul>
+  </div>)}</nav></SidePanel>;
+  return <AppShell title="Settings" footer={<CopyrightFooter />}>
+    <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)] md:grid-cols-[260px_minmax(0,1fr)]">
+      <div className="hidden min-h-0 border-r border-border bg-rail md:block">{navigation}</div>
+      <Pane className="bg-workspace" label={current?.label || "Settings"} title={current?.label || "Settings"} subtitle={descriptions[tab]}
+        actions={<>{["models", "external-ai", "oidc"].includes(tab) && <Badge variant="outline" className="h-7 gap-1.5 text-xs" title="Changes in this section apply to every Echora user"><ShieldCheck className="size-3.5 text-primary" />Admin · applies to everyone</Badge>}<Select value={tab} onValueChange={value => selectTab(value as Tab)}><SelectTrigger aria-label="Settings section" className="w-44 md:hidden"><SelectValue /></SelectTrigger><SelectContent>{tabs.map(item => <SelectItem key={item.id} value={item.id}>{item.label}</SelectItem>)}</SelectContent></Select></>}>
+        <section key={tab} className={`motion-enter ${styles.form}`}>
+          {loadError && !settings ? <Notice tone="error" title="Could not load settings" action={<Button variant="outline" size="sm" onClick={() => { setLoadError(""); load(); }}>Try again</Button>}>{loadError}</Notice> : !settings ? <LoadingState label="Loading settings…" /> : <>
         {tab === "external-ai" && settings?.profile.is_admin && <ExternalAISettings />}
-        {tab === "integrations" && <section className={styles.integrations}>
-          <form onSubmit={saveServer} aria-label="Navidrome integration"><CardHeader as="h3" icon={<Server />} title="Navidrome" description="Update the Navidrome server used for synchronization and playlist publishing." /><label><span>Server URL</span><input type="url" required value={serverUrl} onChange={event => setServerUrl(event.target.value)} /></label><label><span>Username</span><input required value={serverUsername} onChange={event => setServerUsername(event.target.value)} /></label><label><span>Password</span><input type="password" required value={serverPassword} onChange={event => setServerPassword(event.target.value)} placeholder="Required to verify changes" /></label><button disabled={busy || !serverCanSave}>VERIFY + SAVE</button></form>
-          <form onSubmit={saveLastFm} aria-label="Last.fm integration"><CardHeader as="h3" icon={<Radio />} title="Last.fm" description="Connect listening history for familiarity mixes and time-of-day curations." /><div className={styles.connection}><span>{settings?.lastfm.connected ? "CONNECTED" : "NOT CONNECTED"}</span><strong>{settings?.lastfm.username || "No Last.fm user"}</strong></div><label><span>Last.fm username</span><input required value={lastfmUsername} onChange={event => setLastfmUsername(event.target.value)} /></label><label><span>API key</span><input type="password" required value={lastfmKey} onChange={event => setLastfmKey(event.target.value)} placeholder="Stored encrypted" /></label><div className={styles.formActions}><button disabled={busy || !lastfmCanSave}>VERIFY + SAVE</button>{settings?.lastfm.connected && <button type="button" className={styles.secondary} onClick={() => submit(() => api("/settings/lastfm", { method: "DELETE" }), "Last.fm disconnected")}>DISCONNECT</button>}</div></form>
-          <NavidromePluginSettings connectionId={settings?.navidrome?.id ?? null} />
+        {tab === "server" && <form onSubmit={saveServer}><SectionHeading title="Connection credentials" /><SettingRow label={<>Server URL</>} htmlFor="settings-field-1" description="The URL of your Navidrome server, including https://."><Input id="settings-field-1" type="url" required value={serverUrl} onChange={event => setServerUrl(event.target.value)} /></SettingRow><SettingRow label={<>Username</>} htmlFor="settings-field-2" description="Your Navidrome login, not your Echora account."><Input id="settings-field-2" required value={serverUsername} onChange={event => setServerUsername(event.target.value)} /></SettingRow><SettingRow label={<>Password</>} htmlFor="settings-field-3" description="Required to verify access to your collection."><Input id="settings-field-3" type="password" required value={serverPassword} onChange={event => setServerPassword(event.target.value)} placeholder="Required to verify changes" /></SettingRow><div className={styles.actions}><Button loading={busy} disabled={!serverCanSave}>Verify and save</Button></div></form>}
+        {tab === "server" && <NavidromePluginSettings connectionId={settings?.navidrome?.id ?? null} />}
+        {tab === "lastfm" && <form onSubmit={saveLastFm}><SectionHeading title="Last.fm connection" /><SettingRow label="Connection" description="Listening history connection status."><span>{settings?.lastfm.connected ? "Connected" : "Not connected"}</span><p className="text-muted-foreground">{settings?.lastfm.username || "No Last.fm user"}</p></SettingRow><SettingRow label={<>Last.fm username</>} htmlFor="settings-field-4" description="The account used for listening history."><Input id="settings-field-4" required value={lastfmUsername} onChange={event => setLastfmUsername(event.target.value)} /></SettingRow><SettingRow label={<>API key</>} htmlFor="settings-field-5" description="Your Last.fm API key is stored encrypted."><Input id="settings-field-5" type="password" required value={lastfmKey} onChange={event => setLastfmKey(event.target.value)} placeholder="Stored encrypted" /></SettingRow><div className={styles.actions}><Button loading={busy} disabled={!lastfmCanSave}>Verify and save</Button>{settings?.lastfm.connected && <Button variant="outline" type="button" disabled={busy} onClick={() => submit(() => api("/settings/lastfm", { method: "DELETE" }), "Last.fm disconnected")}>Disconnect</Button>}</div></form>}
+        {tab === "playback" && <section><SectionHeading title="Streaming quality" /><SettingRow label={<>Music transcoding</>} htmlFor="settings-field-6" description={<>Original keeps the source quality. Lower bitrates use less bandwidth.</>}><Choice id="settings-field-6" value={playback.quality} onChange={value => savePlayback({ ...playback, quality: value as PlaybackPreferences["quality"] })}><ChoiceItem value="original">Original</ChoiceItem><ChoiceItem value="320">320 kbps</ChoiceItem><ChoiceItem value="120">120 kbps</ChoiceItem></Choice></SettingRow></section>}
+        {tab === "models" && settings?.profile.is_admin && <section>
+          <SectionHeading title="Lyrics processing" />
+          <SettingsNotice tone="warning" title="AI-generated lyrics">Generated words and timing may be inaccurate. Existing lyrics remain available when processing is disabled.</SettingsNotice>
+          <Toggle label="AI lyrics generation" description="Use Mel-Band-Roformer and MOSS to transcribe tracks with missing lyrics. Off by default. AI words and timing may be inaccurate. Disabling prevents further tracks from starting; existing lyrics remain available." checked={transcriptionEnabled} disabled={busy} onChange={() => saveTranscriptionProcessing(!transcriptionEnabled)} />
+          <Toggle label="Karaoke timing" description="Generate syllable timing for tracks with synced lyrics. Disabling skips new alignment work; existing karaoke lyrics remain available." checked={karaokeEnabled} disabled={busy} onChange={() => saveKaraokeProcessing(!karaokeEnabled)} />
+          <div className={styles.group}><SectionHeading title="Melody search" /></div>
+          <Toggle label="Query by humming" description="Extract melody contours from the full mix, vocals, and accompaniment. Disabling skips new contour extraction; tracks already indexed remain searchable." checked={humEnabled} disabled={busy} onChange={() => saveHumProcessing(!humEnabled)} />
         </section>}
-        {tab === "playback" && <section className={styles.preferences}><CardHeader icon={<SlidersHorizontal />} title="Playback" description="Choose the stream sent by Navidrome. Original uses the source file without bitrate reduction." /><label className={styles.selectPreference}><span>Music transcoding</span><select value={playback.quality} onChange={event => savePlayback({ ...playback, quality: event.target.value as PlaybackPreferences["quality"] })}><option value="original">Original</option><option value="320">320 kbps</option><option value="120">120 kbps</option></select><small>Original keeps the source quality. Lower bitrates use less bandwidth.</small></label></section>}
-        {tab === "models" && settings?.profile.is_admin && <section className={styles.preferences}><CardHeader icon={<BrainCircuit />} title="Model processing" description="Choose which application-wide analysis jobs run during library synchronization." /><section className={styles.modelRule}><div><Captions /><span><strong>AI lyrics generation</strong><small>Use Demucs and MOSS to transcribe tracks with missing lyrics.</small></span></div><button className={styles.switch} role="switch" aria-checked={transcriptionEnabled} disabled={busy} onClick={() => saveTranscriptionProcessing(!transcriptionEnabled)}><span>Generate missing lyrics with AI</span><b>{transcriptionEnabled ? "ON" : "OFF"}</b></button><p>Off by default. AI words and timing may be inaccurate. Disabling prevents further tracks from starting transcription; existing lyrics remain available.</p></section><section className={styles.modelRule}><div><MicVocal /><span><strong>Karaoke timing</strong><small>Generate syllable timing for tracks with synced lyrics.</small></span></div><button className={styles.switch} disabled={busy} onClick={() => saveKaraokeProcessing(!karaokeEnabled)}><span>Process karaoke lyrics during library sync</span><b>{karaokeEnabled ? "ON" : "OFF"}</b></button><p>Disabling this skips new alignment work. Existing karaoke lyrics remain available.</p></section><section className={styles.modelRule}><div><AudioLines /><span><strong>Query by humming</strong><small>Extract melody contours from the full mix, vocals, and accompaniment.</small></span></div><button className={styles.switch} disabled={busy} onClick={() => saveHumProcessing(!humEnabled)}><span>Process hum-search melodies during library sync</span><b>{humEnabled ? "ON" : "OFF"}</b></button><p>Disabling this skips new contour extraction. Tracks already indexed remain searchable.</p></section></section>}
-        {tab === "appearance" && <section className={styles.preferences}><CardHeader icon={<Gauge />} title="Application motion" description="Set the pace of page transitions, controls, fullscreen views, lyrics, and background movement." /><label className={styles.selectPreference}><span>Animation speed</span><select value={playback.animationSpeed} onChange={event => saveAnimationSpeed(event.target.value as PlaybackPreferences["animationSpeed"])}><option value="slow">Slow</option><option value="normal">Normal</option><option value="fast">Fast</option></select><small>This preference applies across the entire application.</small></label><button className={styles.switch} onClick={() => saveCompactLayout(!forceCompactLayout)}><span>Always use compact Metro interface</span><b>{forceCompactLayout ? "ON" : "AUTO"}</b></button><small className={styles.layoutHelp}>Stored only in this browser. Auto uses the desktop interface at 1200 × 720 and above.</small><label className={styles.selectPreference}><span>Karaoke highlight style</span><select value={playback.karaokeHighlightStyle} onChange={event => savePlayback({ ...playback, karaokeHighlightStyle: event.target.value as PlaybackPreferences["karaokeHighlightStyle"] })}><option value="syllable">Syllable highlight</option><option value="lava">Lava fill</option></select><small>Highlight each syllable at once or fill it with a moving liquid edge. Timing stays the same. Saved in this browser.</small></label><section className={styles.preferenceSection}><CardHeader as="h3" icon={<AudioLines />} title="Audio-reactive backdrop" description="Choose how the desktop background responds to the playing track and its frequency bands." /><label className={styles.selectPreference}><span>Backdrop style</span><select value={playback.backdropPreset} onChange={event => savePlayback({ ...playback, backdropPreset: event.target.value as PlaybackPreferences["backdropPreset"] })}><option value="waves">PS3 waves</option><option value="oscilloscope">Oscilloscope</option><option value="void">Void tunnel</option><option value="curtain">Digital curtain</option><option value="ascii">ASCII dance</option><option value="roots">Living roots</option><option value="lightningfall">Lightning Fall</option><option value="meshgrid">Mesh Grid</option><option value="clouds">Storm clouds</option><option value="waterdrops">Water drops</option></select><small>All styles use the playing track and its album-derived color palette. Backdrops are hidden in the compact mobile layout.</small>{playback.backdropPreset === "waterdrops" && <small>Music drives invisible drop impacts on an album-colored water surface. Bass sets impact size, vocals change drop velocity and ripple spread, and treble changes surface tension and damping. Ripples overlap and interfere, then settle when playback pauses.</small>}{playback.backdropPreset === "meshgrid" && <small>A rippling triangular landscape in album-art colors. Bass raises the waves, vocals roughen the mesh, and treble lights the edges.</small>}{playback.backdropPreset === "lightningfall" && <small>Dense falling trails in album-art colors. Bass and tempo drive the flow; individual frequency bands subtly vary trail length, thickness, and glow. Pausing dims the trails.</small>}{playback.backdropPreset === "clouds" && <small>Distinct billowing cloud banks with dark gaps, fine edges, and layered shadows in album-art colors. Bass drives billowing, vocals light the cloud bodies, and treble lights cloud edges and soft internal lightning. Attacks in any band can trigger branching strikes. Drift follows estimated tempo. Strikes are at least 0.8 seconds apart. Contains flashes. Set all three sensitivity sliders to zero for no lightning, or turn off Animated backdrop.</small>}</label><label className={styles.selectPreference}><span>Wave frame rate</span><select value={playback.waveFrameRate} onChange={event => savePlayback({ ...playback, waveFrameRate: event.target.value as PlaybackPreferences["waveFrameRate"] })}><option value="30">30 FPS</option><option value="60">60 FPS</option><option value="uncapped">Uncapped</option></select><small>Stored in this browser so each device can use an appropriate rendering load.</small></label><button className={styles.switch} onClick={() => savePlayback({ ...playback, wavesEnabled: !playback.wavesEnabled })}><span>Animated backdrop</span><b>{playback.wavesEnabled ? "ON" : "OFF"}</b></button><div className={styles.waveControls}><label><span><b>Backdrop opacity</b><output>{Math.round(playback.backdropOpacity * 100)}%</output></span><input aria-label="Backdrop opacity" type="range" min="0" max="1" step="0.05" value={playback.backdropOpacity} onChange={event => savePlayback({ ...playback, backdropOpacity: Number(event.target.value) })} /></label></div><div className={styles.waveControls}>{([['bassReactivity','Bass'],['vocalReactivity','Vocals'],['trebleReactivity','Treble']] as const).map(([key,label]) => <label key={key}><span><b>{label}</b><output>{Math.round(playback[key] * 100)}%</output></span><input disabled={!playback.wavesEnabled} type="range" min="0" max="2" step="0.05" value={playback[key]} onChange={event => savePlayback({ ...playback, [key]: Number(event.target.value) })} /></label>)}</div></section></section>}
-        {tab === "timezone" && <form onSubmit={saveTimezone}><CardHeader icon={<Clock3 />} title="Timezone" description="Listening periods use this timezone rather than the server clock." /><label><span>IANA timezone</span><select value={timezone} onChange={event => setTimezone(event.target.value)}>{!zones.includes(timezone) && <option value={timezone}>{timezone}</option>}{zones.map(zone => <option key={zone}>{zone}</option>)}</select></label><button disabled={busy || !timezoneCanSave}>SAVE TIMEZONE</button></form>}
-        {tab === "account" && <div className={styles.account}><form onSubmit={saveProfile}><CardHeader icon={<UserRound />} title="User profile" description="Your email is your fixed username. Your display name can be changed." /><label><span>Email and username</span><input disabled value={settings?.profile.email || settings?.profile.username || ""} readOnly /></label><label><span>Display name</span><input required value={displayName} onChange={event => setDisplayName(event.target.value)} /></label><button disabled={busy || !profileCanSave}>SAVE PROFILE</button></form></div>}
-        {tab === "oidc" && settings?.profile.is_admin && <div className={styles.oidcAdmin}><CardHeader icon={<ShieldCheck />} title="OIDC administration" description="Provider credentials come from the container environment. Manage who Echora may provision." />{oidc && <><dl><div><dt>Issuer</dt><dd>{oidc.issuer || "Not configured"}</dd></div><div><dt>Verified email required</dt><dd>{oidc.require_verified_email ? "Yes" : "No"}</dd></div></dl><button className={styles.policy} onClick={() => updateOidc(() => api("/settings/oidc/policy", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ auto_provision: !oidc.auto_provision }) }), oidc.auto_provision ? "Automatic provisioning disabled" : "Automatic provisioning enabled")}><span>Automatically provision new OIDC users</span><b>{oidc.auto_provision ? "ON" : "OFF"}</b></button><form className={styles.allow} onSubmit={addAllowedEmail}><label><span>Explicitly approve email</span><input type="email" required value={allowedEmail} onChange={event => setAllowedEmail(event.target.value)} placeholder="person@example.com" /></label><button disabled={busy || !allowedEmail.trim()}>ADD USER</button></form>{oidc.allowed_emails.length > 0 && <section className={styles.pending}><CardHeader as="h3" title="Approved emails" count={oidc.allowed_emails.length} />{oidc.allowed_emails.map(email => <article key={email}><span>{email}</span><button onClick={() => updateOidc(() => api(`/settings/oidc/allowed-emails/${encodeURIComponent(email)}`, { method: "DELETE" }), "Approval removed")}>REMOVE</button></article>)}</section>}<section className={styles.users}><CardHeader as="h3" title="Users" count={oidc.users.length} />{oidc.users.map(item => <article key={item.id}><div><strong>{item.display_name}</strong><small>{item.email}</small></div><button className={item.is_admin ? styles.selected : ""} disabled={item.email === settings.profile.email} onClick={() => updateOidc(() => api(`/settings/oidc/users/${item.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ is_admin: !item.is_admin }) }), item.is_admin ? "Administrator removed" : "Administrator granted")}>{item.is_admin ? "ADMIN" : "USER"}</button><button className={item.is_blocked ? styles.blocked : ""} disabled={item.email === settings.profile.email} onClick={() => updateOidc(() => api(`/settings/oidc/users/${item.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ is_blocked: !item.is_blocked }) }), item.is_blocked ? "User unblocked" : "User blocked")}>{item.is_blocked ? "UNBLOCK" : "BLOCK"}</button></article>)}</section></>}</div>}
-        {message && <p className={styles.message}>{message}</p>}{error && <p className={styles.error}>{error}</p>}
-      </section>
-    </main>
+        {tab === "appearance" && <section><SectionHeading title="Motion and interface" /><SettingRow label={<>Animation speed</>} htmlFor="settings-field-7" description={<>This preference applies across the entire application.</>}><Choice id="settings-field-7" value={playback.animationSpeed} onChange={value => saveAnimationSpeed(value as PlaybackPreferences["animationSpeed"])}><ChoiceItem value="slow">Slow</ChoiceItem><ChoiceItem value="normal">Normal</ChoiceItem><ChoiceItem value="fast">Fast</ChoiceItem></Choice></SettingRow><SettingRow label={<>Karaoke highlight style</>} htmlFor="settings-field-8" description={<>Highlight each syllable at once or fill it with a moving liquid edge. Timing stays the same. Saved in this browser.</>}><Choice id="settings-field-8" value={playback.karaokeHighlightStyle} onChange={value => savePlayback({ ...playback, karaokeHighlightStyle: value as PlaybackPreferences["karaokeHighlightStyle"] })}><ChoiceItem value="syllable">Syllable highlight</ChoiceItem><ChoiceItem value="lava">Lava fill</ChoiceItem></Choice></SettingRow><section className="pt-6"><SectionHeading title="Audio-reactive backdrop" description="Choose how the desktop background responds to the playing track and its frequency bands." /><SettingRow label={<>Backdrop style</>} htmlFor="settings-field-9" description={<>All styles use the playing track and its album-derived color palette. Backdrops are hidden in the compact mobile layout.</>}><Choice id="settings-field-9" value={playback.backdropPreset} onChange={value => savePlayback({ ...playback, backdropPreset: value as PlaybackPreferences["backdropPreset"] })}><ChoiceItem value="waves">PS3 waves</ChoiceItem><ChoiceItem value="oscilloscope">Oscilloscope</ChoiceItem><ChoiceItem value="void">Void tunnel</ChoiceItem><ChoiceItem value="curtain">Digital curtain</ChoiceItem><ChoiceItem value="ascii">ASCII dance</ChoiceItem><ChoiceItem value="roots">Living roots</ChoiceItem><ChoiceItem value="lightningfall">Lightning Fall</ChoiceItem><ChoiceItem value="meshgrid">Mesh Grid</ChoiceItem><ChoiceItem value="clouds">Storm clouds</ChoiceItem><ChoiceItem value="waterdrops">Water drops</ChoiceItem></Choice>{playback.backdropPreset === "waterdrops" && <SettingsNotice tone="info" title="Backdrop behavior">Music drives invisible drop impacts on an album-colored water surface. Bass sets impact size, vocals change drop velocity and ripple spread, and treble changes surface tension and damping. Ripples overlap and interfere, then settle when playback pauses.</SettingsNotice>}{playback.backdropPreset === "meshgrid" && <SettingsNotice tone="info" title="Backdrop behavior">A rippling triangular landscape in album-art colors. Bass raises the waves, vocals roughen the mesh, and treble lights the edges.</SettingsNotice>}{playback.backdropPreset === "lightningfall" && <SettingsNotice tone="info" title="Backdrop behavior">Dense falling trails in album-art colors. Bass and tempo drive the flow; individual frequency bands subtly vary trail length, thickness, and glow. Pausing dims the trails.</SettingsNotice>}{playback.backdropPreset === "clouds" && <SettingsNotice tone="warning" title="Flashing effects">Full-background smoke. Bass drives billowing, vocals drive cloud color, and treble lights cloud edges and soft internal lightning. Attacks in any band can trigger branching strikes. Drift follows estimated tempo. Strikes are at least 0.8 seconds apart. Contains flashes. Set all three sensitivity sliders to zero for no lightning, or turn off Animated backdrop.</SettingsNotice>}</SettingRow><SettingRow label={<>Wave frame rate</>} htmlFor="settings-field-10" description={<>Stored in this browser so each device can use an appropriate rendering load.</>}><Choice id="settings-field-10" value={playback.waveFrameRate} onChange={value => savePlayback({ ...playback, waveFrameRate: value as PlaybackPreferences["waveFrameRate"] })}><ChoiceItem value="30">30 FPS</ChoiceItem><ChoiceItem value="60">60 FPS</ChoiceItem><ChoiceItem value="uncapped">Uncapped</ChoiceItem></Choice></SettingRow><Toggle label="Animated backdrop" checked={playback.wavesEnabled} disabled={busy} onChange={() => savePlayback({ ...playback, wavesEnabled: !playback.wavesEnabled })} /><div><SettingRow label={<><b>Backdrop opacity</b><output className="font-normal tabular-nums">{Math.round(playback.backdropOpacity * 100)}%</output></>} htmlFor="settings-field-11"><RangeControl id="settings-field-11" aria-label="Backdrop opacity" min="0" max="1" step="0.05" value={playback.backdropOpacity} onChange={event => savePlayback({ ...playback, backdropOpacity: Number(event.target.value) })} /></SettingRow></div><div>{([['bassReactivity','Bass'],['vocalReactivity','Vocals'],['trebleReactivity','Treble']] as const).map(([key,label]) => <SettingRow key={key} label={<><b>{label}</b><output className="font-normal tabular-nums">{Math.round(playback[key] * 100)}%</output></>} htmlFor={`settings-${key}`}><RangeControl id={`settings-${key}`} disabled={!playback.wavesEnabled} min="0" max="2" step="0.05" value={playback[key]} onChange={event => savePlayback({ ...playback, [key]: Number(event.target.value) })} /></SettingRow>)}</div></section></section>}
+        {tab === "timezone" && <form onSubmit={saveTimezone}><SectionHeading title="Listening periods" /><SettingRow label={<>IANA timezone</>} htmlFor="settings-field-13" description="Use your local timezone for listening periods."><Choice id="settings-field-13" value={timezone} onChange={value => setTimezone(value)}>{!zones.includes(timezone) && <ChoiceItem value={timezone}>{timezone}</ChoiceItem>}{zones.map(zone => <ChoiceItem key={zone} value={zone}>{zone}</ChoiceItem>)}</Choice></SettingRow><div className={styles.actions}><Button loading={busy} disabled={!timezoneCanSave}>Save timezone</Button></div></form>}
+        {tab === "account" && <div className="space-y-5"><form onSubmit={saveProfile}><SectionHeading title="Profile details" /><SettingRow label={<>Email and username</>} htmlFor="settings-field-14" description="Your email is your fixed username."><Input id="settings-field-14" disabled value={settings?.profile.email || settings?.profile.username || ""} readOnly /></SettingRow><SettingRow label={<>Display name</>} htmlFor="settings-field-15" description="The name shown in your account menu."><Input id="settings-field-15" required value={displayName} onChange={event => setDisplayName(event.target.value)} /></SettingRow><div className={styles.actions}><Button loading={busy} disabled={!profileCanSave}>Save profile</Button></div></form></div>}
+        {tab === "oidc" && settings?.profile.is_admin && <div>{!oidc && <LoadingState label="Loading sign-in settings…" />}{oidc && <><SectionHeading title="Provider and provisioning" /><SettingRow label="Issuer"><span className="break-all">{oidc.issuer || "Not configured"}</span></SettingRow><SettingRow label="Verified email required">{oidc.require_verified_email ? "Yes" : "No"}</SettingRow><Toggle label="Automatically provision new OIDC users" checked={oidc.auto_provision} disabled={busy} onChange={() => updateOidc(() => api("/settings/oidc/policy", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ auto_provision: !oidc.auto_provision }) }), oidc.auto_provision ? "Automatic provisioning disabled" : "Automatic provisioning enabled")} /><form className={styles.group} onSubmit={addAllowedEmail}><SectionHeading title="Sign-in approvals" /><SettingRow label={<>Explicitly approve email</>} htmlFor="settings-field-16" description="Allow this email address to sign in using OIDC."><Input id="settings-field-16" type="email" required value={allowedEmail} onChange={event => setAllowedEmail(event.target.value)} placeholder="person@example.com" /></SettingRow><div className={styles.actions}><Button loading={busy} disabled={!allowedEmail.trim()}>Add user</Button></div></form>{oidc.allowed_emails.length > 0 && <section className={styles.group}><SectionHeading title="Approved emails" count={oidc.allowed_emails.length} />{oidc.allowed_emails.map(email => <article className={styles.identity} key={email}><span className={styles.identityText}>{email}</span><Button variant="outline" aria-label={`Remove approval for ${email}`} disabled={busy} onClick={() => updateOidc(() => api(`/settings/oidc/allowed-emails/${encodeURIComponent(email)}`, { method: "DELETE" }), "Approval removed")}>Remove</Button></article>)}</section>}<section className={styles.group}><SectionHeading title="Users" count={oidc.users.length} />{oidc.users.map(item => <article className={styles.identity} key={item.id}><div className={styles.identityText}><strong>{item.display_name}</strong><small>{item.email}</small></div><div className={styles.identityActions}><Button aria-label={`${item.is_admin ? "Remove administrator from" : "Make administrator:"} ${item.email}`} variant={item.is_admin ? "secondary" : "outline"} disabled={busy || item.email === settings.profile.email} onClick={() => updateOidc(() => api(`/settings/oidc/users/${item.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ is_admin: !item.is_admin }) }), item.is_admin ? "Administrator removed" : "Administrator granted")}>{item.is_admin ? "Admin" : "User"}</Button><Button aria-label={`${item.is_blocked ? "Unblock" : "Block"} ${item.email}`} variant={item.is_blocked ? "destructive" : "outline"} disabled={busy || item.email === settings.profile.email} onClick={() => updateOidc(() => api(`/settings/oidc/users/${item.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ is_blocked: !item.is_blocked }) }), item.is_blocked ? "User unblocked" : "User blocked")}>{item.is_blocked ? "Unblock" : "Block"}</Button></div></article>)}</section></>}</div>}
+        </>}</section>
+      </Pane>
+    </div>
   </AppShell>;
 }

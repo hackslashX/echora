@@ -1,4 +1,4 @@
-import SetupWizard from "@/components/SetupWizard";
+import SetupWizard from "@/components/onboarding/SetupWizard";
 
 export default function ConnectPage() {
   return <SetupWizard initialStep={0} />;

@@ -7,6 +7,7 @@ import { useEffect, useEffectEvent, useImperativeHandle, useRef, useState, type 
 import { RecordingAttempt } from "./recordingAttempt";
 import AudioVisualizer from "./AudioVisualizer";
 import { MAX_RECORDING_BYTES, MAX_RECORDING_SECONDS, recordingMessage, recordingTracks, recordingWarning, type RecordingJob, type RecordingTrack } from "./recordingSearch";
+import { Button } from "../ui/button";
 import styles from "./RecordingSearchButton.module.css";
 import activityStyles from "./SearchActivity.module.css";
 
@@ -175,11 +176,11 @@ export default function RecordingSearchButton({ onResults, onError, onStart, ref
     : phase === "permission" ? "Waiting for microphone permission"
     : phase === "uploading" ? "Uploading recording"
     : phase === "searching" ? message : "Record a playing song to search";
-  return <><span role="status" className={styles.srOnly}>{phase !== "idle" ? label : message}</span><button type="button" className={`${styles.trigger} ${phase === "recording" ? styles.recording : ""} ${busy ? activityStyles.active : ""}`}
+  return <><span role="status" className={styles.srOnly}>{phase !== "idle" ? label : message}</span><Button type="button" variant="outline" className={`${styles.trigger} ${phase === "recording" ? styles.recording : ""} ${busy ? activityStyles.active : ""}`}
     disabled={availability?.recognition_enabled !== true} aria-label={busy ? `Cancel: ${label}` : label} title={busy ? `Cancel: ${label}` : label}
     onClick={busy ? discard : phase === "recording" ? () => { if (recorder.current?.state === "recording") recorder.current.stop(); } : () => void start()}>
     {phase === "recording" && stream && <AudioVisualizer stream={stream} />}
     {phase === "recording" ? <Square aria-hidden="true" /> : busy ? <X aria-hidden="true" /> : <AudioLines aria-hidden="true" />}
-    <span>{phase === "recording" ? `Stop (${seconds}s)` : busy ? "Cancel" : "Recording"}</span>
-  </button></>;
+    <span>{phase === "recording" ? `Stop (${seconds}s)` : busy ? "Cancel" : "Identify song"}</span>
+  </Button></>;
 }

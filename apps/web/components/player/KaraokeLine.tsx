@@ -1,6 +1,6 @@
 "use client";
 
-import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useId, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { fragmentProgress, lyricWordIsRtl, type LyricFragment } from "./lyricWords";
 import styles from "./KaraokeLine.module.css";
 
@@ -14,6 +14,7 @@ export default function KaraokeLine({ fragments, now, active, highlightStyle }: 
   const root = useRef<HTMLSpanElement>(null);
   const base = useRef<HTMLSpanElement>(null);
   const [geometry, setGeometry] = useState<Geometry | null>(null);
+  const clipId = `karaoke-clip-${useId().replace(/[^\w-]/g, "")}`;
   const text = fragments.map(fragment => fragment.text).join("");
   useLayoutEffect(() => {
     const element = root.current;
@@ -68,15 +69,17 @@ export default function KaraokeLine({ fragments, now, active, highlightStyle }: 
         const x = edge + Math.sin(point / 12 * Math.PI * 2 + now / 320 + index * .8) * amplitude;
         return `L${x.toFixed(2)},${y.toFixed(2)}`;
       }).join(" ");
-      return `<path fill="white" d="M${side},${top} ${boundary} L${side},${bottom} Z"/>`;
+      return `M${side},${top} ${boundary} L${side},${bottom} Z`;
     });
-  }).join("") || "";
-  const mask = geometry && paths ? `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${geometry.width} ${geometry.height}">${paths}</svg>`)}")` : "none";
-  const paint: CSSProperties = { maskImage: mask, WebkitMaskImage: mask, visibility: paths ? "visible" : "hidden" };
+  }).filter(Boolean).join(" ");
+  // A live SVG clip path: updating one path each frame is far cheaper than
+  // re-encoding and decoding a mask image.
+  const paint: CSSProperties = { clipPath: paths ? `url(#${clipId})` : undefined, visibility: paths ? "visible" : "hidden" };
 
   return <span ref={root} dir="auto" className={styles.line}>
     <span ref={base}>{text}</span>
     <span className={styles.paint} aria-hidden="true" style={paint}>{text}</span>
+    <svg className={styles.clipDefs} aria-hidden="true" focusable="false"><clipPath id={clipId} clipPathUnits="userSpaceOnUse"><path d={paths} /></clipPath></svg>
     {active && geometry?.source === fragments && geometry.fragments.flatMap((boxes, index) => {
       const { syllable } = fragments[index];
       if (now < syllable.start_ms || now >= syllable.end_ms) return [];

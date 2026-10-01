@@ -5,7 +5,6 @@ import type { VisualFrame } from "./visualFeatures";
 import * as THREE from "three";
 import { useEffect, useRef } from "react";
 import { readPlaybackPreferences, type PlaybackPreferences } from "./playbackPreferences";
-import { compactLayoutEvent, readCompactLayoutPreference } from "../shell/layoutPreference";
 import styles from "./LightningFallVisualizer.module.css";
 
 const fragmentShader = `
@@ -131,7 +130,7 @@ export default function LightningFallVisualizer() {
     };
     const sync = () => {
       const next = !failed && preferences.wavesEnabled && preferences.backdropPreset === "lightningfall"
-        && !compact.matches && !readCompactLayoutPreference() && !reduced.matches && !document.hidden;
+        && !compact.matches && !reduced.matches && !document.hidden;
       canvas.style.display = next ? "block" : "none";
       if (next && !renderer) {
         try { renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false }); resize(); }
@@ -179,7 +178,7 @@ export default function LightningFallVisualizer() {
     const events: [string, EventListener][] = [
       ["echora:playback-preferences", receivePreferences], ["echora:visual-frame", receiveAudio],
       ["echora:track-palette", receivePalette], ["echora:playback-state", receiveState], ["echora:track-change", clear],
-      [compactLayoutEvent, sync], ["resize", resize],
+      ["resize", resize],
     ];
     events.forEach(([name, handler]) => window.addEventListener(name, handler));
     compact.addEventListener("change", sync); reduced.addEventListener("change", sync);

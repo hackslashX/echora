@@ -4,7 +4,6 @@ import type { VisualFrame } from "./visualFeatures";
 import * as THREE from "three";
 import { useEffect, useRef } from "react";
 import { readPlaybackPreferences, type PlaybackPreferences } from "./playbackPreferences";
-import { compactLayoutEvent, readCompactLayoutPreference } from "../shell/layoutPreference";
 import { CloudResponse } from "./cloudResponse";
 import { cloudFragmentShader } from "./cloudShader";
 import styles from "./CloudVisualizer.module.css";
@@ -66,7 +65,7 @@ export default function CloudVisualizer() {
     };
     const sync = () => {
       const next = !failed && preferences.wavesEnabled && preferences.backdropPreset === "clouds"
-        && !compact.matches && !readCompactLayoutPreference() && !reduced.matches && !document.hidden;
+        && !compact.matches && !reduced.matches && !document.hidden;
       canvas.style.display = next ? "block" : "none";
       if (next && !renderer) {
         try {
@@ -106,7 +105,7 @@ export default function CloudVisualizer() {
     const events: [string, EventListener][] = [
       ["echora:playback-preferences", receivePreferences], ["echora:visual-frame", receiveAudio],
       ["echora:track-palette", receivePalette], ["echora:playback-state", receiveState],
-      ["echora:track-change", reset], [compactLayoutEvent, sync], ["resize", resize],
+      ["echora:track-change", reset], ["resize", resize],
     ];
     events.forEach(([name, handler]) => window.addEventListener(name, handler));
     // Provider effects register after this sibling backdrop. Defer one turn so

@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { isActiveJob, jobRequest, type Job } from "./durableJobs";
+
+// One toast for the whole outage: updated while polling fails, dismissed when it recovers.
+const connectionToastId = "curation-jobs-connection";
 
 /** Discover scheduled/other-tab refreshes as well as tracking POST acknowledgements. */
 export function useCurationJobs(connectionId: string, reload: (signal: AbortSignal) => Promise<void>) {
@@ -31,14 +35,18 @@ export function useCurationJobs(connectionId: string, reload: (signal: AbortSign
             pending.current.delete(id);
           }
         }
-        if (!controller.signal.aborted) { setJobs(current); setError(""); }
+        if (!controller.signal.aborted) { setJobs(current); setError(""); toast.dismiss(connectionToastId); }
       } catch (reason) {
-        if (!controller.signal.aborted) setError(`Connection error: ${reason instanceof Error ? reason.message : "Could not refresh curations"}. Retrying…`);
+        if (!controller.signal.aborted) {
+          const detail = reason instanceof Error ? reason.message : "Could not refresh curations";
+          setError(`Connection error: ${detail}. Retrying…`);
+          toast.warning("Lost connection to curation jobs", { id: connectionToastId, description: `${detail}. Retrying…` });
+        }
       }
       if (!controller.signal.aborted) timer = setTimeout(poll, 1500);
     }
     void poll();
-    return () => { controller.abort(); clearTimeout(timer); };
+    return () => { controller.abort(); clearTimeout(timer); toast.dismiss(connectionToastId); };
   }, [connectionId]);
   return { jobs, error, track: (id?: string) => { if (id) pending.current.add(id); } };
 }

@@ -1,0 +1,18 @@
+.row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;min-width:0;color:var(--muted-foreground);border-bottom:1px solid var(--border);transition:background-color .14s}
+.row:last-child{border-bottom:0}
+.row:hover{background:var(--surface)}
+.active{background:var(--raised)}
+.active .identity strong{color:var(--accent)}
+.playTrack{display:grid;grid-template-columns:28px 44px minmax(0,1.6fr) minmax(0,1fr) 44px;align-items:center;gap:14px;padding:8px 10px;min-width:0;border:0;background:transparent;color:inherit;text-align:left}
+.playTrack:disabled{opacity:.5}
+.index{display:grid;place-items:center;font-size:12px;font-variant-numeric:tabular-nums;color:var(--subtle-foreground)}
+.row:hover .index,.active .index{color:var(--accent)}
+.art{width:44px;height:44px}
+.identity{display:flex;flex-direction:column;gap:2px;min-width:0}
+.identity strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600;color:var(--foreground)}
+.identity small,.album{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.detail{font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+.playTrack time{font-size:12px;text-align:right;font-variant-numeric:tabular-nums}
+.actions{padding-right:8px}
+.extra{grid-column:1 / -1;padding:0 12px 10px 108px;font-size:12px}
+@media(max-width:650px){.playTrack{grid-template-columns:20px 40px minmax(0,1fr) 38px;gap:10px;padding:8px 4px}.art{width:40px;height:40px}.album{display:none}.extra{padding-left:74px}}

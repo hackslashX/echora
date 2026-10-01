@@ -1,0 +1,12 @@
+.row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,360px);align-items:start;gap:12px 40px;padding:18px 0;border-bottom:1px solid var(--border)}
+.row>div{min-width:0}
+.label{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px;font-size:13px;font-weight:500;line-height:1.5;overflow-wrap:anywhere}
+.label>label{flex-wrap:wrap;font-size:inherit;line-height:inherit;font-weight:inherit}
+.label output{font-weight:400;color:var(--muted-foreground)}
+.description{margin-top:2px;font-size:12px;line-height:1.6;color:var(--muted-foreground);max-width:52ch;overflow-wrap:anywhere}
+.control{display:flex;flex-direction:column;align-items:flex-end;min-width:0;width:100%;font-size:13px;overflow-wrap:anywhere}
+.control>[data-slot=input],.control>[data-slot=select-trigger],.control>input[type=range]{width:100%}
+.control>[data-slot=alert]{align-self:stretch;margin-bottom:0}
+.control>small{display:block;margin-top:10px;font-size:12px;line-height:1.6;color:var(--muted-foreground)}
+@media(max-width:900px){.row{grid-template-columns:1fr;gap:12px}.control{align-items:stretch}.control>[data-slot=switch]{align-self:flex-start}}
+@media(max-width:767px){.control>[data-slot=input]{font-size:16px}}

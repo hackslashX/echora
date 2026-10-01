@@ -1,51 +1,46 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Disc3, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX } from "lucide-react";
+import { Maximize2, Minimize2, Pause, Play, SkipBack, SkipForward } from "lucide-react";
 import { sizedPlayerCoverArtUrl } from "../media/coverArt";
-import LoadingImage from "../media/LoadingImage";
-import { audioQualityLabel } from "../player/audioQuality";
+import { audioQualityLabel, audioQualityShortLabel } from "../player/audioQuality";
+import { FULLSCREEN_CLOSE_EVENT } from "../player/fullscreenEvents";
 import { usePlayer } from "../player/PlayerProvider";
-import styles from "./MusicWidget.module.css";
+import VolumeControl from "../player/VolumeControl";
 import WaveformSeek from "../player/WaveformSeek";
-
-const stamp = (seconds: number) => {
-  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
-  return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
-};
-
-function Marquee({ children, className }: { children: ReactNode; className: string }) {
-  const ref = useRef<HTMLSpanElement>(null);
-  const [overflowing, setOverflowing] = useState(false);
-
-  useEffect(() => {
-    const el = ref.current;
-    const parent = el?.parentElement;
-    const inner = el?.firstElementChild;
-    if (!el || !parent || !(inner instanceof HTMLElement)) return;
-    const update = () => setOverflowing(inner.offsetWidth > parent.clientWidth + 1);
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(parent);
-    observer.observe(inner);
-    if (document.fonts?.ready) document.fonts.ready.then(update).catch(() => {});
-    return () => observer.disconnect();
-  }, [children]);
-
-  return <span ref={ref} className={className} data-overflowing={overflowing || undefined}><span>{children}</span>{overflowing && <span aria-hidden="true">{children}</span>}</span>;
-}
+import Artwork from "../ui/Artwork";
+import { Button } from "../ui/button";
+import { Spinner } from "../ui/spinner";
+import { formatDuration } from "../ui/TrackRow";
 
 export default function MusicWidget() {
-  const { track, audioQuality, playing, buffering, currentTime, duration, muted, queue, queueIndex, previous, next, toggle, toggleMute, setExpanded } = usePlayer();
-  return <section className={styles.widget} aria-label="Music player">
-    <div className={styles.mobileSeek}><WaveformSeek compact /></div>
-    <button className={styles.art} type="button" onClick={() => track && setExpanded(true)} disabled={!track} aria-label="Open full screen player">{track?.coverUrl ? <LoadingImage sizes="54px" src={sizedPlayerCoverArtUrl(track.coverUrl, 108)} alt="" /> : <Disc3 />}</button>
-    <button className={styles.skip} type="button" onClick={previous} disabled={!track} aria-label="Previous track"><SkipBack /></button>
-    <button className={styles.play} type="button" onClick={toggle} disabled={!track} aria-label={playing ? "Pause" : "Play"}>{playing ? <Pause /> : <Play />}</button>
-    <button className={styles.skip} type="button" onClick={next} disabled={queueIndex < 0 || queueIndex >= queue.length - 1} aria-label="Next track"><SkipForward /></button>
-    <div className={styles.track}><button className={styles.identity} type="button" disabled={!track} onClick={() => setExpanded(true)} aria-label={track ? `Open player for ${track.title}` : "No track selected"}><strong><Marquee className={styles.titleMarquee}>{track?.title || "Nothing playing"}</Marquee></strong><small><Marquee className={styles.metaMarquee}>{buffering ? "Preparing audio stream" : track ? <>{track.artist || "Unknown artist"}{track.album ? ` · ${track.album}` : ""}<span className={styles.quality}>{audioQualityLabel(audioQuality)}</span></> : "Choose a track from Browse"}</Marquee></small></button>
-      <div className={styles.timeline}><time>{stamp(currentTime)}</time><WaveformSeek compact /><time>{stamp(duration)}</time></div>
+  const player = usePlayer();
+  const hasNext = player.queueIndex >= 0 && player.queueIndex < player.queue.length - 1;
+  const quality = player.track ? audioQualityShortLabel(player.audioQuality) : "";
+  // The fullscreen view owns its exit animation, so closing goes through it rather than straight to state.
+  const toggleExpanded = () => { if (player.expanded) window.dispatchEvent(new Event(FULLSCREEN_CLOSE_EVENT)); else player.setExpanded(true); };
+  return <section aria-label="Music player" className="grid h-full w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-4 md:grid-cols-[minmax(0,1fr)_minmax(0,min(820px,50%))_minmax(0,1fr)] md:gap-8 md:px-6">
+    <button type="button" disabled={!player.track} onClick={toggleExpanded} aria-expanded={player.expanded} className="flex min-w-0 items-center gap-3 text-left disabled:cursor-default" aria-label={!player.track ? "No track selected" : player.expanded ? "Close full screen player" : `Open player for ${player.track.title}`}>
+      <Artwork src={player.track?.coverUrl ? sizedPlayerCoverArtUrl(player.track.coverUrl, 112) : undefined} className="size-12 shrink-0 border border-border max-md:size-11" />
+      <span className="min-w-0">
+        <strong className="block truncate text-[13px] font-semibold">{player.track?.title || "Nothing playing"}</strong>
+        <span className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">{player.buffering ? <span>Preparing audio…</span> : player.track ? <><span className="truncate">{player.track.artist || "Unknown artist"}{player.track.album ? ` · ${player.track.album}` : ""}</span>{quality && <span className="shrink-0 border border-border-strong px-1.5 leading-[18px] font-medium max-lg:hidden" title={audioQualityLabel(player.audioQuality)}>{quality}</span>}</> : <span>Choose a track to begin</span>}</span>
+      </span>
+    </button>
+    <div className="flex min-w-0 items-center gap-4">
+      <div className="flex items-center gap-1">
+        <Button variant="ghost" size="icon-sm" className="max-sm:hidden" onClick={player.previous} disabled={!player.track} aria-label="Previous track"><SkipBack /></Button>
+        <Button size="icon" className="size-9" onClick={player.toggle} disabled={!player.track} aria-label={player.buffering ? "Loading audio" : player.playing ? "Pause" : "Play"} aria-busy={player.buffering || undefined}>{player.buffering ? <Spinner className="text-current" /> : player.playing ? <Pause fill="currentColor" /> : <Play fill="currentColor" />}</Button>
+        <Button variant="ghost" size="icon-sm" onClick={player.next} disabled={!hasNext} aria-label="Next track"><SkipForward /></Button>
+      </div>
+      <div className="hidden min-w-0 flex-1 items-center gap-2.5 md:flex">
+        <time className="w-9 text-right text-xs tabular-nums text-muted-foreground">{formatDuration(player.currentTime)}</time>
+        <div className="min-w-0 flex-1"><WaveformSeek compact /></div>
+        <time className="w-9 text-xs tabular-nums text-muted-foreground">{formatDuration(player.duration)}</time>
+      </div>
     </div>
-    <button className={styles.mute} type="button" onClick={toggleMute} disabled={!track} aria-label={muted ? "Unmute" : "Mute"}>{muted ? <VolumeX /> : <Volume2 />}</button>
+    <div className="hidden items-center justify-end gap-1 md:flex">
+      <VolumeControl />
+      <Button variant="ghost" size="icon" onClick={toggleExpanded} disabled={!player.track} aria-pressed={player.expanded} aria-label={player.expanded ? "Close full screen player" : "Open full screen player"}>{player.expanded ? <Minimize2 className="size-[18px]" /> : <Maximize2 className="size-[18px]" />}</Button>
+    </div>
   </section>;
 }

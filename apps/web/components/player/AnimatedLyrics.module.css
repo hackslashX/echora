@@ -1,9 +1,0 @@
-.stage button[data-line-id] {
-  animation: none;
-  transition: color .3s;
-  transform-origin: center center;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .stage button[data-line-id] { transition: none; }
-}
