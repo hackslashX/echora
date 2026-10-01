@@ -21,6 +21,38 @@
 .integrations{display:grid;gap:28px}.integrations>[data-card-header]{margin:0 -20px}.integrations form+form{padding-top:8px}.integrations h3{margin:0;font:500 var(--type-section)/.9 var(--ui-font);letter-spacing:-2.5px}
 @media(max-width:1199px),(max-height:719px){.integrations{gap:24px}.integrations>[data-card-header]{margin:0 -14px}.integrations h3{font-size:28px;letter-spacing:-1px}}
 
-.pluginSettings{display:grid;gap:20px}.pluginSettings>[data-card-header]{margin:0 -20px}.pluginSettings p{margin:0;color:var(--text-muted);font:var(--type-caption)/1.5 var(--ui-font)}.pluginFields{display:grid;gap:18px;margin:0;padding:0;border:0}.pluginFields input[type=range]{padding:0;accent-color:var(--aqua)}.pluginSetup,.generatedKey{display:grid;gap:12px;padding:16px;border:1px solid var(--glass-stroke)}.generatedKey{background:rgb(var(--accent-rgb)/.07)}.generatedKey strong{font:600 var(--type-body) var(--ui-font)}.generatedKey small{color:var(--text-muted)}.integrationKeys{list-style:none;margin:0;padding:0;border:1px solid var(--glass-stroke)}.integrationKeys li{display:flex;align-items:center;gap:16px;padding:14px;border-bottom:1px solid var(--line)}.integrationKeys li:last-child{border-bottom:0}.integrationKeys li>div{display:grid;gap:5px;flex:1;min-width:0}.integrationKeys strong{overflow-wrap:anywhere;font:600 var(--type-body) var(--ui-font)}.integrationKeys small{color:var(--text-muted);font:var(--type-caption)/1.5 var(--ui-font)}
-@media(max-width:1199px),(max-height:719px){.pluginSettings>[data-card-header]{margin:0 -14px}.integrationKeys li{flex-wrap:wrap}}
-.pluginSettings p.message{color:var(--status-success-text)}.pluginSettings p.error{color:var(--status-danger-text)}
+/* Plugin preferences and the nested API keys section. */
+.pluginSettings{width:min(100%,860px);min-width:0;display:grid;gap:12px}
+.pluginSettings>[data-card-header]{margin:0 -20px}
+.pluginSettings>[data-card-header] h3{font-size:28px;line-height:1.25;letter-spacing:-1px}
+.pluginSettings p{margin:0;color:var(--text-muted);font:var(--type-caption)/1.5 var(--ui-font)}
+.pluginSettings>form{display:grid;gap:16px}
+.pluginSettings>.switch,.pluginFields>.switch{margin-top:0}
+.pluginSettings>form>button{margin-top:0}
+.pluginFields{display:grid;gap:14px;min-width:0;margin:0;padding:0;border:0}
+.pluginFields input[type=range]{height:24px;padding:0;accent-color:var(--aqua)}
+.pluginFields label{min-width:0}
+.pluginFields small{color:var(--text-muted);font:var(--type-caption)/1.4 var(--ui-font)}
+.pluginKeys{min-width:0;border:1px solid var(--glass-stroke)}
+.pluginKeys>[data-card-header]{padding:12px 14px}
+.pluginKeys>[data-card-header] h3,.pluginKeys>[data-card-header]>strong{font-size:20px;line-height:1.25;letter-spacing:-.5px}
+.pluginKeys>[data-card-header] svg{width:24px;height:24px}
+.pluginKeyBody{display:grid;gap:14px;padding:14px}
+.pluginKeyControls{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
+.pluginSetup{display:grid;gap:8px}
+.generatedKey{display:grid;gap:10px;padding:12px;border:1px solid var(--glass-stroke);background:rgb(var(--accent-rgb)/.07)}
+.generatedKey strong{font:600 var(--type-body) var(--ui-font)}
+.generatedKey small{color:var(--text-muted)}
+.generatedKey .formActions{margin:0}
+.generatedKey .formActions button{margin-top:0}
+.pluginFields>.primaryAction{justify-self:start}
+.integrationKeys{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.integrationKeys li{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
+.integrationKeys li:last-child{border-bottom:0;padding-bottom:0}
+.integrationKeys li>div{display:grid;gap:4px;flex:1;min-width:0}
+.integrationKeys strong{overflow-wrap:anywhere;font:600 var(--type-body) var(--ui-font)}
+.integrationKeys small{overflow-wrap:anywhere;color:var(--text-muted);font:var(--type-caption)/1.4 var(--ui-font)}
+.pluginSettings p.message{color:var(--status-success-text)}
+.pluginSettings p.error{color:var(--status-danger-text)}
+@media(max-width:1199px),(max-height:719px){.pluginSettings>[data-card-header]{margin:0 -14px}.pluginSettings>[data-card-header] h3{font-size:24px}.integrationKeys li{flex-wrap:wrap}}
+@media(max-width:599px){.pluginKeyControls{grid-template-columns:1fr}.pluginFields>.primaryAction{width:100%;justify-self:stretch}}

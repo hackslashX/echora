@@ -109,6 +109,16 @@ clients determine display support: ordinary text remains available through nativ
 lyrics APIs, while syllable highlighting and explicit translation tracks require
 compatible versions/clients. The legacy `getLyrics` endpoint selects main lyrics.
 
+## Deferred sync feedback guard
+
+If Echora refreshes lyrics through Navidrome with this plugin first in
+`LyricsPriority`, it can receive its own exported lyrics. There is no recursive
+analysis: the plugin reads saved data only. However, reimporting that output can
+replace transcription provenance or richer timing metadata. A guard to recognize
+self-exported lyrics and preserve the original data is deferred. Until that guard
+is implemented, put the plugin after the desired original sources or temporarily
+disable plugin lyrics while running Echora lyric retrieval/refresh.
+
 ## API contracts
 
 All routes are POST under `/analysis/integrations/navidrome/v1` through Echora's
