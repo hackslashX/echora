@@ -49,7 +49,8 @@ key to rotate it. Removing the owning account/connection removes its credentials
 2. Connect the intended Navidrome server in Echora Settings → Integrations,
    enable Echora Navidrome plugin access, and copy the generated key and Plugin
    API URL. That URL must be reachable from Navidrome, including its container.
-3. Build `dist/echora.ndp` using the instructions below, copy it into Navidrome's
+3. Download the `.ndp` from a `navidrome-plugin-vX.Y.Z` GitHub release (or build
+   `dist/echora.ndp` using the instructions below), copy it into Navidrome's
    plugins folder (normally `<DataFolder>/plugins`), rescan, and enable Echora.
 4. Set plugin `apiUrl` to the copied URL, such as
    `https://echora.example/analysis/integrations/navidrome/v1`, and `apiKey` to the
@@ -164,6 +165,24 @@ the SDK are tolerated; numeric limits are validated.
 `/keys/{id}`; it requires the normal Echora user session.
 
 ## Build and validation
+
+### Plugin releases
+
+The plugin has independent `X.Y.Z` versioning in `manifest.json`. Run the
+**Release Navidrome plugin** GitHub Actions workflow from `main` and select
+`patch`, `minor`, or `major`. For example, `0.1.0` becomes `0.1.1`, `0.2.0`, or
+`1.0.0`, respectively. The action tests the adapter and Navidrome contracts,
+builds the WASM module, and validates the `.ndp` archive before committing the
+manifest version and pushing a `navidrome-plugin-vX.Y.Z` tag. It attaches
+`echora-navidrome-X.Y.Z.ndp` and its `.sha256` checksum to a draft release, then
+publishes it. Build artifacts are also retained on the workflow run.
+
+This workflow does not change the Echora application version, build Docker
+images, or replace the application's latest release. Generated files remain
+ignored by Git. If publishing fails after the tag is pushed, the successful
+build's workflow artifacts can be attached to that tag's release manually.
+
+### Local builds
 
 Go 1.25+ and TinyGo 0.42.0 are needed for the plugin; parser contract tests require
 Go 1.27 because the pinned Navidrome source does. Python 3 is used for packaging.
