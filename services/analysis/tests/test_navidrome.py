@@ -76,13 +76,22 @@ def test_lyrics_selects_main_and_preserves_all_structured_tracks():
     client = object.__new__(NavidromeClient)
     translation = {"kind": "translation", "lang": "es", "line": [{"value": "Hola"}]}
     main = {"kind": "main", "lang": "en", "synced": True,
-            "line": [{"value": "Hello", "start": 1000, "end": 2000,
-                      "cue": [{"value": "Hello", "start": 1000, "end": 2000}]}]}
-    client._request = lambda *a, **k: {"lyricsList": {"structuredLyrics": [translation, main]}}
+            "line": [{"value": "Hello", "start": 1000}],
+            "cueLine": [{"index": 0, "value": "Hello", "start": 1000, "end": 2000,
+                         "cue": [{"value": "Hello", "start": 1000, "end": 2000,
+                                  "byteStart": 0, "byteEnd": 4}]}]}
+    calls = []
+    def request(method, **params):
+        calls.append((method, params))
+        # Exercise Navidrome's opt-in: only enhanced requests include these layers.
+        entries = [translation, main] if params.get("enhanced") else [{"lang": "en", "line": main["line"]}]
+        return {"lyricsList": {"structuredLyrics": entries}}
+    client._request = request
     result = client.lyrics("song")
     assert result["text"] == "Hello"
     assert result["language"] == "en"
     assert result["structured_lyrics"] == [translation, main]
+    assert calls == [("getLyricsBySongId", {"id": "song", "enhanced": True})]
 
 
 def test_translation_only_response_does_not_become_original_main_lyrics():

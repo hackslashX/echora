@@ -146,7 +146,8 @@ class NavidromeClient:
 
     def lyrics(self, song_id: str) -> dict[str, object]:
         try:
-            payload = self._request("getLyricsBySongId", id=song_id)
+            # Navidrome omits translation layers and syllable cues unless opted in.
+            payload = self._request("getLyricsBySongId", id=song_id, enhanced=True)
             entries = payload.get("lyricsList", {}).get("structuredLyrics", [])
             if entries:
                 entry = next((item for item in entries if item.get("kind", "main") in ("main", "")), None)
