@@ -7,7 +7,6 @@ if (!["major", "minor", "patch"].includes(increment)) {
 
 const packagePath = "apps/web/package.json";
 const lockPath = "package-lock.json";
-const footerPath = "apps/web/components/shell/CopyrightFooter.tsx";
 const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
 const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(packageJson.version);
 
@@ -29,20 +28,14 @@ if (increment === "major") {
 
 const version = `${major}.${minor}.${patch}`;
 packageJson.version = version;
-await writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
-
 const packageLock = JSON.parse(await readFile(lockPath, "utf8"));
 const workspace = packageLock.packages?.["apps/web"];
 if (!workspace) {
   throw new Error("apps/web is missing from package-lock.json");
 }
 workspace.version = version;
+// The UI imports the package version directly; no component source needs updating.
+await writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
 await writeFile(lockPath, `${JSON.stringify(packageLock, null, 2)}\n`);
-
-const footer = await readFile(footerPath, "utf8");
-if (!/OSS v\d+\.\d+\.\d+/.test(footer)) {
-  throw new Error("Could not find the version identifier in CopyrightFooter.tsx");
-}
-await writeFile(footerPath, footer.replace(/OSS v\d+\.\d+\.\d+/, `OSS v${version}`));
 
 process.stdout.write(version);
