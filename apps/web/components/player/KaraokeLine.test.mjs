@@ -18,7 +18,7 @@ const { code: compiled } = await transform(readFileSync(new URL('./KaraokeLine.t
 const compiledModule = { exports: {} };
 new Function('require', 'module', 'exports', compiled)(id => {
   if (id === './lyricWords') return lyrics;
-  if (id === './KaraokeLine.module.css') return { line: 'line', paint: 'paint', glowTarget: 'glowTarget' };
+  if (id === './KaraokeLine.module.css') return { line: 'line', paint: 'paint', glowTarget: 'glowTarget', clipDefs: 'clipDefs' };
   return require(id);
 }, compiledModule, compiledModule.exports);
 const KaraokeLine = compiledModule.exports.default;

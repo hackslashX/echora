@@ -10,20 +10,28 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "lucide-react": "^1.33.0",
     "next": "16.3.2",
+    "radix-ui": "^1.6.7",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "sonner": "^2.0.8",
+    "tailwind-merge": "^3.7.0",
     "three": "^0.186.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "26.2.0",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
     "@types/three": "^0.185.4",
     "eslint": "9.39.1",
     "eslint-config-next": "16.3.2",
+    "tailwindcss": "^4.3.3",
+    "tailwindcss-animate": "^1.0.7",
     "typescript": "7.0.2"
   }
 }

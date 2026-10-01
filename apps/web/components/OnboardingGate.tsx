@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { Spinner } from "./ui/spinner";
 
 export default function OnboardingGate() {
   useEffect(() => {
@@ -13,5 +14,5 @@ export default function OnboardingGate() {
     }).catch(() => window.location.replace("/login"));
   }, []);
 
-  return <main className="route-loading">ECHORA</main>;
+  return <main className="route-loading"><div className="flex flex-col items-center gap-4"><span>ECHORA</span><Spinner className="size-5 text-primary" label="Loading Echora" /></div></main>;
 }

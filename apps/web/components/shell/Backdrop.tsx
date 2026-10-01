@@ -19,7 +19,6 @@ import LightningFallVisualizer from "../player/LightningFallVisualizer";
 import WaterDropVisualizer from "../player/WaterDropVisualizer";
 import styles from "./Backdrop.module.css";
 import { advanceWaveSpring } from "./waveSpring";
-import { readCompactLayoutPreference } from "./layoutPreference";
 
 type RenderLayer = { render: (time: number) => void };
 type Color = [number, number, number];
@@ -210,7 +209,7 @@ export default function Backdrop() {
   useEffect(() => {
     const apply = (preferences: PlaybackPreferences) => {
       const value = preferences.backdropOpacity;
-      const opacity = typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
+      const opacity = typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.5;
       backdropRef.current?.style.setProperty("--backdrop-opacity", String(opacity));
     };
     apply(readPlaybackPreferences());
@@ -222,7 +221,7 @@ export default function Backdrop() {
   const sceneRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    if (readCompactLayoutPreference() || window.matchMedia("(max-width: 1199px), (max-height: 719px)").matches) return;
+    if (window.matchMedia("(max-width: 1199px), (max-height: 719px)").matches) return;
     const maybeGlCanvas = glRef.current;
     const maybeSceneCanvas = sceneRef.current;
     if (!maybeGlCanvas || !maybeSceneCanvas) return;

@@ -26,25 +26,25 @@ test('component panels use shared surfaces instead of fixed dark colors', () => 
   }
 });
 
-test('full-page layers stay translucent so the backdrop remains visible', () => {
-  const shell = readFileSync(join(components, 'shell/AppShell.module.css'), 'utf8');
-  const login = readFileSync(join(components, 'Login.module.css'), 'utf8');
+test('the fullscreen player stays translucent so the backdrop remains visible', () => {
+  const player = readFileSync(join(components, 'player/FullscreenPlayer.module.css'), 'utf8');
   const tokens = readFileSync(new URL('./theme.css', import.meta.url), 'utf8');
-  assert.match(shell, /\.frame\{[^}]*background:var\(--surface-shell\)/);
-  assert.match(login, /\.page\{[^}]*background:var\(--surface-shell\)/);
+  const surface = player.match(/\.player\[data-slot="dialog-content"\] \{([^}]*)\}/)?.[1] ?? '';
+  assert.match(surface, /background: linear-gradient\(/);
+  for (const stop of surface.matchAll(/rgb\(0 0 0 \/ ([\d.]+)\)/g)) assert.ok(Number(stop[1]) < 1, 'scrim stops must stay see-through');
   assert.match(tokens, /--surface-shell:\s*rgb\(var\(--surface-rgb\)\s*\/\s*\.14\)/);
 });
 
-test('card headers do not mix bright artwork accents into their backgrounds', () => {
-  const header = readFileSync(join(components, 'ui/CardHeader.module.css'), 'utf8');
-  assert.match(header, /background: var\(--surface-raised\)/);
-  assert.doesNotMatch(header, /background:\s*color-mix/);
-});
-
-test('success messages do not use the changing artwork accent as status text', () => {
-  for (const name of ['settings/SettingsView.module.css', 'settings/ExternalAISettings.module.css']) {
-    const source = readFileSync(join(components, name), 'utf8');
-    assert.match(source, /background:\s*var\(--status-success-surface\);\s*color:\s*var\(--status-success-text\)/);
+// The app accent follows the playing artwork, so status colours must never use it.
+test('status notices and toasts use fixed colours, not the artwork accent', () => {
+  const notice = readFileSync(join(components, 'ui/notice.tsx'), 'utf8');
+  const toaster = readFileSync(join(components, 'ui/sonner.tsx'), 'utf8');
+  for (const [tone, token] of [['success', 'success'], ['warning', 'warning'], ['error', 'destructive']]) {
+    const noticeTone = notice.match(new RegExp(`${tone}: \\{ Icon: \\w+, className: "([^"]*)"`))?.[1] ?? '';
+    assert.match(noticeTone, new RegExp(`border-${token}`), `${tone} notice border`);
+    assert.doesNotMatch(noticeTone, /primary|accent/, `${tone} notice uses the accent`);
+    assert.match(toaster, new RegExp(`${tone}: <\\w+ className="[^"]*text-${token}`), `${tone} toast icon`);
+    assert.match(toaster, new RegExp(`${tone}: "[^"]*border-l-${token}`), `${tone} toast edge`);
   }
 });
 

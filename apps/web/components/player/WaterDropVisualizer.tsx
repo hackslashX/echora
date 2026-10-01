@@ -2,7 +2,6 @@
 
 import * as THREE from "three";
 import { useEffect, useRef } from "react";
-import { compactLayoutEvent, readCompactLayoutPreference } from "../shell/layoutPreference";
 import { readPlaybackPreferences, type PlaybackPreferences } from "./playbackPreferences";
 import { neutralVisualFrame, type VisualFrame } from "./visualFeatures";
 import type { TrackPalette } from "./artworkPalette";
@@ -140,7 +139,7 @@ export default function WaterDropVisualizer() {
     };
     const sync = () => {
       const next = !failed && preferences.wavesEnabled && preferences.backdropPreset === "waterdrops"
-        && !compact.matches && !readCompactLayoutPreference() && !reduced.matches && !document.hidden;
+        && !compact.matches && !reduced.matches && !document.hidden;
       canvas.style.display = next ? "block" : "none";
       if (next && !renderer) {
         try { renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false }); renderer.setClearColor(0x020408); resize(); }
@@ -172,7 +171,7 @@ export default function WaterDropVisualizer() {
     const receivePreferences = (event: Event) => { preferences = (event as CustomEvent<PlaybackPreferences>).detail; sync(); };
     const events: [string, EventListener][] = [
       ["echora:visual-frame", receiveAudio], ["echora:track-palette", receivePalette], ["echora:playback-state", receiveState],
-      ["echora:track-change", clear], ["echora:playback-preferences", receivePreferences], [compactLayoutEvent, sync], ["resize", resize],
+      ["echora:track-change", clear], ["echora:playback-preferences", receivePreferences], ["resize", resize],
     ];
     events.forEach(([name, handler]) => window.addEventListener(name, handler));
     reduced.addEventListener("change", sync); compact.addEventListener("change", sync);

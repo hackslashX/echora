@@ -1,6 +1,10 @@
 "use client";
 
-import { PointerEvent, useRef } from "react";
+import { Button } from "../ui/button";
+import { Switch } from "../ui/switch";
+import { Label } from "../ui/label";
+import Range from "./Range";
+import { useId } from "react";
 import styles from "./SoundProfile.module.css";
 
 export const SOUND_PROFILE_AXES = [
@@ -20,40 +24,37 @@ export const SOUND_PROFILE_PRESETS: SoundProfilePreset[] = [
   { name: "High vocals", values: { pace: .5, energy: .52, brightness: .48, motion: .42, vocals: .9, dynamics: .55 } },
 ];
 
-const center = 130;
-const radius = 84;
-const angle = (index: number) => -Math.PI / 2 + index * Math.PI * 2 / SOUND_PROFILE_AXES.length;
-const point = (index: number, value: number) => [center + Math.cos(angle(index)) * radius * value, center + Math.sin(angle(index)) * radius * value] as const;
-
 export default function SoundProfile({ value, onChange, instrumentalOnly, onInstrumentalOnlyChange }: { value: SoundProfileValues; onChange: (value: SoundProfileValues) => void; instrumentalOnly: boolean; onInstrumentalOnlyChange: (value: boolean) => void }) {
-  const svg = useRef<SVGSVGElement>(null);
-  const values = SOUND_PROFILE_AXES.map(([key]) => value[key] ?? .5);
-  const polygon = values.map((axisValue, index) => point(index, axisValue).join(",")).join(" ");
-  const setAxis = (index: number, next: number) => {
-    const base = Object.keys(value).length ? value : Object.fromEntries(SOUND_PROFILE_AXES.map(([key]) => [key, .5])) as SoundProfileValues;
-    onChange({ ...base, [SOUND_PROFILE_AXES[index][0]]: Math.round(Math.max(0, Math.min(1, next)) * 100) / 100 });
+  const id = useId();
+  function setAxis(key: (typeof SOUND_PROFILE_AXES)[number][0], next: number) {
+    const base = Object.keys(value).length ? value : Object.fromEntries(SOUND_PROFILE_AXES.map(([axis]) => [axis, .5]));
+    onChange({ ...base, [key]: next / 100 });
+  }
+  const active = Object.keys(value).length > 0;
+  const point = (index: number, level: number) => {
+    const angle = -Math.PI / 2 + index * Math.PI / 3;
+    return [180 + Math.cos(angle) * 106 * level, 160 + Math.sin(angle) * 106 * level];
   };
-  const drag = (event: PointerEvent<SVGSVGElement>, index: number) => {
-    const bounds = svg.current?.getBoundingClientRect();
-    if (!bounds) return;
-    const x = (event.clientX - bounds.left) / bounds.width * 260;
-    const y = (event.clientY - bounds.top) / bounds.height * 260;
-    const projected = ((x - center) * Math.cos(angle(index)) + (y - center) * Math.sin(angle(index))) / radius;
-    setAxis(index, projected);
-  };
-  return <section className={styles.profile} aria-labelledby="sound-profile-title">
-    <header><div><strong id="sound-profile-title">Sound shape</strong><small>Drag each point toward the sound you want. Values are relative to your library.</small></div><button type="button" onClick={() => { onChange({}); onInstrumentalOnlyChange(false); }}>Reset</button></header>
-    <div className={styles.chartWrap}>
-      <svg ref={svg} className={styles.chart} viewBox="0 0 260 260" role="img" aria-label="Six-axis sound profile: pace, energy, brightness, motion, vocals, and dynamics">
-        {[.25, .5, .75, 1].map(level => <polygon key={level} className={styles.ring} points={SOUND_PROFILE_AXES.map((_, index) => point(index, level).join(",")).join(" ")} />)}
-        {SOUND_PROFILE_AXES.map((_, index) => { const [x, y] = point(index, 1); return <line key={index} x1={center} y1={center} x2={x} y2={y} className={styles.spoke} />; })}
-        <polygon className={styles.shape} points={polygon} />
-        {values.map((axisValue, index) => { const [x, y] = point(index, axisValue); return <circle key={index} className={styles.handle} cx={x} cy={y} r="8" data-axis={index} onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); drag(event as unknown as PointerEvent<SVGSVGElement>, index); }} onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) drag(event as unknown as PointerEvent<SVGSVGElement>, index); }} />; })}
-      </svg>
-      {SOUND_PROFILE_AXES.map(([key, label], index) => { const [x, y] = point(index, 1.18); return <span key={key} className={styles.axisLabel} style={{ left: `${x / 2.6}%`, top: `${y / 2.6}%` }}>{label}</span>; })}
+  const points = (level: number) => SOUND_PROFILE_AXES.map((_, index) => point(index, level).join(",")).join(" ");
+  return <div className={`${styles.container} grid gap-6`}><div className="flex flex-wrap items-center gap-2"><span className="mr-1 text-xs text-muted-foreground">Presets</span>{SOUND_PROFILE_PRESETS.map(preset => <Button type="button" variant="outline" size="sm" key={preset.name} onClick={() => onChange(preset.values)}>{preset.name}</Button>)}<Button type="button" variant="ghost" size="sm" onClick={() => { onChange({}); onInstrumentalOnlyChange(false); }}>Reset</Button></div>
+    <div className={styles.shapeLayout}>
+      <figure className={styles.figure}>
+        <svg className={styles.chart} viewBox="0 0 360 320" role="img" aria-labelledby={`${id}-title ${id}-description`}>
+          <title id={`${id}-title`}>Six-axis sound profile</title>
+          <desc id={`${id}-description`}>{active ? SOUND_PROFILE_AXES.map(([key, label]) => `${label}: ${value[key] == null ? "unset" : Math.round(value[key]! * 100) + "%"}`).join("; ") : "No sound shape applied. The neutral outline is a guide, not an active filter."} Adjust the labelled sliders to shape your sound.</desc>
+          {[.25, .5, .75, 1].map(level => <polygon key={level} className={styles.ring} points={points(level)} />)}
+          {SOUND_PROFILE_AXES.map(([key], index) => { const [x, y] = point(index, 1); return <line key={key} x1="180" y1="160" x2={x} y2={y} className={styles.spoke} />; })}
+          <polygon className={active ? styles.shape : styles.neutral} points={SOUND_PROFILE_AXES.map(([key], index) => point(index, value[key] ?? .5).join(",")).join(" ")} />
+          {SOUND_PROFILE_AXES.map(([key, label], index) => {
+            const [x, y] = point(index, value[key] ?? .5);
+            const [labelX, labelY] = point(index, 1.28);
+            return <g key={key}><circle cx={x} cy={y} r="4" className={styles.point} /><text x={labelX} y={labelY} textAnchor="middle" dominantBaseline="middle" className={styles.label}>{label}<tspan x={labelX} dy="16">{value[key] == null ? "Unset" : `${Math.round(value[key]! * 100)}%`}</tspan></text></g>;
+          })}
+        </svg>
+        <figcaption className="text-center text-sm text-muted-foreground">{active ? "Targets relative to your library" : "No sound shape applied · adjust a slider or choose a preset"}</figcaption>
+      </figure>
+      <div className="grid gap-3">{SOUND_PROFILE_AXES.map(([key, label]) => <Range key={key} label={label} value={Math.round((value[key] ?? .5) * 100)} onChange={next => setAxis(key, next)} step={1} unset={value[key] == null} detail={value[key] == null ? "Unset" : `${Math.round(value[key]! * 100)}%`} />)}</div>
     </div>
-    <div className={styles.axisControls}>{SOUND_PROFILE_AXES.map(([key, label], index) => <label key={key}><span>{label}</span><input type="range" min="0" max="100" value={Math.round(values[index] * 100)} onChange={event => setAxis(index, Number(event.target.value) / 100)} /><output>{Math.round(values[index] * 100)}</output></label>)}</div>
-    <div className={styles.presets} aria-label="Sound shape presets">{SOUND_PROFILE_PRESETS.map(preset => <button type="button" key={preset.name} onClick={() => onChange(preset.values)}>{preset.name}</button>)}</div>
-    <div className={styles.instrumentalOnly}><div><strong>Instrumental only</strong><small>Require tracks classified as instrumental. Use Low vocals when you want songs with softer or less prominent vocals.</small></div><button type="button" aria-pressed={instrumentalOnly} onClick={() => onInstrumentalOnlyChange(!instrumentalOnly)}>{instrumentalOnly ? "ON" : "OFF"}</button></div>
-  </section>;
+    <div className="flex items-start gap-3"><Switch id={id} checked={instrumentalOnly} onCheckedChange={onInstrumentalOnlyChange} /><div><Label htmlFor={id}>Instrumental only</Label><p className="mt-1 text-sm text-muted-foreground">Require instrumental tracks. Low vocals allows softer singing.</p></div></div>
+  </div>;
 }

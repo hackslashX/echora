@@ -10,10 +10,11 @@ export default function TransitionLink({ href, children, onClick, ...props }: Pr
   function navigate(event: MouseEvent<HTMLAnchorElement>) {
     onClick?.(event);
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (props.target && props.target !== "_self" || props.download != null) return;
     event.preventDefault();
-    window.dispatchEvent(new Event("echora:navigation-leave"));
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    window.setTimeout(() => router.push(href), reduced ? 0 : 280);
+    const destination = new URL(href, window.location.href);
+    if (destination.href === window.location.href) return;
+    router.push(href);
   }
   return <a href={href} onClick={navigate} {...props}>{children}</a>;
 }

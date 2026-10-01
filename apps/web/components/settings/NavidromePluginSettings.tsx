@@ -1,9 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { KeyRound, Plug } from "lucide-react";
-import CardHeader from "../ui/CardHeader";
-import styles from "./SettingsView.module.css";
+import { Copy } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Badge } from "../ui/badge";
+import { Notice } from "../ui/notice";
+import { SectionHeading, Choice, ChoiceItem, Toggle } from "./Presentation";
+import { SettingRow } from "./SettingRow";
+import { RangeControl } from "./RangeControl";
 
 type Key = { id: string; label: string; prefix: string; expires_at: string; last_used_at: string | null; status: "active" | "expired" | "revoked" };
 type Profile = {
@@ -33,8 +39,7 @@ export default function NavidromePluginSettings({ connectionId }: { connectionId
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [lyricsPaused, setLyricsPaused] = useState(false);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
+  const [loadError, setLoadError] = useState("");
 
   async function load(refreshProfile = true) {
     const { keys: storedKeys, lyrics_paused, ...storedProfile } = await request<Settings>("");
@@ -50,7 +55,7 @@ export default function NavidromePluginSettings({ connectionId }: { connectionId
       setProfile(storedProfile); setKeys(storedKeys); setLoaded(true);
       setLyricsPaused(lyrics_paused);
       setApiUrl(`${window.location.origin}/analysis/integrations/navidrome/v1`);
-    }).catch(reason => { if (!cancelled) setError(reason.message); });
+    }).catch(reason => { if (!cancelled) setLoadError(reason.message); });
     return () => { cancelled = true; };
   }, []);
   useEffect(() => {
@@ -67,64 +72,71 @@ export default function NavidromePluginSettings({ connectionId }: { connectionId
   }, []);
 
   async function run(action: () => Promise<void>) {
-    setBusy(true); setError(""); setMessage("");
+    setBusy(true);
     try { await action(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update integration"); }
+    catch (reason) { toast.error("Could not update the plugin", { description: reason instanceof Error ? reason.message : undefined }); }
     finally { setBusy(false); }
   }
   function save(enabled = profile.enabled) {
     return run(async () => {
       const result = await request<{ generated_key: GeneratedKey | null }>("", "PUT", { ...profile, enabled, connection_id: connectionId });
       if (result.generated_key) setGenerated(result.generated_key);
-      await load(); setMessage(enabled ? "Plugin settings saved" : "Plugin integration disabled");
+      await load(); toast.success(enabled ? "Plugin settings saved" : "Plugin integration disabled");
     });
   }
   function update<K extends keyof Profile>(key: K, value: Profile[K]) { setProfile(current => ({ ...current, [key]: value })); }
   const disabled = busy || !loaded;
+  const lyricsOff = !profile.serve_lyrics || lyricsPaused;
+  const activeKeys = keys.filter(key => key.status === "active").length;
+  const keyExpiryValid = Number.isInteger(profile.key_expiry_days) && profile.key_expiry_days >= 1 && profile.key_expiry_days <= 3650;
+  async function copyKey(secret: string) { await navigator.clipboard.writeText(secret); toast.success("API key copied"); }
+  async function generateKey() { const next = await request<GeneratedKey>("/keys", "POST", { label, expiry_days: profile.key_expiry_days }); setGenerated(next); await load(false); toast.success("API key generated"); }
+  async function revokeKey(id: string) { await request(`/keys/${id}`, "DELETE"); await load(false); toast.success("API key revoked"); }
 
-  return <section className={styles.pluginSettings}>
-    <CardHeader as="h3" icon={<Plug />} title="Echora Navidrome plugin" description="Sonic discovery and enriched lyrics using this Echora account’s library and preferences." />
-    <button type="button" className={styles.switch} role="switch" aria-checked={profile.enabled} disabled={disabled || (!connectionId && !profile.enabled)} onClick={() => save(!profile.enabled)}><span>Enable Navidrome plugin access</span><b>{profile.enabled ? "ON" : "OFF"}</b></button>
-    <p className={styles.layoutHelp}>Connect Navidrome above, then enable this integration to generate your first key. Everyone using the key in Navidrome receives this account’s results.</p>
-    {profile.connection_id && connectionId !== profile.connection_id && <p className={styles.error}>The connected server has changed. Saving these settings binds the integration to the current connection and revokes its old keys.</p>}
-    <form onSubmit={event => { event.preventDefault(); save(); }}>
-      <fieldset disabled={disabled} className={styles.pluginFields}>
-        <label className={styles.selectPreference}><span>Musical / lyrical balance</span><input aria-label="Musical match percentage" type="range" min="0" max="100" step="1" value={profile.musical_weight} onChange={event => update("musical_weight", Number(event.target.value))} /><small>{profile.musical_weight}% musical · {100 - profile.musical_weight}% lyrical</small></label>
-        <label className={styles.selectPreference}><span>Musical evidence balance</span><input aria-label="Musical semantics percentage" type="range" min="0" max="100" step="1" value={profile.musical_semantic_weight} onChange={event => update("musical_semantic_weight", Number(event.target.value))} /><small>{profile.musical_semantic_weight}% musical character · {100 - profile.musical_semantic_weight}% acoustic detail</small></label>
-        <label className={styles.selectPreference}><span>Missing lyrical analysis</span><select value={profile.missing_lyrics} onChange={event => update("missing_lyrics", event.target.value as Profile["missing_lyrics"])}><option value="audio">Use musical evidence only</option><option value="exclude">Exclude tracks without lyrical analysis</option></select></label>
-        <label className={styles.selectPreference}><span>Maximum tracks per artist</span><input type="number" min="1" max="20" required value={profile.max_per_artist} onChange={event => update("max_per_artist", Number(event.target.value))} /></label>
-        <button type="button" className={styles.switch} role="switch" aria-checked={profile.serve_lyrics && !lyricsPaused} disabled={lyricsPaused} onClick={() => update("serve_lyrics", !profile.serve_lyrics)}><span>Provide Echora lyrics</span><b>{lyricsPaused ? "PAUSED" : profile.serve_lyrics ? "ON" : "OFF"}</b></button>
-        {lyricsPaused && <p role="status">Lyrics are temporarily paused while sync or lyrics jobs are active. Navidrome uses its next configured source. {profile.serve_lyrics ? "Echora lyrics resume automatically when all jobs finish." : "Your saved preference is off and will remain off."}</p>}
-        <button type="button" className={styles.switch} role="switch" aria-checked={profile.include_translations} disabled={!profile.serve_lyrics || lyricsPaused} onClick={() => update("include_translations", !profile.include_translations)}><span>Include available translations</span><b>{profile.include_translations ? "ON" : "OFF"}</b></button>
-        <label className={styles.selectPreference}><span>Lyrics format</span><select disabled={!profile.serve_lyrics || lyricsPaused} value={profile.lyrics_format} onChange={event => update("lyrics_format", event.target.value as Profile["lyrics_format"])}><option value="ttml">Enhanced timing and translation tracks (TTML)</option><option value="lrc">Line timing and language variants (LRC)</option></select><small>Enhanced lyrics require a compatible Navidrome version and client. Existing transcripts and translations are served without starting new analysis.</small></label>
+  return <section className="mt-10 space-y-8" aria-label="Echora Navidrome plugin">
+    <div>
+      <SectionHeading title="Echora Navidrome plugin" description="Sonic discovery and enriched lyrics in Navidrome, using this account’s library and preferences." />
+      {loadError && <Notice tone="error" title="Could not load plugin settings" className="my-5">{loadError}</Notice>}
+      {profile.connection_id && connectionId !== profile.connection_id && <Notice tone="warning" title="Connected server changed" className="my-5">Saving these settings binds the integration to the current connection and revokes its old keys.</Notice>}
+      <Toggle label="Plugin access" description="Connect Navidrome above, then enable this to generate your first key. Everyone using the key in Navidrome receives this account’s results." checked={profile.enabled} disabled={disabled || (!connectionId && !profile.enabled)} onChange={next => save(next)} />
+    </div>
+
+    <form onSubmit={event => { event.preventDefault(); save(); }} className="space-y-8">
+      <fieldset disabled={disabled} className="min-w-0">
+        <SectionHeading title="Discovery" />
+        <SettingRow label={<><b>Musical / lyrical balance</b><output className="font-normal tabular-nums">{profile.musical_weight}%</output></>} htmlFor="plugin-musical" description={`${profile.musical_weight}% musical · ${100 - profile.musical_weight}% lyrical`}><RangeControl id="plugin-musical" aria-label="Musical match percentage" min="0" max="100" step="1" value={profile.musical_weight} onChange={event => update("musical_weight", Number(event.target.value))} /></SettingRow>
+        <SettingRow label={<><b>Musical evidence balance</b><output className="font-normal tabular-nums">{profile.musical_semantic_weight}%</output></>} htmlFor="plugin-semantic" description={`${profile.musical_semantic_weight}% musical character · ${100 - profile.musical_semantic_weight}% acoustic detail`}><RangeControl id="plugin-semantic" aria-label="Musical semantics percentage" min="0" max="100" step="1" value={profile.musical_semantic_weight} onChange={event => update("musical_semantic_weight", Number(event.target.value))} /></SettingRow>
+        <SettingRow label="Missing lyrical analysis" htmlFor="plugin-missing" description="How to rank tracks that have no lyrics analysis yet."><Choice id="plugin-missing" value={profile.missing_lyrics} onChange={value => update("missing_lyrics", value as Profile["missing_lyrics"])}><ChoiceItem value="audio">Use musical evidence only</ChoiceItem><ChoiceItem value="exclude">Exclude these tracks</ChoiceItem></Choice></SettingRow>
+        <SettingRow label="Maximum tracks per artist" htmlFor="plugin-per-artist" description="Keeps results varied."><Input id="plugin-per-artist" type="number" min="1" max="20" required value={profile.max_per_artist} onChange={event => update("max_per_artist", Number(event.target.value))} /></SettingRow>
       </fieldset>
-      <section className={styles.pluginKeys} aria-label="API keys">
-        <CardHeader as="h3" icon={<KeyRound />} title="API keys" count={keys.filter(key => key.status === "active").length} description="Manage access to this account’s discovery and lyrics." />
-        <div className={styles.pluginKeyBody}>
-          <fieldset disabled={disabled} className={styles.pluginFields}>
-            <div className={styles.pluginSetup}>
-              <label className={styles.selectPreference}><span>Plugin API URL</span><input readOnly value={apiUrl} /></label>
-              <p>Install echora.ndp in Navidrome, enable it, and set its URL and API key. Put echora first in Agents for discovery and LyricsPriority for lyrics.</p>
-            </div>
-            {generated && <div className={styles.generatedKey} role="status">
-              <strong>Copy this key now. It is shown only once.</strong>
-              <input aria-label="New Navidrome API key" readOnly value={generated.secret} />
-              <small>Expires {new Date(generated.expires_at).toLocaleDateString()}</small>
-              <div className={styles.formActions}><button type="button" onClick={() => run(async () => { await navigator.clipboard.writeText(generated.secret); setMessage("API key copied"); })}>COPY KEY</button><button type="button" className={styles.secondary} onClick={() => setGenerated(null)}>DISMISS</button></div>
-            </div>}
-            <div className={styles.pluginKeyControls}>
-              <label className={styles.selectPreference}><span>Key label</span><input maxLength={100} value={label} onChange={event => setLabel(event.target.value)} /></label>
-              <label className={styles.selectPreference}><span>Key expiry (days)</span><input type="number" min="1" max="3650" required value={profile.key_expiry_days} onChange={event => update("key_expiry_days", Number(event.target.value))} /></label>
-            </div>
-            <small className={styles.layoutHelp}>Used for new keys. Save plugin settings to keep this default. Existing keys retain their expiry dates.</small>
-            <button type="button" className={styles.primaryAction} disabled={disabled || !profile.enabled || !label.trim() || generated !== null || !Number.isInteger(profile.key_expiry_days) || profile.key_expiry_days < 1 || profile.key_expiry_days > 3650} onClick={() => run(async () => { const next = await request<GeneratedKey>("/keys", "POST", { label, expiry_days: profile.key_expiry_days }); setGenerated(next); await load(false); setMessage("API key generated"); })}>GENERATE ANOTHER KEY</button>
-          </fieldset>
-          {keys.length > 0 && <ul className={styles.integrationKeys}>{keys.map(key => <li key={key.id}><div><strong>{key.label}</strong><small>{key.prefix}… · {key.status} · expires {new Date(key.expires_at).toLocaleDateString()}</small><small>Last used: {key.last_used_at ? new Date(key.last_used_at).toLocaleString() : "Never"}</small></div>{key.status !== "revoked" && <button type="button" className={styles.secondaryAction} disabled={busy} onClick={() => run(async () => { await request(`/keys/${key.id}`, "DELETE"); await load(false); setMessage("API key revoked"); })}>REVOKE</button>}</li>)}</ul>}
-        </div>
-      </section>
-      <button disabled={disabled || (!connectionId && profile.enabled)}>SAVE PLUGIN SETTINGS</button>
+
+      <fieldset disabled={disabled} className="min-w-0">
+        <SectionHeading title="Lyrics" />
+        {lyricsPaused && <Notice tone="info" title="Lyrics temporarily paused" className="my-5">Sync or lyrics jobs are running, so Navidrome uses its next configured source. {profile.serve_lyrics ? "Echora lyrics resume automatically when all jobs finish." : "Your saved preference is off and will remain off."}</Notice>}
+        <Toggle label="Provide Echora lyrics" checked={profile.serve_lyrics && !lyricsPaused} disabled={disabled || lyricsPaused} onChange={next => update("serve_lyrics", next)} />
+        <Toggle label="Include available translations" checked={profile.include_translations} disabled={disabled || lyricsOff} onChange={next => update("include_translations", next)} />
+        <SettingRow label="Lyrics format" htmlFor="plugin-format" description="Enhanced lyrics need a compatible Navidrome version and client. Existing transcripts and translations are served without starting new analysis."><Choice id="plugin-format" disabled={disabled || lyricsOff} value={profile.lyrics_format} onChange={value => update("lyrics_format", value as Profile["lyrics_format"])}><ChoiceItem value="ttml">Enhanced timing and translations (TTML)</ChoiceItem><ChoiceItem value="lrc">Line timing and language variants (LRC)</ChoiceItem></Choice></SettingRow>
+      </fieldset>
+
+      <div className="flex justify-end"><Button loading={busy} disabled={!loaded || (!connectionId && profile.enabled)}>Save plugin settings</Button></div>
     </form>
-    {message && <p className={styles.message} role="status">{message}</p>}
-    {error && <p className={styles.error} role="alert">{error}</p>}
+
+    <section aria-label="API keys" className="min-w-0">
+      <SectionHeading title="API keys" count={activeKeys} description="Install echora.ndp in Navidrome, enable it, and set its URL and API key. Put echora first in Agents for discovery and in LyricsPriority for lyrics." />
+      <SettingRow label="Plugin API URL" htmlFor="plugin-url"><Input id="plugin-url" readOnly value={apiUrl} /></SettingRow>
+      {generated && <Notice tone="success" title="Copy this key now. It is shown only once." className="my-5">
+        <div className="mt-2 flex gap-2"><Input aria-label="New Navidrome API key" readOnly value={generated.secret} className="font-mono" /><Button type="button" variant="outline" onClick={() => run(() => copyKey(generated.secret))}><Copy />Copy</Button><Button type="button" variant="ghost" onClick={() => setGenerated(null)}>Dismiss</Button></div>
+        <p className="mt-2 text-xs text-muted-foreground">Expires {new Date(generated.expires_at).toLocaleDateString()}</p>
+      </Notice>}
+      <fieldset disabled={disabled} className="min-w-0">
+        <SettingRow label="New key label" htmlFor="plugin-key-label"><Input id="plugin-key-label" maxLength={100} value={label} onChange={event => setLabel(event.target.value)} /></SettingRow>
+        <SettingRow label="Key expiry (days)" htmlFor="plugin-key-expiry" description="Used for new keys. Save plugin settings to keep this default. Existing keys keep their expiry dates."><Input id="plugin-key-expiry" type="number" min="1" max="3650" required value={profile.key_expiry_days} onChange={event => update("key_expiry_days", Number(event.target.value))} /></SettingRow>
+      </fieldset>
+      <div className="flex justify-end py-4"><Button type="button" variant="outline" loading={busy} disabled={!loaded || !profile.enabled || !label.trim() || generated !== null || !keyExpiryValid} onClick={() => run(generateKey)}>Generate key</Button></div>
+      {keys.length > 0 && <ul className="divide-y divide-border border-y border-border">{keys.map(key => <li key={key.id} className="flex flex-wrap items-center gap-3 py-3">
+        <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="truncate text-[13px] font-semibold">{key.label}</strong><Badge variant={key.status === "active" ? "secondary" : "outline"} className="capitalize">{key.status}</Badge></div><p className="mt-0.5 text-xs text-muted-foreground"><span className="font-mono">{key.prefix}…</span> · expires {new Date(key.expires_at).toLocaleDateString()} · last used {key.last_used_at ? new Date(key.last_used_at).toLocaleString() : "never"}</p></div>
+        {key.status !== "revoked" && <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => run(() => revokeKey(key.id))}>Revoke</Button>}
+      </li>)}</ul>}
+    </section>
   </section>;
 }
