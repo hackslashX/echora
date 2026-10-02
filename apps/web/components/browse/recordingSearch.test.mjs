@@ -69,7 +69,7 @@ test('recording uses the inline Browse capture flow, without a calibration fallb
   assert.doesNotMatch(source, /RecordingCalibration|calibration_enabled|createPortal|role="dialog"/);
   assert.match(source, /availability\?\.recognition_enabled !== true/);
   assert.match(source, /callbacks.current.onResults\(tracks, recordingWarning\(value\)\)/);
-  const browse = readFileSync(new URL('./BrowseLibrary.tsx', import.meta.url), 'utf8');
+  const browse = readFileSync(new URL('./BrowseLibrary.tsx', import.meta.url), 'utf8').replace(/\s+/g, ' ');
   assert.match(browse, /RecordingSearchButton ref=\{recordingRef\} onResults=\{showRecordingResults\} onError=\{setError\}/);
   assert.match(browse, /Recording results/);
 });

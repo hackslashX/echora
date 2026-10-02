@@ -126,6 +126,23 @@ func TestFailuresDoNotLeakCredentialsOrRemoteBodies(t *testing.T) {
 	}
 }
 
+func TestSonicPathCountBounds(t *testing.T) {
+	for _, tc := range []struct{ input, want int32 }{
+		{-1, 25}, {0, 25}, {1, 2}, {2, 2}, {501, 500},
+	} {
+		t.Run(fmt.Sprint(tc.input), func(t *testing.T) {
+			configure(t, func(r host.HTTPRequest) (*host.HTTPResponse, error) {
+				var body struct { Count int32 `json:"count"` }
+				if err := json.Unmarshal(r.Body, &body); err != nil { t.Fatal(err) }
+				if body.Count != tc.want { t.Fatalf("count = %d, want %d", body.Count, tc.want) }
+				return &host.HTTPResponse{StatusCode: 200, Body: []byte(`{"matches":[]}`)}, nil
+			})
+			_, err := (&echoraPlugin{}).FindSonicPath(sonicsimilarity.FindSonicPathRequest{Count: tc.input})
+			if err != nil { t.Fatal(err) }
+		})
+	}
+}
+
 func TestInvalidURLNeverSendsKey(t *testing.T) {
 	configure(t, func(host.HTTPRequest) (*host.HTTPResponse, error) {
 		t.Fatal("unexpected outbound request")

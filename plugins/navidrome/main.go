@@ -90,6 +90,9 @@ func (p *echoraPlugin) GetSonicSimilarTracks(input sonicsimilarity.GetSonicSimil
 func (p *echoraPlugin) FindSonicPath(input sonicsimilarity.FindSonicPathRequest) (sonicsimilarity.SonicSimilarityResponse, error) {
 	result := sonicsimilarity.SonicSimilarityResponse{Matches: []sonicsimilarity.SonicMatch{}}
 	input.Count = boundedCount(input.Count, 25, 500)
+	if input.Count < 2 {
+		input.Count = 2
+	}
 	err := callAPI("/sonic-path", input, &result)
 	return result, err
 }

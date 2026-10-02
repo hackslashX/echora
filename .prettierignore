@@ -1,0 +1,8 @@
+node_modules/
+.next/
+dist/
+build/
+coverage/
+data/
+**/next-env.d.ts
+package-lock.json

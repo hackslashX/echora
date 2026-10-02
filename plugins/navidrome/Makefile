@@ -9,6 +9,7 @@ package: build
 
 test:
 	go test ./...
+	cd contract-tests && go test ./...
 
 clean:
 	rm -f dist/plugin.wasm dist/echora.ndp

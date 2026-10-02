@@ -225,9 +225,20 @@ The dev web server listens on port 3000 and proxies analysis requests to `http:/
 docker compose stop web
 ```
 
+Install the commit hooks once per clone. They format staged `.ts`, `.tsx`, and `.py` files and preserve unstaged edits. Prettier comes from the root npm lockfile; Ruff uses the same version as the backend development dependencies.
+
+```sh
+npm ci
+uv tool install pre-commit==4.6.2
+pre-commit install
+```
+
+A hook that reformats a file stops the commit. Review the diff, stage the changes, and commit again. Run `pre-commit run --all-files` for a repository-wide formatting pass. This can change older files that have not yet adopted the formatters. Python hooks need network access on their first run to create an isolated Ruff environment; they do not install the analysis service or its models.
+
 Run the frontend checks:
 
 ```sh
+npm run test:web
 npm run typecheck
 npm run lint
 npm run build

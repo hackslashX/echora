@@ -68,7 +68,7 @@ test('normal stop releases the microphone without aborting the subsequent upload
 });
 
 test('Browse wires both starts and all reset paths to cancellation', () => {
-  const browse = readFileSync(new URL('./BrowseLibrary.tsx', import.meta.url), 'utf8');
+  const browse = readFileSync(new URL('./BrowseLibrary.tsx', import.meta.url), 'utf8').replace(/\s+/g, ' ');
   assert.match(browse, /function invalidateSearches\(\) \{ recordingRef.current\?\.cancel\(\); humRef.current\?\.cancel\(\); \}/);
   assert.match(browse, /function resetResults\(\) \{ invalidateSearches\(\)/);
   assert.match(browse, /HumSearchButton ref=\{humRef\} onStart=\{invalidateSearches\}/);
