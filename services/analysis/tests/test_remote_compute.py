@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
 from uuid import uuid4
 
+import httpx
 import numpy as np
 import pytest
 
@@ -720,3 +721,25 @@ def test_saved_token_is_verified_and_encrypted(monkeypatch):
     with pytest.raises(ZeroDivisionError):
         huggingface_token.save("hf_bad")
     assert huggingface_token.save("") is None and db.execute.call_args.args[1] == (None, None)
+
+
+def test_token_check_reaches_hugging_face_even_when_models_load_offline(monkeypatch):
+    from echora_analysis import huggingface_token
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    seen = {}
+
+    def get(url, headers, timeout):
+        seen.update(url=url, auth=headers["Authorization"])
+        status = 200 if headers["Authorization"] == "Bearer hf_good" else 401
+        return httpx.Response(status, json={"name": "hcX02"}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(
+        huggingface_token.httpx if hasattr(huggingface_token, "httpx") else __import__("httpx"),
+        "get",
+        get,
+    )
+    assert huggingface_token.account("hf_good") == "hcX02"
+    assert seen == {"url": "https://huggingface.co/api/whoami-v2", "auth": "Bearer hf_good"}
+    with pytest.raises(huggingface_token.TokenRejected):
+        huggingface_token.account("hf_bad")

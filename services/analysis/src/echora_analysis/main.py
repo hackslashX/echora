@@ -709,14 +709,18 @@ def update_huggingface_token(
     user = _session_user(echora_session)
     if not user.get("is_admin"):
         raise HTTPException(status_code=403, detail="Administrator access required")
-    from .huggingface_token import save
+    from .huggingface_token import TokenRejected, save
 
+    # Never echo the token or Hugging Face's response.
     try:
         account = save(request.token.get_secret_value())
-    except Exception:
-        # Never echo the token or Hugging Face's response.
+    except TokenRejected:
         raise HTTPException(
             status_code=422, detail="Hugging Face did not accept this token"
+        ) from None
+    except httpx.HTTPError:
+        raise HTTPException(
+            status_code=503, detail="Could not reach Hugging Face to check the token. Try again."
         ) from None
     return {"has_token": account is not None, "account": account}
 

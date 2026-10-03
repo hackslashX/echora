@@ -25,11 +25,29 @@ def _cipher():
     return Fernet(key.encode())
 
 
-def account(token: str) -> str:
-    """Verify a token with Hugging Face and return its account name."""
-    from huggingface_hub import HfApi
+class TokenRejected(ValueError):
+    """Hugging Face refused the token."""
 
-    return str(HfApi(token=token).whoami()["name"])
+
+def account(token: str) -> str:
+    """Verify a token with Hugging Face and return its account name.
+
+    Asks the account endpoint directly: the analysis container keeps
+    huggingface_hub offline (HF_HUB_OFFLINE=1) so models load from the cache,
+    which would otherwise block this check. Raises TokenRejected for a refused
+    token and httpx errors when Hugging Face cannot be reached.
+    """
+    import httpx
+
+    response = httpx.get(
+        "https://huggingface.co/api/whoami-v2",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=15,
+    )
+    if response.status_code in (401, 403):
+        raise TokenRejected("Hugging Face did not accept this token")
+    response.raise_for_status()
+    return str(response.json()["name"])
 
 
 def stored() -> tuple[str | None, str | None]:
