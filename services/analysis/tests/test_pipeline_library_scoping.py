@@ -1,4 +1,5 @@
 """Dependency-free orchestration regressions; execute real function bodies with fake IO."""
+
 import ast
 from echora_analysis.settings import Settings
 from pathlib import Path
@@ -13,10 +14,12 @@ SOURCE = Path(__file__).parents[1] / "src" / "echora_analysis"
 
 def load_functions(filename, **dependencies):
     tree = ast.parse((SOURCE / filename).read_text())
-    tree.body = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)] + [
-        node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
-    namespace = dict(get_settings=lambda: Settings.model_construct(database_url="fake"), **dependencies)
+    tree.body = [
+        ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
+    ] + [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    namespace = dict(
+        get_settings=lambda: Settings.model_construct(database_url="fake"), **dependencies
+    )
     exec(compile(ast.fix_missing_locations(tree), filename, "exec"), namespace)
     return namespace
 
@@ -33,8 +36,10 @@ class LibraryScopingTests(unittest.TestCase):
 
     def plan_namespace(self):
         return load_functions(
-            "processing_plan.py", os=SimpleNamespace(environ={}),
+            "processing_plan.py",
+            os=SimpleNamespace(environ={}),
             ProcessingPlan=lambda **kw: SimpleNamespace(**kw),
+            feature_enabled=lambda connection, feature, where=None: True,
         )
 
     def test_planners_scope_optional_library_and_ids(self):
@@ -73,22 +78,36 @@ class LibraryScopingTests(unittest.TestCase):
         navidrome = MagicMock()
         navidrome.return_value.__enter__.return_value = client
         ns = load_functions(
-            f"{kind}_pipeline.py", psycopg=SimpleNamespace(connect=connect),
+            f"{kind}_pipeline.py",
+            psycopg=SimpleNamespace(connect=connect),
             os=SimpleNamespace(environ={"DATABASE_URL": "fake"}),
             NavidromeClient=navidrome,
             torch=SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
-            prepare_audio=MagicMock(), get_check=lambda: lambda: None,
+            prepare_audio=MagicMock(),
+            get_check=lambda: lambda: None,
+            current_remote=lambda: None,
         )
-        for name in ("resolve_library_id", "configure_representations", "_create_run",
-                     "start_attempt", "record_track", "finish_attempt", "_store_lyrics",
-                     "release_model", "_stop_fa_kara_worker", "_stored_model_revision"):
+        for name in (
+            "resolve_library_id",
+            "configure_representations",
+            "_create_run",
+            "start_attempt",
+            "record_track",
+            "finish_attempt",
+            "_store_lyrics",
+            "release_model",
+            "_stop_fa_kara_worker",
+            "_stored_model_revision",
+        ):
             ns[name] = MagicMock()
         ns["resolve_library_id"].return_value = self.library_id
         return ns, client
 
     def test_lyrics_scope_and_cleanup_on_cancellation(self):
         ns, client = self.pipeline_namespace("lyrics")
-        ns["plan_lyrics"] = MagicMock(return_value=SimpleNamespace(lyrics_external_ids=("shared-id",)))
+        ns["plan_lyrics"] = MagicMock(
+            return_value=SimpleNamespace(lyrics_external_ids=("shared-id",))
+        )
         model = MagicMock()
         model.embed.side_effect = Cancelled()
         ns["LyricsEmbeddingModel"] = MagicMock(return_value=model)
@@ -105,7 +124,9 @@ class LibraryScopingTests(unittest.TestCase):
 
     def test_lyrics_cleanup_when_run_setup_fails(self):
         ns, _ = self.pipeline_namespace("lyrics")
-        ns["plan_lyrics"] = MagicMock(return_value=SimpleNamespace(lyrics_external_ids=("shared-id",)))
+        ns["plan_lyrics"] = MagicMock(
+            return_value=SimpleNamespace(lyrics_external_ids=("shared-id",))
+        )
         model = MagicMock()
         ns["LyricsEmbeddingModel"] = MagicMock(return_value=model)
         ns["_create_run"].side_effect = RuntimeError("database unavailable")
@@ -129,10 +150,18 @@ class LibraryScopingTests(unittest.TestCase):
 
     def test_karaoke_scope_and_cleanup_on_cancellation(self):
         ns, client = self.pipeline_namespace("karaoke")
-        ns.update(_KARAOKE_LOCK=MagicMock(), DEFAULT_MODEL_REVISION="model", KARAOKE_PIPELINE_REVISION="pipeline")
-        ns["plan_karaoke"] = MagicMock(return_value=SimpleNamespace(karaoke_external_ids=("shared-id",)))
+        ns.update(
+            _KARAOKE_LOCK=MagicMock(),
+            DEFAULT_MODEL_REVISION="model",
+            KARAOKE_PIPELINE_REVISION="pipeline",
+        )
+        ns["plan_karaoke"] = MagicMock(
+            return_value=SimpleNamespace(karaoke_external_ids=("shared-id",))
+        )
         client.audio_bytes.side_effect = Cancelled()
-        self.cursor.fetchall.return_value = [(uuid.uuid4(), "shared-id", "Title", "words", "en", [])]
+        self.cursor.fetchall.return_value = [
+            (uuid.uuid4(), "shared-id", "Title", "words", "en", [])
+        ]
         with self.assertRaises(Cancelled):
             ns["backfill_karaoke"]("https://music", "user", "password")
         self.assertEqual(ns["plan_karaoke"].call_args.kwargs, {"library_id": self.library_id})
@@ -146,8 +175,12 @@ class LibraryScopingTests(unittest.TestCase):
             with self.subTest(ids=ids):
                 ns, client = self.pipeline_namespace("voice")
                 model = MagicMock()
-                ns.update(_id_filter=self.plan_namespace()["_id_filter"],
-                          VOICE_EMBEDDING_TYPE="voice-gender", _model=(model,), _model_lock=MagicMock())
+                ns.update(
+                    _id_filter=self.plan_namespace()["_id_filter"],
+                    VOICE_EMBEDDING_TYPE="voice-gender",
+                    _model=(model,),
+                    _model_lock=MagicMock(),
+                )
                 ns["shared_voice_model"] = MagicMock(return_value=model)
                 ns["_fetch_stream"] = MagicMock(side_effect=Cancelled())
                 self.cursor.fetchall.return_value = [(uuid.uuid4(), "shared-id", "Title")]

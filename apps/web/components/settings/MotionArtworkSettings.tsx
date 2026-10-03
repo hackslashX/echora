@@ -15,7 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
-import { SectionHeading, Toggle, Choice, ChoiceItem } from "./Presentation";
+import { SectionHeading, Toggle, Choice, ChoiceItem, LocationToggles } from "./Presentation";
 import { SettingRow } from "./SettingRow";
 import { SettingsNotice } from "./SettingsNotice";
 import { RangeControl } from "./RangeControl";
@@ -33,6 +33,7 @@ type Configuration = {
   mid_anchor_strength: number;
   seed: number | null;
   generate_during_sync: boolean;
+  generate_on_modal: boolean;
 };
 type Defaults = { comfyui_url: string; instructions: string };
 type Status = {
@@ -221,13 +222,18 @@ export default function MotionArtworkSettings({ connectionId }: { connectionId: 
             label="Enable motion artwork"
             checked={value.enabled}
             onChange={(enabled) => update({ enabled })}
-            description="Off by default. Needs an NVIDIA GPU and the motion artwork models."
+            description="Off by default. Needs an NVIDIA GPU and the motion artwork models on this server, or Modal."
           />
-          <Toggle
-            label="Generate during sync"
-            checked={value.generate_during_sync}
-            onChange={(generate_during_sync) => update({ generate_during_sync })}
-            description="Render loops for tracks that need one as part of library syncs and imports. Run a sync to generate them; turn this off to pause generation."
+          <LocationToggles
+            label="Generate during syncs"
+            description="Render loops for tracks that need one as part of syncs and imports, on this server, on Modal, or both. Syncs on Modal render on Modal's GPU and need the Hugging Face token in External processing."
+            local={value.generate_during_sync}
+            modal={value.generate_on_modal}
+            onChange={(location, next) =>
+              update(
+                location === "modal" ? { generate_on_modal: next } : { generate_during_sync: next },
+              )
+            }
           />
           <SettingRow
             label="ComfyUI"

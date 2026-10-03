@@ -82,3 +82,57 @@ export function Choice({
   );
 }
 export const ChoiceItem = SelectItem;
+// One optional feature with a switch per processing location. Syncs run on this
+// server or on Modal and do only the features switched on where they run.
+export function LocationToggles({
+  label,
+  description,
+  local,
+  modal,
+  onChange,
+  disabled,
+  modalUnavailable,
+}: {
+  label: string;
+  description?: string;
+  local: boolean;
+  modal: boolean;
+  onChange: (location: "local" | "modal", next: boolean) => void;
+  disabled?: boolean;
+  // Shown instead of the Modal switch when the feature cannot run there yet.
+  modalUnavailable?: string;
+}) {
+  const id = useId();
+  return (
+    <SettingRow label={label} description={description}>
+      <div
+        className="flex flex-wrap items-center gap-x-5 gap-y-2"
+        role="group"
+        aria-label={`${label} locations`}
+      >
+        <label htmlFor={`${id}-local`} className="flex items-center gap-2 text-[13px]">
+          <Switch
+            id={`${id}-local`}
+            checked={local}
+            disabled={disabled}
+            onCheckedChange={(next) => onChange("local", next)}
+          />
+          This server
+        </label>
+        {modalUnavailable ? (
+          <span className="text-[12px] text-muted-foreground">{modalUnavailable}</span>
+        ) : (
+          <label htmlFor={`${id}-modal`} className="flex items-center gap-2 text-[13px]">
+            <Switch
+              id={`${id}-modal`}
+              checked={modal}
+              disabled={disabled}
+              onCheckedChange={(next) => onChange("modal", next)}
+            />
+            Modal
+          </label>
+        )}
+      </div>
+    </SettingRow>
+  );
+}

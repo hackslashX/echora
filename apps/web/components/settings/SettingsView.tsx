@@ -6,6 +6,7 @@ import {
   Sparkles,
   BrainCircuit,
   Clapperboard,
+  Cloud,
   Clock3,
   Radio,
   Server,
@@ -20,7 +21,7 @@ import {
   readPlaybackPreferences,
   writePlaybackPreferences,
 } from "../player/playbackPreferences";
-import { SectionHeading, Choice, ChoiceItem, Toggle } from "./Presentation";
+import { SectionHeading, Choice, ChoiceItem, LocationToggles, Toggle } from "./Presentation";
 
 import { Button } from "../ui/button";
 import { SettingsNotice } from "./SettingsNotice";
@@ -35,10 +36,19 @@ import styles from "./SettingsView.module.css";
 import { Input } from "../ui/input";
 import { LoadingState } from "../ui/spinner";
 import ExternalAISettings from "./ExternalAISettings";
+import ExternalProcessingSettings from "./ExternalProcessingSettings";
 import { toast } from "sonner";
 import { Notice } from "../ui/notice";
 import NavidromePluginSettings from "./NavidromePluginSettings";
 import MotionArtworkSettings from "./MotionArtworkSettings";
+
+type Feature = "transcription" | "karaoke" | "hum";
+type Location = "local" | "modal";
+const featureNames: Record<Feature, string> = {
+  transcription: "AI lyrics generation",
+  karaoke: "Karaoke timing",
+  hum: "Query by humming",
+};
 
 const allTabs = [
   "server",
@@ -46,6 +56,7 @@ const allTabs = [
   "playback",
   "models",
   "external-ai",
+  "external-processing",
   "motion-artwork",
   "appearance",
   "timezone",
@@ -62,6 +73,9 @@ type Settings = {
     transcription_processing_enabled: boolean;
     karaoke_processing_enabled: boolean;
     hum_processing_enabled: boolean;
+    transcription_modal_enabled: boolean;
+    karaoke_modal_enabled: boolean;
+    hum_modal_enabled: boolean;
   };
 };
 type OidcSettings = {
@@ -90,8 +104,9 @@ const descriptions: Record<Tab, string> = {
   server: "Update the Navidrome server used for synchronization and playlist publishing.",
   lastfm: "Connect listening history for familiarity mixes and time-of-day curations.",
   playback: "Choose the stream sent by Navidrome.",
-  models: "Choose which application-wide analysis jobs run during library synchronization.",
+  models: "Choose which optional analysis runs in syncs on this server and in syncs on Modal.",
   "external-ai": "Manage endpoints and AI features.",
+  "external-processing": "Run sync analysis on cloud GPUs in your Modal workspace.",
   "motion-artwork": "Generate looping video versions of album covers for the full-screen player.",
   appearance: "Set motion, karaoke highlights, and audio-reactive backgrounds.",
   timezone: "Listening periods use this timezone rather than the server clock.",
@@ -139,9 +154,17 @@ export default function SettingsView() {
   // Only load failures stay on the page; action results are toasts.
   const [loadError, setLoadError] = useState("");
   const [playback, setPlayback] = useState<PlaybackPreferences>(defaultPlaybackPreferences);
-  const [karaokeEnabled, setKaraokeEnabled] = useState(true);
-  const [transcriptionEnabled, setTranscriptionEnabled] = useState(false);
-  const [humEnabled, setHumEnabled] = useState(true);
+  const [motionArtwork, setMotionArtwork] = useState<{
+    enabled: boolean;
+    generate_during_sync: boolean;
+    generate_on_modal: boolean;
+  } | null>(null);
+  // Optional features, switched on separately for syncs on this server and on Modal.
+  const [features, setFeatures] = useState<Record<Feature, Record<Location, boolean>>>({
+    transcription: { local: false, modal: false },
+    karaoke: { local: true, modal: true },
+    hum: { local: true, modal: true },
+  });
 
   function apply(value: Settings) {
     setSettings(value);
@@ -150,9 +173,17 @@ export default function SettingsView() {
     setLastfmUsername(value.lastfm.username || "");
     setTimezone(value.timezone);
     setDisplayName(value.profile.display_name);
-    setKaraokeEnabled(value.models.karaoke_processing_enabled);
-    setHumEnabled(value.models.hum_processing_enabled);
-    setTranscriptionEnabled(value.models.transcription_processing_enabled);
+    setFeatures({
+      transcription: {
+        local: value.models.transcription_processing_enabled,
+        modal: value.models.transcription_modal_enabled,
+      },
+      karaoke: {
+        local: value.models.karaoke_processing_enabled,
+        modal: value.models.karaoke_modal_enabled,
+      },
+      hum: { local: value.models.hum_processing_enabled, modal: value.models.hum_modal_enabled },
+    });
     setPlayback(readPlaybackPreferences());
   }
   function load() {
@@ -176,62 +207,60 @@ export default function SettingsView() {
   function saveAnimationSpeed(next: PlaybackPreferences["animationSpeed"]) {
     savePlayback({ ...playback, animationSpeed: next });
   }
-  async function saveKaraokeProcessing(next: boolean) {
+  async function saveMotionArtwork(location: Location, next: boolean) {
     setBusy(true);
     try {
-      const result = await api<{ pending: number }>("/settings/models/karaoke", {
+      await api("/settings/motion-artwork/location", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ enabled: next }),
+        body: JSON.stringify({ enabled: next, location }),
       });
-      setKaraokeEnabled(next);
-      toast.success(next ? "Karaoke processing enabled" : "Karaoke processing disabled", {
-        description: next
-          ? `${result.pending} tracks will be processed during the next Entire Library sync.`
-          : "Existing karaoke lyrics remain available.",
-      });
+      setMotionArtwork((current) =>
+        current
+          ? {
+              ...current,
+              [location === "modal" ? "generate_on_modal" : "generate_during_sync"]: next,
+            }
+          : current,
+      );
+      toast.success(
+        `Motion artwork ${next ? "on" : "off"} for ${location === "modal" ? "Modal syncs" : "syncs on this server"}`,
+        {
+          description:
+            next && location === "modal"
+              ? "The next Modal sync downloads the motion artwork models (about 44 GB) to Modal first."
+              : undefined,
+        },
+      );
     } catch (reason) {
-      fail("Could not save karaoke processing", reason);
+      fail("Could not save motion artwork", reason);
     } finally {
       setBusy(false);
     }
   }
-  async function saveTranscriptionProcessing(next: boolean) {
+  async function saveFeature(feature: Feature, location: Location, next: boolean) {
+    const where = location === "modal" ? "Modal syncs" : "syncs on this server";
+    const name = featureNames[feature];
     setBusy(true);
     try {
-      await api("/settings/models/transcription", {
+      const result = await api<{ pending?: number }>(`/settings/models/${feature}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ enabled: next }),
+        body: JSON.stringify({ enabled: next, location }),
       });
-      setTranscriptionEnabled(next);
-      toast.success(next ? "AI lyrics generation enabled" : "AI lyrics generation disabled", {
+      setFeatures((current) => ({
+        ...current,
+        [feature]: { ...current[feature], [location]: next },
+      }));
+      const pending =
+        typeof result.pending === "number" ? `${result.pending} tracks are waiting. ` : "";
+      toast.success(`${name} ${next ? "on" : "off"} for ${where}`, {
         description: next
-          ? "Entire Library sync processes missing lyrics."
-          : "The current track may finish; no further tracks will start. Existing lyrics remain available.",
+          ? `${pending}The next Entire Library sync ${location === "modal" ? "on Modal" : "on this server"} processes them.`
+          : `Existing results remain available. ${where[0].toUpperCase() + where.slice(1)} skip new ${name.toLowerCase()} work.`,
       });
     } catch (reason) {
-      fail("Could not save lyrics processing", reason);
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function saveHumProcessing(next: boolean) {
-    setBusy(true);
-    try {
-      const result = await api<{ pending: number }>("/settings/models/hum", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ enabled: next }),
-      });
-      setHumEnabled(next);
-      toast.success(next ? "Hum processing enabled" : "Hum processing disabled", {
-        description: next
-          ? `${result.pending} tracks will be indexed during the next Entire Library sync.`
-          : "Existing melody contours remain searchable.",
-      });
-    } catch (reason) {
-      fail("Could not save hum processing", reason);
+      fail(`Could not save ${name.toLowerCase()}`, reason);
     } finally {
       setBusy(false);
     }
@@ -333,7 +362,13 @@ export default function SettingsView() {
     setAllowedEmail("");
   }
 
-  const adminTabs: Tab[] = ["models", "external-ai", "motion-artwork", "oidc"];
+  const adminTabs: Tab[] = [
+    "models",
+    "external-ai",
+    "external-processing",
+    "motion-artwork",
+    "oidc",
+  ];
   const knownTab = (allTabs as readonly string[]).includes(requestedTab ?? "")
     ? (requestedTab as Tab)
     : "account";
@@ -342,6 +377,18 @@ export default function SettingsView() {
     settings && !settings.profile.is_admin && adminTabs.includes(knownTab) ? "account" : knownTab;
   // Sign-in settings load whenever that section opens, by click or by URL.
   const oidcOpen = tab === "oidc";
+  // Motion artwork's location switches live in its own settings; load them with the models tab.
+  const modelsOpen = tab === "models" && Boolean(settings?.profile.is_admin);
+  useEffect(() => {
+    if (!modelsOpen) return;
+    api<{ enabled: boolean; generate_during_sync: boolean; generate_on_modal: boolean }>(
+      "/settings/motion-artwork",
+    )
+      .then(({ enabled, generate_during_sync, generate_on_modal }) =>
+        setMotionArtwork({ enabled, generate_during_sync, generate_on_modal }),
+      )
+      .catch(() => setMotionArtwork(null));
+  }, [modelsOpen]);
   useEffect(() => {
     if (!oidcOpen) return;
     api<OidcSettings>("/settings/oidc")
@@ -370,6 +417,12 @@ export default function SettingsView() {
             label: "External AI",
             group: "Administration",
             icon: Sparkles,
+          },
+          {
+            id: "external-processing" as Tab,
+            label: "External processing",
+            group: "Administration",
+            icon: Cloud,
           },
           {
             id: "motion-artwork" as Tab,
@@ -435,7 +488,7 @@ export default function SettingsView() {
           subtitle={descriptions[tab]}
           actions={
             <>
-              {["models", "external-ai", "motion-artwork", "oidc"].includes(tab) && (
+              {adminTabs.includes(tab) && (
                 <Badge
                   variant="outline"
                   className="h-7 gap-1.5 text-xs"
@@ -485,6 +538,9 @@ export default function SettingsView() {
             ) : (
               <>
                 {tab === "external-ai" && settings?.profile.is_admin && <ExternalAISettings />}
+                {tab === "external-processing" && settings?.profile.is_admin && (
+                  <ExternalProcessingSettings />
+                )}
                 {tab === "motion-artwork" && settings?.profile.is_admin && (
                   <MotionArtworkSettings connectionId={settings.navidrome?.id ?? null} />
                 )}
@@ -629,35 +685,67 @@ export default function SettingsView() {
                 )}
                 {tab === "models" && settings?.profile.is_admin && (
                   <section>
-                    <SectionHeading title="Lyrics processing" />
+                    <SectionHeading
+                      title="Optional features"
+                      description="Each sync runs on this server or on Modal, chosen when it starts. A feature runs only in syncs where it is switched on, so work that needs a GPU can be left to Modal."
+                    />
                     <SettingsNotice tone="warning" title="AI-generated lyrics">
                       Generated words and timing may be inaccurate. Existing lyrics remain available
-                      when processing is disabled.
+                      when processing is switched off.
                     </SettingsNotice>
-                    <Toggle
+                    <LocationToggles
                       label="AI lyrics generation"
-                      description="Use Mel-Band-Roformer and MOSS to transcribe tracks with missing lyrics. Off by default. AI words and timing may be inaccurate. Disabling prevents further tracks from starting; existing lyrics remain available."
-                      checked={transcriptionEnabled}
+                      description="Use Mel-Band-Roformer and MOSS to transcribe tracks with missing lyrics. Off by default. Switching off prevents further tracks from starting."
+                      local={features.transcription.local}
+                      modal={features.transcription.modal}
                       disabled={busy}
-                      onChange={() => saveTranscriptionProcessing(!transcriptionEnabled)}
+                      onChange={(location, next) => saveFeature("transcription", location, next)}
                     />
-                    <Toggle
+                    <LocationToggles
                       label="Karaoke timing"
-                      description="Generate syllable timing for tracks with synced lyrics. Disabling skips new alignment work; existing karaoke lyrics remain available."
-                      checked={karaokeEnabled}
+                      description="Generate syllable timing for tracks with synced lyrics."
+                      local={features.karaoke.local}
+                      modal={features.karaoke.modal}
                       disabled={busy}
-                      onChange={() => saveKaraokeProcessing(!karaokeEnabled)}
+                      onChange={(location, next) => saveFeature("karaoke", location, next)}
                     />
-                    <div className={styles.group}>
-                      <SectionHeading title="Melody search" />
-                    </div>
-                    <Toggle
+                    <LocationToggles
                       label="Query by humming"
-                      description="Extract melody contours from the full mix, vocals, and accompaniment. Disabling skips new contour extraction; tracks already indexed remain searchable."
-                      checked={humEnabled}
+                      description="Extract melody contours from the full mix, vocals, and accompaniment. Tracks already indexed remain searchable."
+                      local={features.hum.local}
+                      modal={features.hum.modal}
                       disabled={busy}
-                      onChange={() => saveHumProcessing(!humEnabled)}
+                      onChange={(location, next) => saveFeature("hum", location, next)}
                     />
+                    {motionArtwork && (
+                      <LocationToggles
+                        label="Motion artwork"
+                        description={
+                          motionArtwork.enabled
+                            ? "Render looping covers with LTX-2.5. Style and quality are in Motion artwork settings."
+                            : "Enable motion artwork in Motion artwork settings first."
+                        }
+                        local={motionArtwork.generate_during_sync}
+                        modal={motionArtwork.generate_on_modal}
+                        disabled={busy || !motionArtwork.enabled}
+                        onChange={saveMotionArtwork}
+                      />
+                    )}
+                    <div className={styles.group}>
+                      <SectionHeading
+                        title="Always processed"
+                        description="Search, curations and voice filters depend on these, so every sync runs them wherever it runs."
+                      />
+                    </div>
+                    <SettingRow label="Audio embeddings" description="MuQ-MuLan and MERT">
+                      <span className="text-[12px] text-muted-foreground">Every sync</span>
+                    </SettingRow>
+                    <SettingRow label="Lyrics embeddings" description="BGE-M3">
+                      <span className="text-[12px] text-muted-foreground">Every sync</span>
+                    </SettingRow>
+                    <SettingRow label="Voice detection" description="Vocal presence and voice type">
+                      <span className="text-[12px] text-muted-foreground">Every sync</span>
+                    </SettingRow>
                   </section>
                 )}
                 {tab === "appearance" && (

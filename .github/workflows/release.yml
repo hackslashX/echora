@@ -106,7 +106,9 @@ jobs:
         id: image
         env:
           IMAGE_OWNER: ${{ github.repository_owner }}
-        run: echo "name=ghcr.io/${IMAGE_OWNER,,}/echora-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "name=ghcr.io/${IMAGE_OWNER,,}/echora-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+          echo "modal=ghcr.io/${IMAGE_OWNER,,}/echora-analysis-gpu" >> "$GITHUB_OUTPUT"
 
       - name: Build and publish image
         uses: docker/build-push-action@v6
@@ -118,6 +120,8 @@ jobs:
           tags: |
             ${{ steps.image.outputs.name }}:${{ needs.release.outputs.version }}
             ${{ steps.image.outputs.name }}:latest
+          # Analysis on Modal runs the GPU image of this same release.
+          build-args: ECHORA_MODAL_IMAGE=${{ steps.image.outputs.modal }}:${{ needs.release.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
           labels: |

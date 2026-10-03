@@ -98,6 +98,7 @@ from .representations import configure_representations
 
 from .recording_routes import create_router as recording_router
 from .external_ai import router as external_ai_router
+from .external_processing import compute_for, router as external_processing_router
 from .motion_artwork import router as motion_artwork_router
 from .navidrome_integration import settings_router as navidrome_integration_router
 from .plugin_routes import router as navidrome_plugin_router
@@ -156,6 +157,8 @@ class IngestRequest(Credentials):
 class SyncRequest(BaseModel):
     verify_audio_hashes: bool = True
     mode: str = Field(default="all", pattern="^(all|missing)$")
+    # Where model computation runs (docs/modal-compute.md); omitted uses the instance default.
+    compute: str | None = Field(default=None, pattern="^(local|modal)$")
 
 
 class OidcPolicyRequest(BaseModel):
@@ -186,6 +189,8 @@ class LastFmSettingsRequest(BaseModel):
 
 class KaraokeProcessingSettingsRequest(BaseModel):
     enabled: bool
+    # Which location's switch: syncs on this server, or syncs on Modal.
+    location: str = Field(default="local", pattern="^(local|modal)$")
 
 
 class LyricsUpdateRequest(BaseModel):
@@ -203,6 +208,7 @@ class TranscriptionLanguageRequest(BaseModel):
 
 class HumProcessingSettingsRequest(BaseModel):
     enabled: bool
+    location: str = Field(default="local", pattern="^(local|modal)$")
 
 
 class OnboardingPreference(BaseModel):
@@ -415,6 +421,7 @@ def _session_user(token: str | None) -> dict[str, object]:
 
 
 app.include_router(external_ai_router(require_user, _cipher))
+app.include_router(external_processing_router(require_user))
 app.include_router(motion_artwork_router(require_user))
 app.include_router(recording_router(require_user))
 app.include_router(sessions.router)
@@ -605,7 +612,8 @@ def settings(echora_session: str | None = Cookie(default=None)) -> dict[str, obj
             raise HTTPException(status_code=404, detail="User settings are unavailable")
         model_settings = session.execute(
             text(
-                """SELECT karaoke_processing_enabled, hum_processing_enabled, transcription_processing_enabled
+                """SELECT karaoke_processing_enabled, hum_processing_enabled, transcription_processing_enabled,
+                      karaoke_modal_enabled, hum_modal_enabled, transcription_modal_enabled
                FROM analysis_settings WHERE singleton=true"""
             )
         ).one_or_none()
@@ -622,6 +630,12 @@ def settings(echora_session: str | None = Cookie(default=None)) -> dict[str, obj
                 "karaoke_processing_enabled": karaoke_enabled,
                 "hum_processing_enabled": hum_enabled,
                 "transcription_processing_enabled": bool(model_settings and model_settings[2]),
+                # The same switches for syncs that run on Modal.
+                "karaoke_modal_enabled": True
+                if model_settings is None
+                else bool(model_settings[3]),
+                "hum_modal_enabled": True if model_settings is None else bool(model_settings[4]),
+                "transcription_modal_enabled": bool(model_settings and model_settings[5]),
             },
             "timezone": preference.timezone,
             "navidrome": None
@@ -652,11 +666,14 @@ def update_karaoke_processing_settings(
         psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
         connection.cursor() as cursor,
     ):
+        column = (
+            "karaoke_modal_enabled" if request.location == "modal" else "karaoke_processing_enabled"
+        )
         cursor.execute(
-            """INSERT INTO analysis_settings
-                 (singleton, karaoke_processing_enabled, karaoke_bound_to_synced_lines, updated_at)
+            f"""INSERT INTO analysis_settings
+                 (singleton, {column}, karaoke_bound_to_synced_lines, updated_at)
                VALUES (true,%s,false,now()) ON CONFLICT (singleton) DO UPDATE
-               SET karaoke_processing_enabled=EXCLUDED.karaoke_processing_enabled,
+               SET {column}=EXCLUDED.{column},
                    karaoke_bound_to_synced_lines=false, updated_at=now()""",
             (request.enabled,),
         )
@@ -671,7 +688,7 @@ def update_karaoke_processing_settings(
                 (KARAOKE_PIPELINE_REVISION,),
             )
             pending = int(cursor.fetchone()["pending"])
-    return {"enabled": request.enabled, "pending": pending}
+    return {"enabled": request.enabled, "location": request.location, "pending": pending}
 
 
 @app.put("/settings/models/transcription")
@@ -683,14 +700,18 @@ def update_transcription_processing_settings(
     if not user.get("is_admin"):
         raise HTTPException(status_code=403, detail="Administrator access required")
     with psycopg.connect(get_settings().database_url) as connection, connection.cursor() as cursor:
+        column = (
+            "transcription_modal_enabled"
+            if request.location == "modal"
+            else "transcription_processing_enabled"
+        )
         cursor.execute(
-            """INSERT INTO analysis_settings (singleton, transcription_processing_enabled, updated_at)
+            f"""INSERT INTO analysis_settings (singleton, {column}, updated_at)
                VALUES (true,%s,now()) ON CONFLICT (singleton) DO UPDATE
-               SET transcription_processing_enabled=EXCLUDED.transcription_processing_enabled,
-                   updated_at=now()""",
+               SET {column}=EXCLUDED.{column}, updated_at=now()""",
             (request.enabled,),
         )
-    return {"enabled": request.enabled}
+    return {"enabled": request.enabled, "location": request.location}
 
 
 @app.put("/settings/models/hum")
@@ -705,11 +726,12 @@ def update_hum_processing_settings(
         psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
         connection.cursor() as cursor,
     ):
+        column = "hum_modal_enabled" if request.location == "modal" else "hum_processing_enabled"
         cursor.execute(
-            """INSERT INTO analysis_settings
-                 (singleton, karaoke_bound_to_synced_lines, hum_processing_enabled, updated_at)
+            f"""INSERT INTO analysis_settings
+                 (singleton, karaoke_bound_to_synced_lines, {column}, updated_at)
                VALUES (true,false,%s,now()) ON CONFLICT (singleton) DO UPDATE
-               SET hum_processing_enabled=EXCLUDED.hum_processing_enabled,
+               SET {column}=EXCLUDED.{column},
                    karaoke_bound_to_synced_lines=false, updated_at=now()""",
             (request.enabled,),
         )
@@ -728,7 +750,7 @@ def update_hum_processing_settings(
                 (MELODY_CONTOUR_REVISION,),
             )
             pending = int(cursor.fetchone()["pending"])
-    return {"enabled": request.enabled, "pending": pending}
+    return {"enabled": request.enabled, "location": request.location, "pending": pending}
 
 
 @app.put("/settings/profile")
@@ -1102,11 +1124,22 @@ def start_navidrome_sync(
     request: SyncRequest,
     echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
+    user = _session_user(echora_session)
+    try:
+        compute = compute_for(user["id"], request.compute)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403, detail="Modal processing is not available to you"
+        ) from None
     return _enqueue_connection_job(
         "navidrome_sync",
         connection_id,
-        _session_user(echora_session),
-        payload={"mode": request.mode, "verify_audio_hashes": request.verify_audio_hashes},
+        user,
+        payload={
+            "mode": request.mode,
+            "verify_audio_hashes": request.verify_audio_hashes,
+            "compute": compute,
+        },
     )
 
 
@@ -1582,11 +1615,13 @@ def force_transcription_language(
         )
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Track is not in your library")
+        # The track is transcribed by the next sync that runs where generation is on.
         cursor.execute(
-            "SELECT transcription_processing_enabled FROM analysis_settings WHERE singleton=true"
+            """SELECT transcription_processing_enabled OR transcription_modal_enabled AS enabled
+               FROM analysis_settings WHERE singleton=true"""
         )
         setting = cursor.fetchone()
-        if not setting or not setting["transcription_processing_enabled"]:
+        if not setting or not setting["enabled"]:
             raise HTTPException(
                 status_code=409,
                 detail="Enable AI lyric generation in Settings before forcing transcription",
