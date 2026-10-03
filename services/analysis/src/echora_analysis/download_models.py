@@ -1,4 +1,3 @@
-
 from .settings import get_settings
 import argparse
 import hashlib
@@ -6,18 +5,25 @@ import os
 from pathlib import Path
 import urllib.request
 
-from huggingface_hub import scan_cache_dir, snapshot_download
+from huggingface_hub import hf_hub_download, scan_cache_dir, snapshot_download
 
 from .roformer import MODEL_ID as ROFORMER_MODEL_ID, MODEL_REVISION as ROFORMER_REVISION
 from .recording_download import download_recording_model
+from .motion_artwork_render import MODEL_FILES as MOTION_ARTWORK_FILES
 
 ESSENTIA_MODELS = (
-    ("https://essentia.upf.edu/models/feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx",
-     "a280825b334797cf677939db8cd5762c0392aedd0ca6415dbc1cd083f045e43c"),
-    ("https://essentia.upf.edu/models/classification-heads/gender/gender-discogs-effnet-1.onnx",
-     "e3e865d4bf36d4817f32ddab9452b2729f9e33a4d068d1c44ea44972a7999e91"),
-    ("https://essentia.upf.edu/models/classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.onnx",
-     "20155e4c439714b0c45c08644b73c8e12d9dccb173bd4ab9934bf1e5aee837ca"),
+    (
+        "https://essentia.upf.edu/models/feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx",
+        "a280825b334797cf677939db8cd5762c0392aedd0ca6415dbc1cd083f045e43c",
+    ),
+    (
+        "https://essentia.upf.edu/models/classification-heads/gender/gender-discogs-effnet-1.onnx",
+        "e3e865d4bf36d4817f32ddab9452b2729f9e33a4d068d1c44ea44972a7999e91",
+    ),
+    (
+        "https://essentia.upf.edu/models/classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.onnx",
+        "20155e4c439714b0c45c08644b73c8e12d9dccb173bd4ab9934bf1e5aee837ca",
+    ),
 )
 
 MODELS = (
@@ -38,10 +44,14 @@ def required_models() -> tuple[tuple[str, str, bool], ...]:
     fa_model = get_settings().fa_kara_model_id
     fa_revision = get_settings().fa_kara_revision
     from .transcription_config import transcription_model
+
     moss = transcription_model()
-    return (*MODELS, (fa_model, fa_revision, False),
-            (ROFORMER_MODEL_ID, ROFORMER_REVISION, False),
-            *(((*moss, False),) if moss else ()))
+    return (
+        *MODELS,
+        (fa_model, fa_revision, False),
+        (ROFORMER_MODEL_ID, ROFORMER_REVISION, False),
+        *(((*moss, False),) if moss else ()),
+    )
 
 
 def _pin_main_ref(snapshot_path: str) -> None:
@@ -99,11 +109,33 @@ def _download_essentia() -> None:
         print(f"essentia model {target.name} is available.", flush=True)
 
 
-def main(*, prune_only: bool = False) -> None:
-    required = required_models()
+def motion_artwork_snapshots(enabled: bool) -> tuple[tuple[str, str, bool], ...]:
+    """Pinned motion artwork repositories, managed (kept and pruned) only once opted in."""
+    if not enabled:
+        return ()
+    return tuple(
+        dict.fromkeys((repo, revision, False) for repo, revision, _ in MOTION_ARTWORK_FILES)
+    )
+
+
+def _download_motion_artwork() -> None:
+    """Fetch only the LTX-2.5 and Gemma files ComfyUI loads, never whole repositories.
+
+    Lightricks/LTX-2.5 is gated: accept its license on Hugging Face and provide HF_TOKEN.
+    """
+    for repo, revision, filename in MOTION_ARTWORK_FILES:
+        print(f"Downloading {repo}@{revision}/{filename}", flush=True)
+        hf_hub_download(repo_id=repo, filename=filename, revision=revision)
+
+
+def main(*, prune_only: bool = False, motion_artwork: bool = False) -> None:
+    motion_artwork = motion_artwork or get_settings().motion_artwork_models
+    required = required_models() + motion_artwork_snapshots(motion_artwork)
     if not prune_only:
         download_recording_model()
-        for model, revision, needs_main_ref in required:
+        if motion_artwork:
+            _download_motion_artwork()
+        for model, revision, needs_main_ref in required_models():
             print(f"Downloading {model}@{revision}", flush=True)
             snapshot = snapshot_download(repo_id=model, revision=revision)
             if needs_main_ref:
@@ -119,6 +151,15 @@ def main(*, prune_only: bool = False) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--prune-only", action="store_true",
-                        help="Delete superseded managed snapshots without network downloads.")
-    main(prune_only=parser.parse_args().prune_only)
+    parser.add_argument(
+        "--prune-only",
+        action="store_true",
+        help="Delete superseded managed snapshots without network downloads.",
+    )
+    parser.add_argument(
+        "--motion-artwork",
+        action="store_true",
+        help="Also download the motion artwork models (about 44 GB; needs HF_TOKEN).",
+    )
+    arguments = parser.parse_args()
+    main(prune_only=arguments.prune_only, motion_artwork=arguments.motion_artwork)

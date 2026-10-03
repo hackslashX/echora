@@ -33,9 +33,14 @@
 /* The track column sets the row height; the panel matches it from the top of the art to the bottom of the tags. */
 .nowPlaying { display: flex; flex-direction: column; align-items: center; gap: 24px; min-width: 0; min-height: 0; container-type: inline-size; }
 /* Sized by height so it gives way to the details on short screens instead of pushing them into the dock. */
-.art { height: min(100cqw, calc(100dvh - var(--player-height) - 300px), 680px); max-width: 100%; min-height: 0; aspect-ratio: 1; flex: 0 1 auto; overflow: hidden; display: grid; place-items: center; background: rgb(255 255 255 / .06); box-shadow: 0 40px 100px rgb(0 0 0 / .55); }
+.art { position: relative; height: min(100cqw, calc(100dvh - var(--player-height) - 300px), 680px); max-width: 100%; min-height: 0; aspect-ratio: 1; flex: 0 1 auto; overflow: hidden; display: grid; place-items: center; background: rgb(255 255 255 / .06); box-shadow: 0 40px 100px rgb(0 0 0 / .55); }
 .art img { width: 100%; height: 100%; object-fit: cover; }
 .art>svg { width: 36%; height: 36%; color: rgb(255 255 255 / .35); }
+/* The cover and its motion loop share one grid cell; the loop fades in once it can play. */
+.art>* { grid-area: 1 / 1; }
+.motionVideo { position: relative; z-index: 1; width: 100%; height: 100%; object-fit: cover; opacity: 0; pointer-events: none; }
+.motionVideo[data-ready] { opacity: 1; }
+.artworkStyle { position: absolute; z-index: 2; top: 12px; left: 12px; display: flex; align-items: center; padding: 4px; background: var(--raised); box-shadow: 0 2px 12px rgb(0 0 0 / .35); }
 .meta { min-width: 0; width: min(100%, 620px); text-align: center; }
 .title { margin: 0; font-size: 28px; font-weight: 600; line-height: 1.25; letter-spacing: -.025em; }
 .artist { margin: 6px 0 0; font-size: 15px; font-weight: 500; color: rgb(255 255 255 / .9); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

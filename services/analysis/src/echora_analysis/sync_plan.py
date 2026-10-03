@@ -4,34 +4,48 @@ Workers recheck artifacts at execution time. This selection never loads models.
 Known missing/instrumental/unavailable lyrics are terminal for ordinary sync;
 explicit lyrics backfills remain the way to retry retrieval for those songs.
 """
+
 from __future__ import annotations
 
 from .settings import get_settings
 
 import uuid
 
+from .motion_artwork import sync_selection
 from .processing_plan import plan_audio, plan_karaoke
 from .source_freshness import sources_needing_refresh
 
 
-def select_sync_tracks(connection, url: str, external_ids: list[str], mode: str = 'all', *, catalog=(), verify_audio_hashes=True) -> list[str]:
-    if mode not in {'all', 'missing'}:
-        raise ValueError('Unknown sync mode')
+def select_sync_tracks(
+    connection,
+    url: str,
+    external_ids: list[str],
+    mode: str = "all",
+    *,
+    catalog=(),
+    verify_audio_hashes=True,
+) -> list[str]:
+    if mode not in {"all", "missing"}:
+        raise ValueError("Unknown sync mode")
     ids = list(dict.fromkeys(external_ids))
     if not ids:
         return []
     with connection.cursor() as cursor:
-        cursor.execute('SELECT id FROM libraries WHERE namespace=%s',
-                       (uuid.uuid5(uuid.NAMESPACE_URL, url.rstrip('/')),))
+        cursor.execute(
+            "SELECT id FROM libraries WHERE namespace=%s",
+            (uuid.uuid5(uuid.NAMESPACE_URL, url.rstrip("/")),),
+        )
         library = cursor.fetchone()
         if library is None:
             return ids
         library_id = library[0]
-        cursor.execute("SELECT external_id FROM track_sources WHERE library_id=%s AND source_type='subsonic' AND external_id=ANY(%s)",
-                       (library_id, ids))
+        cursor.execute(
+            "SELECT external_id FROM track_sources WHERE library_id=%s AND source_type='subsonic' AND external_id=ANY(%s)",
+            (library_id, ids),
+        )
         known = {row[0] for row in cursor.fetchall()}
     selected = set(ids) - known
-    if mode == 'missing':
+    if mode == "missing":
         return [item for item in ids if item in selected]
 
     # Entire-library refresh must visit known tracks for metadata, lyrics, and translations.
@@ -39,6 +53,7 @@ def select_sync_tracks(connection, url: str, external_ids: list[str], mode: str 
     if not verify_audio_hashes:
         return ids
     from .translation_storage import load_settings
+
     translation_settings, _ = load_settings()
     if translation_settings.enabled and translation_settings.language_pairs:
         return ids
@@ -46,7 +61,8 @@ def select_sync_tracks(connection, url: str, external_ids: list[str], mode: str 
     selected.update(sources_needing_refresh(connection, library_id, ids, catalog))
     selected.update(plan_audio(connection, library_id, ids).download_external_ids)
     with connection.cursor() as cursor:
-        cursor.execute("""SELECT DISTINCT ts.external_id
+        cursor.execute(
+            """SELECT DISTINCT ts.external_id
             FROM track_sources ts LEFT JOIN lyrics l ON l.track_id=ts.track_id
             WHERE ts.library_id=%s AND ts.source_type='subsonic' AND ts.external_id=ANY(%s)
             AND (
@@ -67,23 +83,39 @@ def select_sync_tracks(connection, url: str, external_ids: list[str], mode: str 
                     SELECT 1 FROM current_embeddings e
                     JOIN track_vocal_activity activity ON activity.track_id=e.track_id AND activity.run_id=e.run_id
                     WHERE e.track_id=ts.track_id AND e.embedding_type='voice-gender')
-            )""", (library_id, ids))
+            )""",
+            (library_id, ids),
+        )
         selected.update(row[0] for row in cursor.fetchall())
 
     from .transcription_config import transcription_model, transcription_enabled
+
     if transcription_model() and transcription_enabled(connection):
         with connection.cursor() as cursor:
-            cursor.execute("""SELECT DISTINCT ts.external_id FROM track_sources ts
+            cursor.execute(
+                """SELECT DISTINCT ts.external_id FROM track_sources ts
                 LEFT JOIN lyrics l ON l.track_id=ts.track_id
                 WHERE ts.library_id=%s AND ts.source_type='subsonic' AND ts.external_id=ANY(%s)
                   AND NULLIF(btrim(l.text),'') IS NULL
-                  AND coalesce(l.availability_status,'missing') != 'instrumental'""", (library_id, ids))
+                  AND coalesce(l.availability_status,'missing') != 'instrumental'""",
+                (library_id, ids),
+            )
             selected.update(row[0] for row in cursor.fetchall())
 
     # Share the exact karaoke compatibility contract with the executing pipeline.
-    from .karaoke_pipeline import KARAOKE_PIPELINE_REVISION, DEFAULT_MODEL_REVISION, _stored_model_revision
-    karaoke = plan_karaoke(connection, KARAOKE_PIPELINE_REVISION, ids,
-                          _stored_model_revision(get_settings().fa_kara_revision),
-                          library_id=library_id)
+    from .karaoke_pipeline import (
+        KARAOKE_PIPELINE_REVISION,
+        DEFAULT_MODEL_REVISION,
+        _stored_model_revision,
+    )
+
+    karaoke = plan_karaoke(
+        connection,
+        KARAOKE_PIPELINE_REVISION,
+        ids,
+        _stored_model_revision(get_settings().fa_kara_revision),
+        library_id=library_id,
+    )
     selected.update(karaoke.karaoke_external_ids)
+    selected.update(sync_selection(connection, library_id, ids))
     return [item for item in ids if item in selected]

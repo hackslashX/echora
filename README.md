@@ -156,6 +156,8 @@ curl http://localhost:8000/health
 
 The running analysis service uses `HF_HUB_OFFLINE=1`. Missing model snapshots cause processing to fail rather than silently download a different revision. Rerun the download command when updating to a version that changes the required models.
 
+Optional: animated album covers in the full-screen player need a 24 GB NVIDIA GPU and about 44 GB of extra models. The analysis worker renders them during syncs. See [motion artwork](docs/motion-artwork.md).
+
 ### 4. Connect your music
 
 In the setup flow, enter your Navidrome server URL and credentials, review the discovered tracks, and select an initial batch to process.

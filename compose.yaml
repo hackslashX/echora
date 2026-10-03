@@ -84,11 +84,15 @@ services:
       MOSS_REVISION: ${MOSS_REVISION-1cf9dc6d910a6c90c82d8ddc86b83e1533f39f4e}
       HF_HOME: /models/huggingface
       HF_HUB_OFFLINE: "1"
+      # Generated motion artwork videos, kept apart from model storage.
+      ECHORA_MOTION_ARTWORK_DIR: /motion-artwork
     volumes: &analysis-volumes
       - ${MUSIC_LIBRARY_PATH:-./testdata/music}:/music:ro
       - ./data:/data
       - ./data/models/huggingface:/models/huggingface
       - ./data/models/torch:/models/torch
+      # Generated motion artwork videos, written by the analysis worker.
+      - ${ECHORA_MOTION_ARTWORK_PATH:-./data/motion-artwork}:/motion-artwork
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
