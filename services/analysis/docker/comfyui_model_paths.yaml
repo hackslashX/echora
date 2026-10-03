@@ -1,0 +1,11 @@
+# Motion artwork models, read from the Hugging Face cache that
+# `python -m echora_analysis.download_models --motion-artwork` fills.
+# Revisions must match MODEL_FILES in echora_analysis/motion_artwork_render.py.
+echora_ltx:
+  base_path: /models/huggingface/hub/models--Lightricks--LTX-2.5/snapshots/5e6e71018ee1756ed329b697a7b4aedc934dfce9
+  diffusion_models: diffusion_models
+  text_encoders: text_encoders
+  vae: vae
+echora_gemma:
+  base_path: /models/huggingface/hub/models--Comfy-Org--gemma-4/snapshots/63d0f7c476756b88910170c1df75e2384ea1af31
+  text_encoders: text_encoders

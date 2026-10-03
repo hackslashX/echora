@@ -14,6 +14,18 @@ RUN mkdir -p src/echora_analysis \
     && /opt/venv/bin/pip install . \
     && /opt/venv/bin/python -m nltk.downloader -d /usr/local/share/nltk_data cmudict \
     && rm -rf src
+# ComfyUI for optional motion artwork. The worker starts it only while a batch renders loops.
+# Its own venv keeps its pins (transformers, SQLAlchemy, alembic) apart from Echora's; torch is shared.
+ARG COMFYUI_COMMIT=d43a5fa20c8547ff42d13232f589a06536c42b97
+ADD https://github.com/comfyanonymous/ComfyUI/archive/${COMFYUI_COMMIT}.tar.gz /tmp/comfyui.tar.gz
+RUN mkdir -p /opt/comfyui \
+    && tar -xzf /tmp/comfyui.tar.gz -C /opt/comfyui --strip-components=1 \
+    && rm /tmp/comfyui.tar.gz \
+    && grep -vE '^(torch|torchvision|torchaudio)$' /opt/comfyui/requirements.txt > /tmp/comfyui-requirements.txt \
+    && python -m venv --system-site-packages /opt/comfyui-venv \
+    && /opt/comfyui-venv/bin/pip install -r /tmp/comfyui-requirements.txt \
+    && rm /tmp/comfyui-requirements.txt
+COPY services/analysis/docker/comfyui_model_paths.yaml /opt/comfyui/echora_model_paths.yaml
 COPY services/analysis/src ./src
 COPY services/analysis/vendor ./vendor
 COPY services/analysis/alembic.ini ./alembic.ini
@@ -27,4 +39,4 @@ ENV PATH="/opt/venv/bin:$PATH" \
 RUN mkdir -p /models/huggingface /home/echora \
     && chown -R echora /models /home/echora
 EXPOSE 8000
-CMD ["sh", "-c", "mkdir -p /data/preprocessed /data/recording-calibration && chown echora /data/preprocessed /data/recording-calibration && chmod 700 /data/recording-calibration && chown -R echora /models && runuser -u echora -- python -m echora_analysis.download_models --prune-only && runuser -u echora -- alembic upgrade head && exec runuser -u echora -- uvicorn echora_analysis.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "mkdir -p /data/preprocessed /data/recording-calibration \"${ECHORA_MOTION_ARTWORK_DIR:-/data/motion-artwork}\" && chown echora /data/preprocessed /data/recording-calibration \"${ECHORA_MOTION_ARTWORK_DIR:-/data/motion-artwork}\" && chmod 700 /data/recording-calibration && chown -R echora /models && runuser -u echora -- python -m echora_analysis.download_models --prune-only && runuser -u echora -- alembic upgrade head && exec runuser -u echora -- uvicorn echora_analysis.main:app --host 0.0.0.0 --port 8000"]

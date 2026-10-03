@@ -6,7 +6,7 @@ import { ReactNode, useEffect, useState } from "react";
 import AppSidebar from "./AppSidebar";
 import { useSidebarCurations } from "./sidebarCurations";
 import { Button } from "../ui/button";
-import { Spinner } from "../ui/spinner";
+import AppLoading from "./AppLoading";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "../ui/sheet";
 
 import {
@@ -86,15 +86,7 @@ export default function AppShell({
     };
   }, [onboarding, router]);
 
-  if (!user)
-    return (
-      <main className="route-loading">
-        <div className="flex flex-col items-center gap-4">
-          <span>ECHORA</span>
-          <Spinner className="size-5 text-primary" label="Loading Echora" />
-        </div>
-      </main>
-    );
+  if (!user) return <AppLoading />;
   const displayName = user.display_name || user.username;
   const initials =
     displayName

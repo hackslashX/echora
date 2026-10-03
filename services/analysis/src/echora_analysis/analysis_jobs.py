@@ -340,6 +340,13 @@ def execute(job: dict, context) -> dict | None:
             from .voice_pipeline import backfill_voice
 
             summary["voice"] = backfill_voice(*credentials, progress=report, external_ids=ids)
+        if operation in {"navidrome_sync", "import"}:
+            # Last, so earlier stages have released their models before ComfyUI needs the GPU.
+            from .motion_artwork_jobs import render_batch
+
+            artwork = render_batch(credentials, user_id, ids, progress=report, check=context.check)
+            if artwork is not None:
+                summary["motion_artwork"] = artwork
         if operation == "recordings_backfill":
             summary = _recordings(credentials, user_id, ids, report, context.check)
         if operation == "hum_corpus":

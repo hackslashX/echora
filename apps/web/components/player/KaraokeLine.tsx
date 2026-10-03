@@ -7,7 +7,12 @@ import styles from "./KaraokeLine.module.css";
 type Box = { x: number; y: number; width: number; height: number };
 type Geometry = { width: number; height: number; fragments: Box[][]; source: LyricFragment[] };
 
-type Props = { fragments: LyricFragment[]; now: number; active: boolean; highlightStyle: "lava" | "syllable" };
+type Props = {
+  fragments: LyricFragment[];
+  now: number;
+  active: boolean;
+  highlightStyle: "lava" | "syllable";
+};
 
 /** Native text layout owns shaping, wrapping, punctuation, and bidirectional runs. */
 export default function KaraokeLine({ fragments, now, active, highlightStyle }: Props) {
@@ -15,7 +20,7 @@ export default function KaraokeLine({ fragments, now, active, highlightStyle }: 
   const base = useRef<HTMLSpanElement>(null);
   const [geometry, setGeometry] = useState<Geometry | null>(null);
   const clipId = `karaoke-clip-${useId().replace(/[^\w-]/g, "")}`;
-  const text = fragments.map(fragment => fragment.text).join("");
+  const text = fragments.map((fragment) => fragment.text).join("");
   useLayoutEffect(() => {
     const element = root.current;
     const node = base.current?.firstChild;
@@ -29,62 +34,125 @@ export default function KaraokeLine({ fragments, now, active, highlightStyle }: 
       const scaleX = bounds.width / element.offsetWidth;
       const scaleY = bounds.height / element.offsetHeight;
       let offset = 0;
-      const boxes = fragments.map(fragment => {
+      const boxes = fragments.map((fragment) => {
         const range = document.createRange();
         range.setStart(node, offset);
         offset += fragment.text.length;
         range.setEnd(node, offset);
         if (!fragment.text.trim()) return [];
-        return Array.from(range.getClientRects()).map(box => ({
-          x: (box.left - bounds.left) / scaleX, y: (box.top - bounds.top) / scaleY,
-          width: box.width / scaleX, height: box.height / scaleY,
+        return Array.from(range.getClientRects()).map((box) => ({
+          x: (box.left - bounds.left) / scaleX,
+          y: (box.top - bounds.top) / scaleY,
+          width: box.width / scaleX,
+          height: box.height / scaleY,
         }));
       });
-      setGeometry({ width: element.offsetWidth, height: element.offsetHeight, fragments: boxes, source: fragments });
+      setGeometry({
+        width: element.offsetWidth,
+        height: element.offsetHeight,
+        fragments: boxes,
+        source: fragments,
+      });
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     void document.fonts?.ready.then(measure);
-    return () => { disposed = true; observer.disconnect(); };
+    return () => {
+      disposed = true;
+      observer.disconnect();
+    };
   }, [fragments]);
 
-  const paths = (geometry?.source === fragments ? geometry.fragments : []).flatMap((boxes, index) => {
-    const fragment = fragments[index];
-    const fragmentRtl = lyricWordIsRtl(fragment.text);
-    const progress = now >= fragment.syllable.end_ms ? 100
-      : active && now >= fragment.syllable.start_ms
-        ? highlightStyle === "syllable" ? 100 : fragmentProgress(now, fragment) : 0;
-    let remaining = boxes.reduce((sum, box) => sum + box.width, 0) * progress / 100;
-    return boxes.map(box => {
-      const fill = Math.max(0, Math.min(box.width, remaining));
-      remaining -= box.width;
-      if (fill <= 0) return "";
-      const top = box.y - 2, bottom = box.y + box.height + 2;
-      const side = fragmentRtl ? box.x + box.width : box.x;
-      const edge = side + (fragmentRtl ? -fill : fill);
-      const amplitude = Math.min(5, fill * .15, (box.width - fill) * .15);
-      const boundary = Array.from({ length: 13 }, (_, point) => {
-        const y = top + (bottom - top) * point / 12;
-        const x = edge + Math.sin(point / 12 * Math.PI * 2 + now / 320 + index * .8) * amplitude;
-        return `L${x.toFixed(2)},${y.toFixed(2)}`;
-      }).join(" ");
-      return `M${side},${top} ${boundary} L${side},${bottom} Z`;
-    });
-  }).filter(Boolean).join(" ");
+  const paths = (geometry?.source === fragments ? geometry.fragments : [])
+    .flatMap((boxes, index) => {
+      const fragment = fragments[index];
+      const fragmentRtl = lyricWordIsRtl(fragment.text);
+      const progress =
+        now >= fragment.syllable.end_ms
+          ? 100
+          : active && now >= fragment.syllable.start_ms
+            ? highlightStyle === "syllable"
+              ? 100
+              : fragmentProgress(now, fragment)
+            : 0;
+      let remaining = (boxes.reduce((sum, box) => sum + box.width, 0) * progress) / 100;
+      return boxes.map((box) => {
+        const fill = Math.max(0, Math.min(box.width, remaining));
+        remaining -= box.width;
+        if (fill <= 0) return "";
+        const top = box.y - 2,
+          bottom = box.y + box.height + 2;
+        const side = fragmentRtl ? box.x + box.width : box.x;
+        const edge = side + (fragmentRtl ? -fill : fill);
+        const amplitude = Math.min(5, fill * 0.15, (box.width - fill) * 0.15);
+        const boundary = Array.from({ length: 13 }, (_, point) => {
+          const y = top + ((bottom - top) * point) / 12;
+          const x =
+            edge + Math.sin((point / 12) * Math.PI * 2 + now / 320 + index * 0.8) * amplitude;
+          return `L${x.toFixed(2)},${y.toFixed(2)}`;
+        }).join(" ");
+        return `M${side},${top} ${boundary} L${side},${bottom} Z`;
+      });
+    })
+    .filter(Boolean)
+    .join(" ");
   // A live SVG clip path: updating one path each frame is far cheaper than
   // re-encoding and decoding a mask image.
-  const paint: CSSProperties = { clipPath: paths ? `url(#${clipId})` : undefined, visibility: paths ? "visible" : "hidden" };
+  const paint: CSSProperties = {
+    clipPath: paths ? `url(#${clipId})` : undefined,
+    visibility: paths ? "visible" : "hidden",
+  };
 
-  return <span ref={root} dir="auto" className={styles.line}>
-    <span ref={base}>{text}</span>
-    <span className={styles.paint} aria-hidden="true" style={paint}>{text}</span>
-    <svg className={styles.clipDefs} aria-hidden="true" focusable="false"><clipPath id={clipId} clipPathUnits="userSpaceOnUse"><path d={paths} /></clipPath></svg>
-    {active && geometry?.source === fragments && geometry.fragments.flatMap((boxes, index) => {
-      const { syllable } = fragments[index];
-      if (now < syllable.start_ms || now >= syllable.end_ms) return [];
-      return boxes.map((box, part) => <span key={`${index}-${part}`} aria-hidden="true" data-lyric-singing="true" className={styles.glowTarget}
-        style={{ left: box.x, top: box.y, width: box.width, height: box.height }} />);
-    })}
-  </span>;
+  return (
+    <span ref={root} dir="auto" className={styles.line}>
+      <span ref={base}>{text}</span>
+      <span className={styles.paint} aria-hidden="true" style={paint}>
+        {text}
+      </span>
+      <svg className={styles.clipDefs} aria-hidden="true" focusable="false">
+        <clipPath id={clipId} clipPathUnits="userSpaceOnUse">
+          <path d={paths} />
+        </clipPath>
+      </svg>
+      {active &&
+        geometry?.source === fragments &&
+        geometry.fragments.flatMap((boxes, index) => {
+          const fragment = fragments[index];
+          const { syllable } = fragment;
+          if (now < syllable.start_ms || now >= syllable.end_ms) return [];
+          if (highlightStyle === "syllable")
+            return boxes.map((box, part) => (
+              <span
+                key={`${index}-${part}`}
+                aria-hidden="true"
+                data-lyric-singing="true"
+                className={styles.glowTarget}
+                style={{ left: box.x, top: box.y, width: box.width, height: box.height }}
+              />
+            ));
+          const progress = fragmentProgress(now, fragment) / 100;
+          const total = boxes.reduce((sum, box) => sum + box.width, 0);
+          let remaining = total * progress;
+          const rtl = lyricWordIsRtl(fragment.text);
+          for (let part = 0; part < boxes.length; part++) {
+            const box = boxes[part];
+            if (remaining <= box.width) {
+              const edge = rtl ? box.x + box.width - remaining : box.x + remaining;
+              return (
+                <span
+                  key={`${index}-${part}`}
+                  aria-hidden="true"
+                  data-lyric-singing="true"
+                  className={styles.glowTarget}
+                  style={{ left: edge, top: box.y + box.height / 2, width: 1, height: 1 }}
+                />
+              );
+            }
+            remaining -= box.width;
+          }
+          return [];
+        })}
+    </span>
+  );
 }

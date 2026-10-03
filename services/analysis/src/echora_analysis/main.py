@@ -33,7 +33,12 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import RedirectResponse, StreamingResponse
 
-from .artists import fit_artist_profile, representative_indices, soft_chamfer_similarity, weighted_center
+from .artists import (
+    fit_artist_profile,
+    representative_indices,
+    soft_chamfer_similarity,
+    weighted_center,
+)
 from .audio_descriptors import DESCRIPTOR_REVISION
 from .waveforms import WAVEFORM_REVISION
 from .visual_features import VISUAL_FEATURE_REVISION
@@ -42,15 +47,47 @@ from .audio_profiles import (
     AUDIO_PROFILE_REVISION,
     SUPPORTED_PROFILE_MODELS,
 )
-from .concepts import combine_concept_percentiles, empirical_percentiles, expand_tag_groups, predefined_concepts, score_concept
-from .curations import CURATION_SCORING_REVISION, EXAMPLE_COMPONENT_WEIGHTS, MATCH_PERCENTILE, rank_curation
+from .concepts import (
+    combine_concept_percentiles,
+    empirical_percentiles,
+    expand_tag_groups,
+    predefined_concepts,
+    score_concept,
+)
+from .curations import (
+    CURATION_SCORING_REVISION,
+    EXAMPLE_COMPONENT_WEIGHTS,
+    MATCH_PERCENTILE,
+    rank_curation,
+)
 from .db import session_scope
 from . import jobs, sessions
 from .settings import get_settings
-from .db_models import Curation, NavidromeConnection, OidcAllowedEmail, OidcSetting, User, UserPreference, UserSession
+from .db_models import (
+    Curation,
+    NavidromeConnection,
+    OidcAllowedEmail,
+    OidcSetting,
+    User,
+    UserPreference,
+    UserSession,
+)
 from .hum_search import DEFAULT_CORPUS_SIZE, search_corpus
-from .journeys import normalize_rows as normalize_journey_rows, select_journey, select_multistop_journey, spherical_targets
-from .listening_history import TOP_TRACK_PERIODS, match_navidrome_play_counts, match_top_tracks, navidrome_play_counts, recent_listens, top_tracks, track_listen_counts
+from .journeys import (
+    normalize_rows as normalize_journey_rows,
+    select_journey,
+    select_multistop_journey,
+    spherical_targets,
+)
+from .listening_history import (
+    TOP_TRACK_PERIODS,
+    match_navidrome_play_counts,
+    match_top_tracks,
+    navidrome_play_counts,
+    recent_listens,
+    top_tracks,
+    track_listen_counts,
+)
 from .language_detection import LANGUAGE_NAMES, PRIMARY_SHARE, language_affinity
 from .karaoke_pipeline import KARAOKE_PIPELINE_REVISION
 from .melody_config import MELODY_CONTOUR_REVISION
@@ -61,6 +98,7 @@ from .representations import configure_representations
 
 from .recording_routes import create_router as recording_router
 from .external_ai import router as external_ai_router
+from .motion_artwork import router as motion_artwork_router
 from .navidrome_integration import settings_router as navidrome_integration_router
 from .plugin_routes import router as navidrome_plugin_router
 
@@ -69,22 +107,31 @@ app = FastAPI(title="Echora analysis", version="0.3.0")
 # when NEXT_PUBLIC_ANALYSIS_ORIGIN is set; canvas palette extraction needs CORS.
 # Origins are explicit: reflecting arbitrary origins with credentials would let
 # any site read responses using the visitor's session cookie.
-_cors_origins = [origin.strip() for origin in get_settings().cors_origins.split(",") if origin.strip()]
+_cors_origins = [
+    origin.strip() for origin in get_settings().cors_origins.split(",") if origin.strip()
+]
 if _cors_origins:
     app.add_middleware(
-        CORSMiddleware, allow_origins=_cors_origins, allow_credentials=True,
-        allow_methods=["*"], allow_headers=["*"],
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 app.add_middleware(
-    SessionMiddleware, secret_key=get_settings().oidc_session_secret,
-    session_cookie="echora_oidc_state", same_site="lax",
+    SessionMiddleware,
+    secret_key=get_settings().oidc_session_secret,
+    session_cookie="echora_oidc_state",
+    same_site="lax",
     https_only=get_settings().cookie_secure,
 )
 _oauth = OAuth()
 _oidc_issuer = get_settings().oidc_issuer_url.rstrip("/")
 if _oidc_issuer and get_settings().oidc_client_id and get_settings().oidc_client_secret:
     _oauth.register(
-        name="oidc", client_id=get_settings().oidc_client_id, client_secret=get_settings().oidc_client_secret,
+        name="oidc",
+        client_id=get_settings().oidc_client_id,
+        client_secret=get_settings().oidc_client_secret,
         server_metadata_url=f"{_oidc_issuer}/.well-known/openid-configuration",
         client_kwargs={"scope": get_settings().oidc_scopes},
     )
@@ -188,6 +235,7 @@ class ConceptLensRequest(BaseModel):
 
 class SoundProfileRequest(BaseModel):
     """Library-relative targets for measured audio descriptors."""
+
     pace: float | None = Field(default=None, ge=0, le=1)
     energy: float | None = Field(default=None, ge=0, le=1)
     brightness: float | None = Field(default=None, ge=0, le=1)
@@ -198,7 +246,9 @@ class SoundProfileRequest(BaseModel):
 
 
 class CurationPreviewRequest(BaseModel):
-    curation_type: str = Field(default="combined", pattern="^(combined|language|examples|time_of_day|sonic_journey)$")
+    curation_type: str = Field(
+        default="combined", pattern="^(combined|language|examples|time_of_day|sonic_journey)$"
+    )
     positive_prompt: str = Field(default="", max_length=2000)
     negative_prompt: str = Field(default="", max_length=2000)
     sound_prompts: list[str] = Field(default_factory=list, max_length=12)
@@ -261,12 +311,17 @@ def _save_connection(credentials: tuple[str, str, str], user_id: uuid.UUID) -> s
     url, username, password = credentials
     encrypted = _cipher().encrypt(password.encode())
     with session_scope() as session:
-        stored = session.scalar(select(NavidromeConnection).where(
-            NavidromeConnection.owner_user_id == user_id,
-            NavidromeConnection.url == url, NavidromeConnection.username == username,
-        ))
+        stored = session.scalar(
+            select(NavidromeConnection).where(
+                NavidromeConnection.owner_user_id == user_id,
+                NavidromeConnection.url == url,
+                NavidromeConnection.username == username,
+            )
+        )
         if stored is None:
-            stored = NavidromeConnection(url=url, username=username, encrypted_password=encrypted, owner_user_id=user_id)
+            stored = NavidromeConnection(
+                url=url, username=username, encrypted_password=encrypted, owner_user_id=user_id
+            )
             session.add(stored)
             session.flush()
         else:
@@ -286,22 +341,31 @@ def _attach_user_library(user_id: uuid.UUID, source_url: str) -> None:
         )
 
 
-def _reconcile_user_tracks(user_id: uuid.UUID, source_url: str, external_ids: list[str]) -> dict[str, int]:
+def _reconcile_user_tracks(
+    user_id: uuid.UUID, source_url: str, external_ids: list[str]
+) -> dict[str, int]:
     from .source_visibility import update_memberships
 
     namespace = uuid.uuid5(uuid.NAMESPACE_URL, source_url.rstrip("/"))
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         # A first full catalog can precede all source/identity discovery.
         cursor.execute(
             """INSERT INTO libraries (name, root_path, namespace)
                VALUES ('Navidrome', %s, %s)
                ON CONFLICT (namespace) DO UPDATE SET root_path=EXCLUDED.root_path
-               RETURNING id""", (source_url.rstrip("/"), namespace))
+               RETURNING id""",
+            (source_url.rstrip("/"), namespace),
+        )
         library_id = cursor.fetchone()["id"]
         return update_memberships(connection, library_id, user_id, external_ids, full=True)
 
 
-def _load_connection(connection_id: str, user_id: uuid.UUID | None = None) -> tuple[str, str, str] | None:
+def _load_connection(
+    connection_id: str, user_id: uuid.UUID | None = None
+) -> tuple[str, str, str] | None:
     try:
         identifier = uuid.UUID(connection_id)
     except ValueError:
@@ -314,7 +378,11 @@ def _load_connection(connection_id: str, user_id: uuid.UUID | None = None) -> tu
         if stored is None:
             return None
         stored.last_used_at = datetime.now(timezone.utc)
-        url, username, encrypted_password = stored.url, stored.username, bytes(stored.encrypted_password)
+        url, username, encrypted_password = (
+            stored.url,
+            stored.username,
+            bytes(stored.encrypted_password),
+        )
     try:
         password = _cipher().decrypt(encrypted_password).decode()
     except InvalidToken as error:
@@ -347,6 +415,7 @@ def _session_user(token: str | None) -> dict[str, object]:
 
 
 app.include_router(external_ai_router(require_user, _cipher))
+app.include_router(motion_artwork_router(require_user))
 app.include_router(recording_router(require_user))
 app.include_router(sessions.router)
 app.include_router(navidrome_integration_router(require_user))
@@ -364,7 +433,9 @@ def start_background_services() -> None:
 def _enforce_secure_cookie_policy() -> None:
     if get_settings().cookie_secure:
         return
-    redirect = (get_settings().oidc_redirect_uri or "http://localhost:3000/analysis/auth/oidc/callback")
+    redirect = (
+        get_settings().oidc_redirect_uri or "http://localhost:3000/analysis/auth/oidc/callback"
+    )
     host = urlparse(redirect).hostname or ""
     if host not in {"localhost", "127.0.0.1", "::1"}:
         raise RuntimeError(
@@ -409,19 +480,33 @@ async def oidc_callback(request: Request) -> Response:
     if not bootstrap_email:
         raise HTTPException(status_code=503, detail="OIDC_BOOTSTRAP_ADMIN_EMAIL is not configured")
     with session_scope() as session:
-        user = session.scalar(select(User).where((User.oidc_subject == subject) | (func.lower(User.email) == email)))
-        admin_exists = session.scalar(select(func.count()).select_from(User).where(User.is_admin)) > 0
+        user = session.scalar(
+            select(User).where((User.oidc_subject == subject) | (func.lower(User.email) == email))
+        )
+        admin_exists = (
+            session.scalar(select(func.count()).select_from(User).where(User.is_admin)) > 0
+        )
         if user is None:
             policy = session.get(OidcSetting, True)
             allowed = session.get(OidcAllowedEmail, email)
             if not admin_exists and email != bootstrap_email:
-                raise HTTPException(status_code=403, detail="The bootstrap administrator must sign in first")
+                raise HTTPException(
+                    status_code=403, detail="The bootstrap administrator must sign in first"
+                )
             if admin_exists and not (policy and policy.auto_provision) and allowed is None:
-                raise HTTPException(status_code=403, detail="Your email has not been approved by an administrator")
-            display_name = str(claims.get("name") or claims.get("preferred_username") or email).strip()
+                raise HTTPException(
+                    status_code=403, detail="Your email has not been approved by an administrator"
+                )
+            display_name = str(
+                claims.get("name") or claims.get("preferred_username") or email
+            ).strip()
             user = User(
-                username=email, email=email, display_name=display_name, password_hash=None,
-                oidc_subject=subject, is_admin=not admin_exists and email == bootstrap_email,
+                username=email,
+                email=email,
+                display_name=display_name,
+                password_hash=None,
+                oidc_subject=subject,
+                is_admin=not admin_exists and email == bootstrap_email,
             )
             user.preference = UserPreference()
             session.add(user)
@@ -432,11 +517,15 @@ async def oidc_callback(request: Request) -> Response:
             if user.is_blocked:
                 raise HTTPException(status_code=403, detail="This Echora account is blocked")
             if user.oidc_subject and user.oidc_subject != subject:
-                raise HTTPException(status_code=409, detail="This email is linked to another OIDC identity")
+                raise HTTPException(
+                    status_code=409, detail="This email is linked to another OIDC identity"
+                )
             user.oidc_subject = subject
             user.email = email
             user.username = email
-        session.execute(delete(UserSession).where(UserSession.expires_at < datetime.now(timezone.utc)))
+        session.execute(
+            delete(UserSession).where(UserSession.expires_at < datetime.now(timezone.utc))
+        )
         token, expires_at, _ = sessions.create_session(session, user.id)
     destination = get_settings().oidc_post_login_redirect
     response = RedirectResponse(destination, status_code=303)
@@ -448,7 +537,11 @@ async def oidc_callback(request: Request) -> Response:
 def logout(response: Response, echora_session: str | None = Cookie(default=None)) -> Response:
     if echora_session:
         with session_scope() as session:
-            session.execute(delete(UserSession).where(UserSession.token_hash == hashlib.sha256(echora_session.encode()).hexdigest()))
+            session.execute(
+                delete(UserSession).where(
+                    UserSession.token_hash == hashlib.sha256(echora_session.encode()).hexdigest()
+                )
+            )
     response.delete_cookie("echora_session", path="/")
     return response
 
@@ -456,18 +549,34 @@ def logout(response: Response, echora_session: str | None = Cookie(default=None)
 @app.get("/auth/me")
 def me(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
-    return {key: user[key] for key in ("username", "email", "display_name", "is_admin", "onboarding_complete", "navidrome_connection_id")}
+    return {
+        key: user[key]
+        for key in (
+            "username",
+            "email",
+            "display_name",
+            "is_admin",
+            "onboarding_complete",
+            "navidrome_connection_id",
+        )
+    }
 
 
 @app.put("/users/me/preferences/onboarding")
-def save_onboarding(preference: OnboardingPreference, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def save_onboarding(
+    preference: OnboardingPreference, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
     with session_scope() as session:
         stored = session.get(UserPreference, user["id"])
         if stored is None:
             raise HTTPException(status_code=404, detail="User preferences are unavailable")
         stored.onboarding_complete = preference.complete
-        selected = session.get(NavidromeConnection, preference.connection_id) if preference.connection_id else None
+        selected = (
+            session.get(NavidromeConnection, preference.connection_id)
+            if preference.connection_id
+            else None
+        )
         if selected is not None and selected.owner_user_id != user["id"]:
             raise HTTPException(status_code=404, detail="Connection not found")
         stored.navidrome_connection_id = preference.connection_id
@@ -475,7 +584,10 @@ def save_onboarding(preference: OnboardingPreference, echora_session: str | None
         selected_url = selected.url if selected else None
     if selected_url is not None:
         _attach_user_library(user["id"], selected_url)
-    return {"onboarding_complete": preference.complete, "navidrome_connection_id": preference.connection_id}
+    return {
+        "onboarding_complete": preference.complete,
+        "navidrome_connection_id": preference.connection_id,
+    }
 
 
 @app.get("/settings")
@@ -484,38 +596,62 @@ def settings(echora_session: str | None = Cookie(default=None)) -> dict[str, obj
     with session_scope() as session:
         stored_user = session.get(User, user["id"])
         preference = session.get(UserPreference, user["id"])
-        connection = session.get(NavidromeConnection, preference.navidrome_connection_id) if preference and preference.navidrome_connection_id else None
+        connection = (
+            session.get(NavidromeConnection, preference.navidrome_connection_id)
+            if preference and preference.navidrome_connection_id
+            else None
+        )
         if stored_user is None or preference is None:
             raise HTTPException(status_code=404, detail="User settings are unavailable")
-        model_settings = session.execute(text(
-            """SELECT karaoke_processing_enabled, hum_processing_enabled, transcription_processing_enabled
+        model_settings = session.execute(
+            text(
+                """SELECT karaoke_processing_enabled, hum_processing_enabled, transcription_processing_enabled
                FROM analysis_settings WHERE singleton=true"""
-        )).one_or_none()
+            )
+        ).one_or_none()
         karaoke_enabled = True if model_settings is None else bool(model_settings[0])
         hum_enabled = True if model_settings is None else bool(model_settings[1])
         return {
-            "profile": {"username": stored_user.username, "email": stored_user.email, "display_name": stored_user.display_name, "is_admin": stored_user.is_admin},
+            "profile": {
+                "username": stored_user.username,
+                "email": stored_user.email,
+                "display_name": stored_user.display_name,
+                "is_admin": stored_user.is_admin,
+            },
             "models": {
                 "karaoke_processing_enabled": karaoke_enabled,
                 "hum_processing_enabled": hum_enabled,
                 "transcription_processing_enabled": bool(model_settings and model_settings[2]),
             },
             "timezone": preference.timezone,
-            "navidrome": None if connection is None else {
-                "id": str(connection.id), "url": connection.url, "username": connection.username,
+            "navidrome": None
+            if connection is None
+            else {
+                "id": str(connection.id),
+                "url": connection.url,
+                "username": connection.username,
             },
-            "lastfm": {"connected": bool(preference.lastfm_username and preference.lastfm_api_key_encrypted), "username": preference.lastfm_username},
+            "lastfm": {
+                "connected": bool(
+                    preference.lastfm_username and preference.lastfm_api_key_encrypted
+                ),
+                "username": preference.lastfm_username,
+            },
         }
 
 
 @app.put("/settings/models/karaoke")
 def update_karaoke_processing_settings(
-    request: KaraokeProcessingSettingsRequest, echora_session: str | None = Cookie(default=None),
+    request: KaraokeProcessingSettingsRequest,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     if not user.get("is_admin"):
         raise HTTPException(status_code=403, detail="Administrator access required")
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """INSERT INTO analysis_settings
                  (singleton, karaoke_processing_enabled, karaoke_bound_to_synced_lines, updated_at)
@@ -540,7 +676,8 @@ def update_karaoke_processing_settings(
 
 @app.put("/settings/models/transcription")
 def update_transcription_processing_settings(
-    request: KaraokeProcessingSettingsRequest, echora_session: str | None = Cookie(default=None),
+    request: KaraokeProcessingSettingsRequest,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     if not user.get("is_admin"):
@@ -550,18 +687,24 @@ def update_transcription_processing_settings(
             """INSERT INTO analysis_settings (singleton, transcription_processing_enabled, updated_at)
                VALUES (true,%s,now()) ON CONFLICT (singleton) DO UPDATE
                SET transcription_processing_enabled=EXCLUDED.transcription_processing_enabled,
-                   updated_at=now()""", (request.enabled,))
+                   updated_at=now()""",
+            (request.enabled,),
+        )
     return {"enabled": request.enabled}
 
 
 @app.put("/settings/models/hum")
 def update_hum_processing_settings(
-    request: HumProcessingSettingsRequest, echora_session: str | None = Cookie(default=None),
+    request: HumProcessingSettingsRequest,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     if not user.get("is_admin"):
         raise HTTPException(status_code=403, detail="Administrator access required")
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """INSERT INTO analysis_settings
                  (singleton, karaoke_bound_to_synced_lines, hum_processing_enabled, updated_at)
@@ -589,7 +732,9 @@ def update_hum_processing_settings(
 
 
 @app.put("/settings/profile")
-def update_profile(request: ProfileSettingsRequest, echora_session: str | None = Cookie(default=None)) -> dict[str, str]:
+def update_profile(
+    request: ProfileSettingsRequest, echora_session: str | None = Cookie(default=None)
+) -> dict[str, str]:
     user = _session_user(echora_session)
     with session_scope() as session:
         stored = session.get(User, user["id"])
@@ -600,7 +745,9 @@ def update_profile(request: ProfileSettingsRequest, echora_session: str | None =
 
 
 @app.put("/settings/timezone")
-def update_timezone(request: TimezoneSettingsRequest, echora_session: str | None = Cookie(default=None)) -> dict[str, str]:
+def update_timezone(
+    request: TimezoneSettingsRequest, echora_session: str | None = Cookie(default=None)
+) -> dict[str, str]:
     user = _session_user(echora_session)
     try:
         ZoneInfo(request.timezone)
@@ -616,7 +763,9 @@ def update_timezone(request: TimezoneSettingsRequest, echora_session: str | None
 
 
 @app.put("/settings/navidrome")
-def update_navidrome(request: Credentials, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def update_navidrome(
+    request: Credentials, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
     credentials = _credentials(request)
     try:
@@ -633,18 +782,32 @@ def update_navidrome(request: Credentials, echora_session: str | None = Cookie(d
         preference.navidrome_connection_id = connection_id
         preference.updated_at = datetime.now(timezone.utc)
     _attach_user_library(user["id"], credentials[0])
-    return {"id": connection_id, "url": credentials[0], "username": credentials[1], "server": version}
+    return {
+        "id": connection_id,
+        "url": credentials[0],
+        "username": credentials[1],
+        "server": version,
+    }
 
 
 @app.put("/settings/lastfm")
-def update_lastfm(request: LastFmSettingsRequest, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def update_lastfm(
+    request: LastFmSettingsRequest, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
     api_key = request.api_key.get_secret_value().strip()
     try:
-        response = httpx.get("https://ws.audioscrobbler.com/2.0/", params={
-            "method": "user.getrecenttracks", "user": request.username.strip(),
-            "api_key": api_key, "format": "json", "limit": 1,
-        }, timeout=get_settings().lastfm_validation_timeout_seconds)
+        response = httpx.get(
+            "https://ws.audioscrobbler.com/2.0/",
+            params={
+                "method": "user.getrecenttracks",
+                "user": request.username.strip(),
+                "api_key": api_key,
+                "format": "json",
+                "limit": 1,
+            },
+            timeout=get_settings().lastfm_validation_timeout_seconds,
+        )
         response.raise_for_status()
         payload = response.json()
         if payload.get("error"):
@@ -652,7 +815,9 @@ def update_lastfm(request: LastFmSettingsRequest, echora_session: str | None = C
         total = int(payload.get("recenttracks", {}).get("@attr", {}).get("total") or 0)
     except Exception as error:
         logger.warning("Last.fm verification failed for %s: %s", request.username, error)
-        raise HTTPException(status_code=422, detail="Could not verify the Last.fm account") from error
+        raise HTTPException(
+            status_code=422, detail="Could not verify the Last.fm account"
+        ) from error
     with session_scope() as session:
         preference = session.get(UserPreference, user["id"])
         if preference is None:
@@ -664,7 +829,9 @@ def update_lastfm(request: LastFmSettingsRequest, echora_session: str | None = C
 
 
 @app.delete("/settings/lastfm", status_code=204)
-def disconnect_lastfm(response: Response, echora_session: str | None = Cookie(default=None)) -> Response:
+def disconnect_lastfm(
+    response: Response, echora_session: str | None = Cookie(default=None)
+) -> Response:
     user = _session_user(echora_session)
     with session_scope() as session:
         preference = session.get(UserPreference, user["id"])
@@ -694,23 +861,33 @@ def oidc_admin_settings(echora_session: str | None = Cookie(default=None)) -> di
     _admin_user(echora_session)
     with session_scope() as session:
         policy = session.get(OidcSetting, True)
-        users = session.scalars(select(User).where(User.email.is_not(None)).order_by(func.lower(User.email))).all()
+        users = session.scalars(
+            select(User).where(User.email.is_not(None)).order_by(func.lower(User.email))
+        ).all()
         allowed = session.scalars(select(OidcAllowedEmail).order_by(OidcAllowedEmail.email)).all()
         return {
             "configured": _oauth.create_client("oidc") is not None,
             "issuer": _oidc_issuer or None,
             "require_verified_email": get_settings().oidc_require_verified_email,
             "auto_provision": policy.auto_provision if policy else True,
-            "users": [{
-                "id": str(item.id), "email": item.email, "display_name": item.display_name,
-                "is_admin": item.is_admin, "is_blocked": item.is_blocked,
-            } for item in users],
+            "users": [
+                {
+                    "id": str(item.id),
+                    "email": item.email,
+                    "display_name": item.display_name,
+                    "is_admin": item.is_admin,
+                    "is_blocked": item.is_blocked,
+                }
+                for item in users
+            ],
             "allowed_emails": [item.email for item in allowed],
         }
 
 
 @app.put("/settings/oidc/policy")
-def update_oidc_policy(request: OidcPolicyRequest, echora_session: str | None = Cookie(default=None)) -> dict[str, bool]:
+def update_oidc_policy(
+    request: OidcPolicyRequest, echora_session: str | None = Cookie(default=None)
+) -> dict[str, bool]:
     _admin_user(echora_session)
     with session_scope() as session:
         policy = session.get(OidcSetting, True)
@@ -723,7 +900,9 @@ def update_oidc_policy(request: OidcPolicyRequest, echora_session: str | None = 
 
 
 @app.post("/settings/oidc/allowed-emails", status_code=201)
-def allow_oidc_email(request: OidcAllowRequest, echora_session: str | None = Cookie(default=None)) -> dict[str, str]:
+def allow_oidc_email(
+    request: OidcAllowRequest, echora_session: str | None = Cookie(default=None)
+) -> dict[str, str]:
     admin = _admin_user(echora_session)
     email = request.email.strip().casefold()
     if "@" not in email:
@@ -737,7 +916,9 @@ def allow_oidc_email(request: OidcAllowRequest, echora_session: str | None = Coo
 
 
 @app.delete("/settings/oidc/allowed-emails/{email}", status_code=204)
-def remove_allowed_oidc_email(email: str, response: Response, echora_session: str | None = Cookie(default=None)) -> Response:
+def remove_allowed_oidc_email(
+    email: str, response: Response, echora_session: str | None = Cookie(default=None)
+) -> Response:
     _admin_user(echora_session)
     with session_scope() as session:
         allowed = session.get(OidcAllowedEmail, email.casefold())
@@ -748,7 +929,8 @@ def remove_allowed_oidc_email(email: str, response: Response, echora_session: st
 
 @app.patch("/settings/oidc/users/{user_id}")
 def update_oidc_user(
-    user_id: uuid.UUID, request: OidcUserUpdateRequest,
+    user_id: uuid.UUID,
+    request: OidcUserUpdateRequest,
     echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     admin = _admin_user(echora_session)
@@ -757,12 +939,22 @@ def update_oidc_user(
         target = session.get(User, user_id)
         if target is None:
             raise HTTPException(status_code=404, detail="User not found")
-        if user_id == admin["id"] and (values.get("is_admin") is False or values.get("is_blocked") is True):
-            raise HTTPException(status_code=422, detail="You cannot demote or block your own account")
+        if user_id == admin["id"] and (
+            values.get("is_admin") is False or values.get("is_blocked") is True
+        ):
+            raise HTTPException(
+                status_code=422, detail="You cannot demote or block your own account"
+            )
         if target.is_admin and values.get("is_admin") is False:
-            admin_count = session.scalar(select(func.count()).select_from(User).where(User.is_admin, User.is_blocked.is_(False)))
+            admin_count = session.scalar(
+                select(func.count())
+                .select_from(User)
+                .where(User.is_admin, User.is_blocked.is_(False))
+            )
             if admin_count <= 1:
-                raise HTTPException(status_code=422, detail="Echora must retain at least one active administrator")
+                raise HTTPException(
+                    status_code=422, detail="Echora must retain at least one active administrator"
+                )
         for key, value in values.items():
             setattr(target, key, value)
         if values.get("is_blocked") is True:
@@ -787,7 +979,9 @@ def capabilities() -> dict[str, object]:
 
 
 @app.post("/navidrome/discover", dependencies=[Depends(require_user)])
-def discover(request: DiscoverRequest, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def discover(
+    request: DiscoverRequest, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
     try:
         with NavidromeClient(*_credentials(request)) as client:
@@ -795,15 +989,21 @@ def discover(request: DiscoverRequest, echora_session: str | None = Cookie(defau
             tracks = client.random_tracks(request.limit)
     except Exception as error:
         logger.warning("Navidrome discovery failed for %s: %s", request.url, error)
-        raise HTTPException(status_code=400, detail="Could not connect to the Navidrome server") from error
+        raise HTTPException(
+            status_code=400, detail="Could not connect to the Navidrome server"
+        ) from error
     connection_id = _save_connection(_credentials(request), user["id"])
     return {
         "connection_id": connection_id,
         "server": {"version": version, "url": str(request.url).rstrip("/")},
         "tracks": [
             {
-                "id": track.id, "title": track.title, "artist": track.artist,
-                "album": track.album, "duration": track.duration, "genre": track.genre,
+                "id": track.id,
+                "title": track.title,
+                "artist": track.artist,
+                "album": track.album,
+                "duration": track.duration,
+                "genre": track.genre,
                 "cover_art": track.raw.get("coverArt"),
             }
             for track in tracks
@@ -812,7 +1012,9 @@ def discover(request: DiscoverRequest, echora_session: str | None = Cookie(defau
 
 
 @app.get("/navidrome/connections/{connection_id}/catalog", dependencies=[Depends(require_user)])
-def navidrome_catalog(connection_id: str, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def navidrome_catalog(
+    connection_id: str, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
     credentials = _load_connection(connection_id, user["id"])
     if credentials is None:
@@ -821,11 +1023,15 @@ def navidrome_catalog(connection_id: str, echora_session: str | None = Cookie(de
         with NavidromeClient(*credentials) as client:
             return client.catalog()
     except Exception as error:
-        raise HTTPException(status_code=502, detail="Could not read the Navidrome catalog") from error
+        raise HTTPException(
+            status_code=502, detail="Could not read the Navidrome catalog"
+        ) from error
 
 
 @app.get("/navidrome/connections/{connection_id}/sync/status", dependencies=[Depends(require_user)])
-def navidrome_sync_status(connection_id: str, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def navidrome_sync_status(
+    connection_id: str, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
     credentials = _load_connection(connection_id, user["id"])
     if credentials is None:
@@ -834,7 +1040,9 @@ def navidrome_sync_status(connection_id: str, echora_session: str | None = Cooki
         with NavidromeClient(*credentials) as client:
             tracks = client.all_tracks()
     except Exception as error:
-        raise HTTPException(status_code=502, detail="Could not scan the Navidrome library") from error
+        raise HTTPException(
+            status_code=502, detail="Could not scan the Navidrome library"
+        ) from error
     namespace = uuid.uuid5(uuid.NAMESPACE_URL, credentials[0].rstrip("/"))
     with psycopg.connect(get_settings().database_url) as connection, connection.cursor() as cursor:
         cursor.execute(
@@ -847,45 +1055,82 @@ def navidrome_sync_status(connection_id: str, echora_session: str | None = Cooki
         )
         processed = {str(row[0]) for row in cursor.fetchall()}
         from .recording_search import index_status
-        recording_index = index_status(connection, namespace, [track.id for track in tracks], user["id"])
+
+        recording_index = index_status(
+            connection, namespace, [track.id for track in tracks], user["id"]
+        )
     missing = [track for track in tracks if track.id not in processed]
     return {
-        "server": credentials[0], "total": len(tracks), "processed": len(tracks) - len(missing), "missing": len(missing),
+        "server": credentials[0],
+        "total": len(tracks),
+        "processed": len(tracks) - len(missing),
+        "missing": len(missing),
         "recording_index": recording_index,
-        "tracks": [{"id": track.id, "title": track.title, "artist": track.artist, "album": track.album, "duration": track.duration, "cover_art": track.raw.get("coverArt")} for track in missing[:50]],
+        "tracks": [
+            {
+                "id": track.id,
+                "title": track.title,
+                "artist": track.artist,
+                "album": track.album,
+                "duration": track.duration,
+                "cover_art": track.raw.get("coverArt"),
+            }
+            for track in missing[:50]
+        ],
     }
 
 
-def _enqueue_connection_job(kind: str, connection_id: str, user: dict[str, object],
-                            payload: dict[str, object] | None = None) -> dict[str, object]:
+def _enqueue_connection_job(
+    kind: str, connection_id: str, user: dict[str, object], payload: dict[str, object] | None = None
+) -> dict[str, object]:
     # Validate ownership without putting decrypted credentials into job payloads.
     if _load_connection(connection_id, user["id"]) is None:
         raise HTTPException(status_code=404, detail="Connection not found")
     return jobs.enqueue(
-        kind, "analysis", user["id"], connection_id=connection_id,
-        payload=payload or {}, dedupe_key=f"{kind}:{user['id']}:{connection_id}",
+        kind,
+        "analysis",
+        user["id"],
+        connection_id=connection_id,
+        payload=payload or {},
+        dedupe_key=f"{kind}:{user['id']}:{connection_id}",
     )
 
 
 @app.post("/navidrome/connections/{connection_id}/sync", status_code=202)
 def start_navidrome_sync(
-    connection_id: str, request: SyncRequest, echora_session: str | None = Cookie(default=None),
+    connection_id: str,
+    request: SyncRequest,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
-    return _enqueue_connection_job("navidrome_sync", connection_id, _session_user(echora_session),
-                                   payload={"mode": request.mode, "verify_audio_hashes": request.verify_audio_hashes})
+    return _enqueue_connection_job(
+        "navidrome_sync",
+        connection_id,
+        _session_user(echora_session),
+        payload={"mode": request.mode, "verify_audio_hashes": request.verify_audio_hashes},
+    )
 
 
-@app.post("/navidrome/connections/{connection_id}/recordings/backfill", status_code=202, dependencies=[Depends(require_user)])
+@app.post(
+    "/navidrome/connections/{connection_id}/recordings/backfill",
+    status_code=202,
+    dependencies=[Depends(require_user)],
+)
 def start_recording_backfill(
-    connection_id: str, echora_session: str | None = Cookie(default=None),
+    connection_id: str,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
-    return _enqueue_connection_job("recordings_backfill", connection_id, _session_user(echora_session))
+    return _enqueue_connection_job(
+        "recordings_backfill", connection_id, _session_user(echora_session)
+    )
 
 
 @app.get("/library/lyrics/status", dependencies=[Depends(require_user)])
 def lyrics_status(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     _session_user(echora_session)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT count(*) AS total,
                       count(*) FILTER (WHERE l.availability_status='available') AS available,
@@ -902,56 +1147,88 @@ def lyrics_status(echora_session: str | None = Cookie(default=None)) -> dict[str
         return cursor.fetchone()
 
 
-@app.post("/navidrome/connections/{connection_id}/lyrics/backfill", status_code=202, dependencies=[Depends(require_user)])
+@app.post(
+    "/navidrome/connections/{connection_id}/lyrics/backfill",
+    status_code=202,
+    dependencies=[Depends(require_user)],
+)
 def start_lyrics_backfill(
-    connection_id: str, echora_session: str | None = Cookie(default=None),
+    connection_id: str,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     return _enqueue_connection_job("lyrics_backfill", connection_id, _session_user(echora_session))
 
 
-@app.post("/navidrome/connections/{connection_id}/voice/backfill", status_code=202, dependencies=[Depends(require_user)])
+@app.post(
+    "/navidrome/connections/{connection_id}/voice/backfill",
+    status_code=202,
+    dependencies=[Depends(require_user)],
+)
 def start_voice_backfill(
-    connection_id: str, echora_session: str | None = Cookie(default=None),
+    connection_id: str,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     return _enqueue_connection_job("voice_backfill", connection_id, _session_user(echora_session))
 
 
-@app.post("/navidrome/connections/{connection_id}/lyrics/karaoke/backfill", status_code=202, dependencies=[Depends(require_user)])
+@app.post(
+    "/navidrome/connections/{connection_id}/lyrics/karaoke/backfill",
+    status_code=202,
+    dependencies=[Depends(require_user)],
+)
 def start_karaoke_backfill(
-    connection_id: str, echora_session: str | None = Cookie(default=None),
+    connection_id: str,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     return _enqueue_connection_job("karaoke_backfill", connection_id, _session_user(echora_session))
 
 
 @app.post("/library/semantic-fusion/rebuild", status_code=202, dependencies=[Depends(require_user)])
-def start_semantic_fusion_build(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
-    return jobs.enqueue("semantic_fusion_build", "analysis", _session_user(echora_session)["id"],
-                        dedupe_key="semantic_fusion_build")
+def start_semantic_fusion_build(
+    echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    return jobs.enqueue(
+        "semantic_fusion_build",
+        "analysis",
+        _session_user(echora_session)["id"],
+        dedupe_key="semantic_fusion_build",
+    )
 
 
 @app.get("/library/semantic-fusion/status", dependencies=[Depends(require_user)])
 def semantic_fusion_status(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     _session_user(echora_session)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT count(*) AS fused,
                       (SELECT count(*) FROM current_embeddings l WHERE l.embedding_type='lyrics'
                         AND l.window_index IS NULL) AS lyrics,
                       (SELECT count(*) FROM current_embeddings a WHERE a.embedding_type='audio-track'
                         AND a.window_index IS NULL) AS audio
-               FROM current_embeddings e WHERE e.embedding_type='semantic_fusion'""")
+               FROM current_embeddings e WHERE e.embedding_type='semantic_fusion'"""
+        )
         return cursor.fetchone()
 
 
 @app.get("/library/tracks/{track_id}/similar", dependencies=[Depends(require_user)])
 def similar_tracks(
-    track_id: uuid.UUID, limit: int = 20, echora_session: str | None = Cookie(default=None),
+    track_id: uuid.UUID,
+    limit: int = 20,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     _session_user(echora_session)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT e.embedding FROM current_embeddings e
-               WHERE e.track_id=%s AND e.embedding_type='semantic_fusion'""", (track_id,))
+               WHERE e.track_id=%s AND e.embedding_type='semantic_fusion'""",
+            (track_id,),
+        )
         seed = cursor.fetchone()
         if seed is None:
             raise HTTPException(status_code=404, detail="Track has no semantic fusion vector")
@@ -969,10 +1246,14 @@ def similar_tracks(
 
 @app.get("/library/tracks/{track_id}/recording-group", dependencies=[Depends(require_user)])
 def track_recording_group(
-    track_id: uuid.UUID, echora_session: str | None = Cookie(default=None),
+    track_id: uuid.UUID,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     _session_user(echora_session)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT rg.id, rg.status, rg.canonical_track_id, rg.created_at, rg.updated_at
                FROM recording_group_members member JOIN recording_groups rg ON rg.id=member.group_id
@@ -1005,16 +1286,24 @@ def track_recording_group(
 
 @app.get("/library/tracks/{track_id}/audio-descriptors")
 def track_audio_descriptors(
-    track_id: uuid.UUID, echora_session: str | None = Cookie(default=None),
+    track_id: uuid.UUID,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            "SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s",
+            (user["id"], track_id),
+        )
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Track not found")
         cursor.execute(
             """SELECT revision, status, descriptors, created_at FROM track_audio_descriptors
-               WHERE track_id=%s AND revision=%s""", (track_id, DESCRIPTOR_REVISION),
+               WHERE track_id=%s AND revision=%s""",
+            (track_id, DESCRIPTOR_REVISION),
         )
         descriptors = cursor.fetchone()
         cursor.execute(
@@ -1022,7 +1311,8 @@ def track_audio_descriptors(
                FROM track_vocal_activity activity
                JOIN current_analysis_runs ar ON ar.id=activity.run_id
                WHERE activity.track_id=%s AND ar.kind='voice_classification'
-               ORDER BY activity.created_at DESC LIMIT 1""", (track_id,),
+               ORDER BY activity.created_at DESC LIMIT 1""",
+            (track_id,),
         )
         vocal = cursor.fetchone()
     return {
@@ -1035,10 +1325,18 @@ def track_audio_descriptors(
 
 
 @app.get("/library/tracks/{track_id}/waveform")
-def track_waveform(track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def track_waveform(
+    track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            "SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s",
+            (user["id"], track_id),
+        )
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Track not found")
         cursor.execute(
@@ -1051,18 +1349,38 @@ def track_waveform(track_id: uuid.UUID, echora_session: str | None = Cookie(defa
                FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
                WHERE mc.track_id=%s AND ar.status IN ('complete','running')
                ORDER BY CASE mc.source WHEN 'full-mix' THEN 0 WHEN 'vocals' THEN 1 ELSE 2 END,
-                        ar.created_at DESC LIMIT 1""", (track_id,),
+                        ar.created_at DESC LIMIT 1""",
+            (track_id,),
         )
         contour = cursor.fetchone()
-    melody = melody_preview(contour["source"], contour["pitch"], contour["voiced"], float(contour["hop_seconds"])) if contour else None
-    return {"track_id": str(track_id), "status": "complete" if waveform else "pending", "waveform": waveform, "melody": melody}
+    melody = (
+        melody_preview(
+            contour["source"], contour["pitch"], contour["voiced"], float(contour["hop_seconds"])
+        )
+        if contour
+        else None
+    )
+    return {
+        "track_id": str(track_id),
+        "status": "complete" if waveform else "pending",
+        "waveform": waveform,
+        "melody": melody,
+    }
 
 
 @app.get("/library/tracks/{track_id}/visual-features")
-def track_visual_features(track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def track_visual_features(
+    track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            "SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s",
+            (user["id"], track_id),
+        )
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Track not found")
         cursor.execute(
@@ -1075,14 +1393,16 @@ def track_visual_features(track_id: uuid.UUID, echora_session: str | None = Cook
         # rerun, and this authenticated endpoint never schedules model work.
         cursor.execute(
             """SELECT revision, status, descriptors, created_at FROM track_audio_descriptors
-               WHERE track_id=%s AND revision=%s""", (track_id, DESCRIPTOR_REVISION),
+               WHERE track_id=%s AND revision=%s""",
+            (track_id, DESCRIPTOR_REVISION),
         )
         descriptors = cursor.fetchone()
         cursor.execute(
             """SELECT activity.activity, activity.run_id FROM track_vocal_activity activity
                JOIN current_analysis_runs ar ON ar.id=activity.run_id
                WHERE activity.track_id=%s AND ar.kind='voice_classification'
-               ORDER BY activity.created_at DESC LIMIT 1""", (track_id,),
+               ORDER BY activity.created_at DESC LIMIT 1""",
+            (track_id,),
         )
         vocal = cursor.fetchone()
         cursor.execute(
@@ -1090,20 +1410,36 @@ def track_visual_features(track_id: uuid.UUID, echora_session: str | None = Cook
                FROM melody_contours mc JOIN analysis_runs ar ON ar.id=mc.run_id
                WHERE mc.track_id=%s AND ar.model_revision=%s AND ar.status IN ('complete','running')
                ORDER BY CASE mc.source WHEN 'full-mix' THEN 0 WHEN 'vocals' THEN 1 ELSE 2 END,
-                        ar.created_at DESC LIMIT 1""", (track_id, MELODY_CONTOUR_REVISION),
+                        ar.created_at DESC LIMIT 1""",
+            (track_id, MELODY_CONTOUR_REVISION),
         )
         contour = cursor.fetchone()
-    melody = melody_preview(contour["source"], contour["pitch"], contour["voiced"], float(contour["hop_seconds"])) if contour else None
+    melody = (
+        melody_preview(
+            contour["source"], contour["pitch"], contour["voiced"], float(contour["hop_seconds"])
+        )
+        if contour
+        else None
+    )
     status = cache["status"] if cache else "pending"
     features = cache if status == "complete" else None
-    return {"track_id": str(track_id), "status": status, "visual_features": features,
-            "enrichment": {"descriptors": descriptors, "vocal_activity": vocal, "melody": melody}}
+    return {
+        "track_id": str(track_id),
+        "status": status,
+        "visual_features": features,
+        "enrichment": {"descriptors": descriptors, "vocal_activity": vocal, "melody": melody},
+    }
 
 
 @app.get("/library/tracks/{track_id}/audio-quality")
-def track_audio_quality(track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def track_audio_quality(
+    track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT ts.source_data->>'suffix' AS codec,
                       ts.source_data->>'contentType' AS content_type,
@@ -1126,9 +1462,14 @@ def track_audio_quality(track_id: uuid.UUID, echora_session: str | None = Cookie
 
 
 @app.get("/library/tracks/{track_id}/lyrics")
-def track_lyrics(track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def track_lyrics(
+    track_id: uuid.UUID, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT l.text, l.language, l.source, l.provenance, l.availability_status,
                       karaoke.lines AS karaoke_lines, karaoke.ass AS karaoke_ass,
@@ -1152,26 +1493,47 @@ def track_lyrics(track_id: uuid.UUID, echora_session: str | None = Cookie(defaul
     karaoke_lines = row.get("karaoke_lines") or []
     from .translation_pipeline import source_lines as translation_source_lines
     from .translation_storage import load_translations
+
     original_lines = translation_source_lines(row)
-    translations = [{"source_language": item["source_language"],
-                     "target_language": item["target_language"],
-                     "lines": item["lines"], "source_lines": original_lines}
-                    for item in load_translations(track_id, original_lines) if item["status"] == "ready"]
-    return {"available": bool(row.get("text")), "availability_status": row.get("availability_status"), **row,
-            "lines": karaoke_lines or source_lines, "karaoke": bool(karaoke_lines), "translations": translations}
+    translations = [
+        {
+            "source_language": item["source_language"],
+            "target_language": item["target_language"],
+            "lines": item["lines"],
+            "source_lines": original_lines,
+        }
+        for item in load_translations(track_id, original_lines)
+        if item["status"] == "ready"
+    ]
+    return {
+        "available": bool(row.get("text")),
+        "availability_status": row.get("availability_status"),
+        **row,
+        "lines": karaoke_lines or source_lines,
+        "karaoke": bool(karaoke_lines),
+        "translations": translations,
+    }
 
 
 @app.put("/library/tracks/{track_id}/lyrics", dependencies=[Depends(require_user)])
 def update_track_lyrics(
-    track_id: uuid.UUID, request: LyricsUpdateRequest, echora_session: str | None = Cookie(default=None),
+    track_id: uuid.UUID,
+    request: LyricsUpdateRequest,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     lyric_text = request.text.strip()
     if not lyric_text:
         raise HTTPException(status_code=422, detail="Lyrics cannot be empty")
     language = request.language.strip().lower() if request.language else None
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            "SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s",
+            (user["id"], track_id),
+        )
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Track is not in your library")
         cursor.execute("SELECT text, language FROM lyrics WHERE track_id=%s", (track_id,))
@@ -1190,24 +1552,45 @@ def update_track_lyrics(
         )
         if changed:
             cursor.execute("DELETE FROM karaoke_lyrics_variants WHERE track_id=%s", (track_id,))
-            cursor.execute("DELETE FROM embeddings WHERE track_id=%s AND embedding_type='lyrics'", (track_id,))
-    return {"track_id": str(track_id), "karaoke_pending": changed, "lyrics_embedding_pending": changed}
+            cursor.execute(
+                "DELETE FROM embeddings WHERE track_id=%s AND embedding_type='lyrics'", (track_id,)
+            )
+    return {
+        "track_id": str(track_id),
+        "karaoke_pending": changed,
+        "lyrics_embedding_pending": changed,
+    }
 
 
-@app.put("/library/tracks/{track_id}/lyrics/transcription-language", dependencies=[Depends(require_user)])
+@app.put(
+    "/library/tracks/{track_id}/lyrics/transcription-language", dependencies=[Depends(require_user)]
+)
 def force_transcription_language(
-    track_id: uuid.UUID, request: TranscriptionLanguageRequest, echora_session: str | None = Cookie(default=None),
+    track_id: uuid.UUID,
+    request: TranscriptionLanguageRequest,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     language = request.language.strip()
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            "SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s",
+            (user["id"], track_id),
+        )
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Track is not in your library")
-        cursor.execute("SELECT transcription_processing_enabled FROM analysis_settings WHERE singleton=true")
+        cursor.execute(
+            "SELECT transcription_processing_enabled FROM analysis_settings WHERE singleton=true"
+        )
         setting = cursor.fetchone()
         if not setting or not setting["transcription_processing_enabled"]:
-            raise HTTPException(status_code=409, detail="Enable AI lyric generation in Settings before forcing transcription")
+            raise HTTPException(
+                status_code=409,
+                detail="Enable AI lyric generation in Settings before forcing transcription",
+            )
         cursor.execute(
             """INSERT INTO lyrics (track_id, source, text, provenance, availability_status)
                VALUES (%s,'none',NULL,jsonb_build_object('transcription_language',%s::text,'forced_transcription',true),'missing')
@@ -1218,17 +1601,27 @@ def force_transcription_language(
             (track_id, language, language),
         )
         cursor.execute("DELETE FROM karaoke_lyrics_variants WHERE track_id=%s", (track_id,))
-        cursor.execute("DELETE FROM embeddings WHERE track_id=%s AND embedding_type='lyrics'", (track_id,))
+        cursor.execute(
+            "DELETE FROM embeddings WHERE track_id=%s AND embedding_type='lyrics'", (track_id,)
+        )
     return {"track_id": str(track_id), "language": language, "transcription_pending": True}
 
 
 @app.put("/library/tracks/{track_id}/lyrics/status", dependencies=[Depends(require_user)])
 def update_track_lyrics_status(
-    track_id: uuid.UUID, request: LyricsStatusRequest, echora_session: str | None = Cookie(default=None),
+    track_id: uuid.UUID,
+    request: LyricsStatusRequest,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s", (user["id"], track_id))
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            "SELECT 1 FROM user_track_links WHERE user_id=%s AND track_id=%s",
+            (user["id"], track_id),
+        )
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Track is not in your library")
         cursor.execute(
@@ -1242,13 +1635,20 @@ def update_track_lyrics_status(
             (track_id, request.status, request.status),
         )
         cursor.execute("DELETE FROM karaoke_lyrics_variants WHERE track_id=%s", (track_id,))
-        cursor.execute("DELETE FROM embeddings WHERE track_id=%s AND embedding_type='lyrics'", (track_id,))
+        cursor.execute(
+            "DELETE FROM embeddings WHERE track_id=%s AND embedding_type='lyrics'", (track_id,)
+        )
     return {"track_id": str(track_id), "status": request.status}
 
 
-@app.get("/navidrome/connections/{connection_id}/stream/{song_id}", dependencies=[Depends(require_user)])
+@app.get(
+    "/navidrome/connections/{connection_id}/stream/{song_id}", dependencies=[Depends(require_user)]
+)
 def stream_track(
-    connection_id: str, song_id: str, request: Request, echora_session: str | None = Cookie(default=None),
+    connection_id: str,
+    song_id: str,
+    request: Request,
+    echora_session: str | None = Cookie(default=None),
 ) -> Response:
     user = _session_user(echora_session)
     credentials = _load_connection(connection_id, user["id"])
@@ -1272,6 +1672,7 @@ def stream_track(
             raise HTTPException(status_code=502, detail="Could not open this track") from error
         content_type = upstream.headers.get("content-type", "audio/mpeg")
         writer = cache.stream_writer(key, content_type) if cache and starts_at_zero else None
+
         def stream_and_cache():
             completed = False
             try:
@@ -1292,10 +1693,20 @@ def stream_track(
                         writer.commit()
                     else:
                         writer.abort()
-        forwarded = {key: value for key, value in upstream.headers.items() if key.lower() in {"content-range", "accept-ranges"}}
+
+        forwarded = {
+            key: value
+            for key, value in upstream.headers.items()
+            if key.lower() in {"content-range", "accept-ranges"}
+        }
         return StreamingResponse(
-            stream_and_cache(), status_code=upstream.status_code, media_type=content_type,
-            headers={**forwarded, "Cache-Control": "private, max-age=3600" if cache else "no-store"},
+            stream_and_cache(),
+            status_code=upstream.status_code,
+            media_type=content_type,
+            headers={
+                **forwarded,
+                "Cache-Control": "private, max-age=3600" if cache else "no-store",
+            },
         )
     content, content_type = cached.content, cached.content_type
     total = len(content)
@@ -1313,9 +1724,13 @@ def stream_track(
             if start < 0 or start >= total or end < start:
                 raise ValueError
         except ValueError as error:
-            raise HTTPException(status_code=416, detail="Requested audio range is unavailable") from error
-        body = content[start:end + 1]
-        headers.update({"Content-Range": f"bytes {start}-{end}/{total}", "Content-Length": str(len(body))})
+            raise HTTPException(
+                status_code=416, detail="Requested audio range is unavailable"
+            ) from error
+        body = content[start : end + 1]
+        headers.update(
+            {"Content-Range": f"bytes {start}-{end}/{total}", "Content-Length": str(len(body))}
+        )
         return Response(body, status_code=206, media_type=content_type, headers=headers)
     headers["Content-Length"] = str(total)
     return Response(content, media_type=content_type, headers=headers)
@@ -1328,7 +1743,9 @@ class ScrobbleRequest(BaseModel):
 
 
 @app.post("/navidrome/scrobble", status_code=204, dependencies=[Depends(require_user)])
-def scrobble_play(request: ScrobbleRequest, echora_session: str | None = Cookie(default=None)) -> Response:
+def scrobble_play(
+    request: ScrobbleRequest, echora_session: str | None = Cookie(default=None)
+) -> Response:
     """Report playback to the media server (Subsonic scrobble). Fire-and-forget
     from the player: failures must never interrupt listening, hence 204-empty
     on success and a bare 502 the client ignores on failure."""
@@ -1344,9 +1761,15 @@ def scrobble_play(request: ScrobbleRequest, echora_session: str | None = Cookie(
     return Response(status_code=204)
 
 
-@app.get("/navidrome/connections/{connection_id}/cover/{cover_id:path}", dependencies=[Depends(require_user)])
+@app.get(
+    "/navidrome/connections/{connection_id}/cover/{cover_id:path}",
+    dependencies=[Depends(require_user)],
+)
 def cover_art(
-    connection_id: str, cover_id: str, request: Request, size: int = 160,
+    connection_id: str,
+    cover_id: str,
+    request: Request,
+    size: int = 160,
     echora_session: str | None = Cookie(default=None),
 ) -> Response:
     user = _session_user(echora_session)
@@ -1358,7 +1781,11 @@ def cover_art(
     key = cache_key("cover", user["id"], connection_id, cover_id, bounded_size)
     cached = cache.get(key) if cache else None
     if cached:
-        return Response(content=cached.content, media_type=cached.content_type, headers={"Cache-Control": "private, max-age=3600"})
+        return Response(
+            content=cached.content,
+            media_type=cached.content_type,
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
     try:
         with media_navidrome_client(*credentials) as client:
             content, content_type = client.cover_art(cover_id, bounded_size)
@@ -1366,19 +1793,25 @@ def cover_art(
         raise HTTPException(status_code=404, detail="Artwork unavailable") from error
     if cache:
         cache.set(key, content, content_type)
-    return Response(content=content, media_type=content_type, headers={"Cache-Control": "private, max-age=3600"})
+    return Response(
+        content=content, media_type=content_type, headers={"Cache-Control": "private, max-age=3600"}
+    )
 
 
 @app.post("/ingest/navidrome", status_code=202, dependencies=[Depends(require_user)])
 def start_navidrome_ingest(
-    request: IngestRequest, echora_session: str | None = Cookie(default=None),
+    request: IngestRequest,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     connection_id = _save_connection(_credentials(request), user["id"])
     track_ids = sorted(set(request.track_ids))
     selection = hashlib.sha256("\n".join(track_ids).encode()).hexdigest()
     return jobs.enqueue(
-        "import", "analysis", user["id"], connection_id=connection_id,
+        "import",
+        "analysis",
+        user["id"],
+        connection_id=connection_id,
         payload={"track_ids": track_ids},
         dedupe_key=f"import:{user['id']}:{connection_id}:{selection}",
     )
@@ -1387,7 +1820,10 @@ def start_navidrome_ingest(
 @app.get("/library/hum/index", dependencies=[Depends(require_user)])
 def hum_index_status(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT count(DISTINCT mc.track_id) AS indexed_tracks
                FROM melody_contours mc
@@ -1396,7 +1832,11 @@ def hum_index_status(echora_session: str | None = Cookie(default=None)) -> dict[
             (user["id"],),
         )
         indexed = int(cursor.fetchone()["indexed_tracks"])
-    return {"status": "complete" if indexed else "missing", "indexed_tracks": indexed, "track_limit": indexed}
+    return {
+        "status": "complete" if indexed else "missing",
+        "indexed_tracks": indexed,
+        "track_limit": indexed,
+    }
 
 
 @app.post("/library/hum/index", status_code=202, dependencies=[Depends(require_user)])
@@ -1411,14 +1851,19 @@ def start_hum_index(
     if credentials is None:
         raise HTTPException(status_code=409, detail="Connect Navidrome before building a hum index")
     return jobs.enqueue(
-        "hum_corpus", "analysis", user["id"], connection_id=connection_id,
-        payload={"track_limit": track_limit}, dedupe_key=f"hum_corpus:{user['id']}",
+        "hum_corpus",
+        "analysis",
+        user["id"],
+        connection_id=connection_id,
+        payload={"track_limit": track_limit},
+        dedupe_key=f"hum_corpus:{user['id']}",
     )
 
 
 @app.post("/library/hum/search", dependencies=[Depends(require_user)])
 async def hum_search(
-    request: Request, limit: int = 10,
+    request: Request,
+    limit: int = 10,
     echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
@@ -1429,26 +1874,38 @@ async def hum_search(
         raise HTTPException(status_code=413, detail="The recording exceeds 8 MB")
     try:
         return await run_in_threadpool(
-            search_corpus, user["id"], audio, min(max(limit, 1), 25),
+            search_corpus,
+            user["id"],
+            audio,
+            min(max(limit, 1), 25),
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except Exception as error:
         logger.exception("Hum search failed")
-        raise HTTPException(status_code=500, detail="Hum search could not process this recording") from error
+        raise HTTPException(
+            status_code=500, detail="Hum search could not process this recording"
+        ) from error
 
 
 @app.get("/library/tracks")
 def library_tracks(
-    limit: int = 10, offset: int = 0, q: str = "", artist: str = "", album: str = "",
-    sort_by: str = "name", sort_direction: str = "asc", echora_session: str | None = Cookie(default=None),
+    limit: int = 10,
+    offset: int = 0,
+    q: str = "",
+    artist: str = "",
+    album: str = "",
+    sort_by: str = "name",
+    sort_direction: str = "asc",
+    echora_session: str | None = Cookie(default=None),
     track_id: uuid.UUID | None = None,
     vocals: list[str] | None = Query(default=None),
     language: list[str] | None = Query(default=None),
     lyrics: list[str] | None = Query(default=None),
     translation: list[str] | None = Query(default=None),
     genre: list[str] | None = Query(default=None),
-    year_from: int | None = None, year_to: int | None = None,
+    year_from: int | None = None,
+    year_to: int | None = None,
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     limit = min(max(limit, 1), 100)
@@ -1476,7 +1933,9 @@ def library_tracks(
         clauses.append("t.id = %s")
         parameters.append(track_id)
     if q.strip():
-        clauses.append("(t.title ILIKE %s OR t.artist ILIKE %s OR t.album ILIKE %s OR array_to_string(t.genres, ' ') ILIKE %s)")
+        clauses.append(
+            "(t.title ILIKE %s OR t.artist ILIKE %s OR t.album ILIKE %s OR array_to_string(t.genres, ' ') ILIKE %s)"
+        )
         parameters.extend([f"%{q.strip()}%"] * 4)
     if artist:
         clauses.append("t.artist = %s")
@@ -1485,8 +1944,16 @@ def library_tracks(
         clauses.append("t.album = %s")
         parameters.append(album)
     from .browse_filters import predicates
-    filter_clauses, filter_parameters = predicates(vocals=vocals, language=language, lyrics=lyrics,
-        translation=translation, genre=genre, year_from=year_from, year_to=year_to)
+
+    filter_clauses, filter_parameters = predicates(
+        vocals=vocals,
+        language=language,
+        lyrics=lyrics,
+        translation=translation,
+        genre=genre,
+        year_from=year_from,
+        year_to=year_to,
+    )
     clauses.extend(filter_clauses)
     parameters.extend(filter_parameters)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -1496,10 +1963,13 @@ def library_tracks(
         named_where = where
         for name in parameter_index:
             named_where = named_where.replace("%s", f":{name}", 1)
-        total = session.execute(text(f"SELECT count(*) AS total FROM tracks t {named_where}"), named_parameters).scalar_one()
+        total = session.execute(
+            text(f"SELECT count(*) AS total FROM tracks t {named_where}"), named_parameters
+        ).scalar_one()
         source_user_parameter = "source_user_id"
-        rows = session.execute(
-            text(f"""
+        rows = (
+            session.execute(
+                text(f"""
             SELECT t.id, t.title, t.artist, t.album, t.year, t.duration_seconds,
                    t.genres, t.ingested_at, l.availability_status AS lyrics_status,
                    source.date_added,
@@ -1523,14 +1993,25 @@ def library_tracks(
             ORDER BY {ordering}
             LIMIT :limit OFFSET :offset
             """),
-            {**named_parameters, source_user_parameter: user["id"], "limit": limit, "offset": offset},
-        ).mappings().all()
+                {
+                    **named_parameters,
+                    source_user_parameter: user["id"],
+                    "limit": limit,
+                    "offset": offset,
+                },
+            )
+            .mappings()
+            .all()
+        )
         tracks = [dict(row) for row in rows]
     return {"tracks": tracks, "total": total, "limit": limit, "offset": offset}
 
 
 def _lyrics_concept_corpus(user_id: uuid.UUID) -> tuple[list[dict[str, object]], np.ndarray, str]:
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT DISTINCT ON (e.track_id) t.id, t.title, t.artist, t.album,
                       e.embedding::text AS embedding, ar.id AS run_id
@@ -1550,7 +2031,10 @@ def _lyrics_concept_corpus(user_id: uuid.UUID) -> tuple[list[dict[str, object]],
 
 
 def _semantic_concept_corpus(user_id: uuid.UUID) -> tuple[list[dict[str, object]], np.ndarray, str]:
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """
             SELECT DISTINCT ON (e.track_id) t.id, t.title, t.artist, t.album,
@@ -1576,7 +2060,10 @@ def _semantic_concept_corpus(user_id: uuid.UUID) -> tuple[list[dict[str, object]
 @app.get("/library/concepts")
 def library_concepts(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT id, name, description, positive_prompts, negative_prompts,
                       positive_track_ids, negative_track_ids, enabled, created_at, updated_at
@@ -1588,11 +2075,18 @@ def library_concepts(echora_session: str | None = Cookie(default=None)) -> dict[
 
 
 @app.post("/library/concepts", status_code=201)
-def create_concept(request: ConceptRequest, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def create_concept(
+    request: ConceptRequest, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
     if not request.positive_prompts and not request.positive_track_ids:
-        raise HTTPException(status_code=422, detail="A concept needs a positive prompt or positive track")
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+        raise HTTPException(
+            status_code=422, detail="A concept needs a positive prompt or positive track"
+        )
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """
             INSERT INTO concepts (user_id, name, description, positive_prompts, negative_prompts,
@@ -1601,39 +2095,67 @@ def create_concept(request: ConceptRequest, echora_session: str | None = Cookie(
             RETURNING id, name, description, positive_prompts, negative_prompts,
                       positive_track_ids, negative_track_ids, enabled, created_at, updated_at
             """,
-            (user["id"], request.name.strip(), request.description.strip(), request.positive_prompts,
-             request.negative_prompts, request.positive_track_ids, request.negative_track_ids),
+            (
+                user["id"],
+                request.name.strip(),
+                request.description.strip(),
+                request.positive_prompts,
+                request.negative_prompts,
+                request.positive_track_ids,
+                request.negative_track_ids,
+            ),
         )
         return cursor.fetchone()
 
 
 @app.post("/library/concepts/preview")
-def preview_concept(request: ConceptPreviewRequest, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def preview_concept(
+    request: ConceptPreviewRequest, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
     if not request.positive_prompts and not request.positive_track_ids:
-        raise HTTPException(status_code=422, detail="A concept needs a positive prompt or positive track")
+        raise HTTPException(
+            status_code=422, detail="A concept needs a positive prompt or positive track"
+        )
     rows, matrix, run_id = _semantic_concept_corpus(user["id"])
     row_index = {str(row["id"]): index for index, row in enumerate(rows)}
+
     def examples(identifiers: list[uuid.UUID]) -> np.ndarray | None:
-        indices = [row_index[str(identifier)] for identifier in identifiers if str(identifier) in row_index]
+        indices = [
+            row_index[str(identifier)] for identifier in identifiers if str(identifier) in row_index
+        ]
         return matrix[indices] if indices else None
+
     raw, percentiles = score_concept(
-        matrix, request.positive_prompts, request.negative_prompts,
-        examples(request.positive_track_ids), examples(request.negative_track_ids),
+        matrix,
+        request.positive_prompts,
+        request.negative_prompts,
+        examples(request.positive_track_ids),
+        examples(request.negative_track_ids),
     )
-    ranked = np.argsort(raw)[::-1][:request.limit]
+    ranked = np.argsort(raw)[::-1][: request.limit]
     return {
-        "run_id": run_id, "corpus_size": len(rows), "calibration": "empirical-library-percentile",
-        "tracks": [{**rows[index], "raw_score": float(raw[index]), "percentile": float(percentiles[index])} for index in ranked],
+        "run_id": run_id,
+        "corpus_size": len(rows),
+        "calibration": "empirical-library-percentile",
+        "tracks": [
+            {**rows[index], "raw_score": float(raw[index]), "percentile": float(percentiles[index])}
+            for index in ranked
+        ],
     }
 
 
 @app.post("/library/concepts/lens")
-def concept_lens(request: ConceptLensRequest, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def concept_lens(
+    request: ConceptLensRequest, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
     requested = list(dict.fromkeys(name.strip() for name in request.concepts if name.strip()))
     definitions = {str(item["name"]).casefold(): item for item in predefined_concepts()}
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT name, positive_prompts, negative_prompts, positive_track_ids, negative_track_ids
                FROM concepts WHERE user_id=%s AND enabled""",
@@ -1654,7 +2176,9 @@ def concept_lens(request: ConceptLensRequest, echora_session: str | None = Cooki
     lyrics_available: np.ndarray | None = None
     if request.representation == "hybrid":
         lyrics_rows, available_lyrics, lyrics_run_id = _lyrics_concept_corpus(user["id"])
-        lyrics_by_id = {str(row["id"]): available_lyrics[index] for index, row in enumerate(lyrics_rows)}
+        lyrics_by_id = {
+            str(row["id"]): available_lyrics[index] for index, row in enumerate(lyrics_rows)
+        }
         lyrics_matrix = np.zeros((len(rows), available_lyrics.shape[1]), dtype=np.float32)
         lyrics_available = np.asarray([str(row["id"]) in lyrics_by_id for row in rows], dtype=bool)
         for index, row in enumerate(rows):
@@ -1667,70 +2191,136 @@ def concept_lens(request: ConceptLensRequest, echora_session: str | None = Cooki
         definition = definitions[name.casefold()]
         positive_ids = definition.get("positive_track_ids") or []
         negative_ids = definition.get("negative_track_ids") or []
-        positive_indices = [row_index[str(identifier)] for identifier in positive_ids if str(identifier) in row_index]
-        negative_indices = [row_index[str(identifier)] for identifier in negative_ids if str(identifier) in row_index]
+        positive_indices = [
+            row_index[str(identifier)]
+            for identifier in positive_ids
+            if str(identifier) in row_index
+        ]
+        negative_indices = [
+            row_index[str(identifier)]
+            for identifier in negative_ids
+            if str(identifier) in row_index
+        ]
         positive_prompts = definition.get("positive_prompts") or []
         negative_prompts = definition.get("negative_prompts") or []
         semantic_evidence: np.ndarray | None = None
         lyrics_evidence: np.ndarray | None = None
         if request.representation == "lyrics":
-            positive_parts = list(shared_lyrics_model().embed_queries(positive_prompts)) if positive_prompts else []
-            negative_parts = list(shared_lyrics_model().embed_queries(negative_prompts)) if negative_prompts else []
+            positive_parts = (
+                list(shared_lyrics_model().embed_queries(positive_prompts))
+                if positive_prompts
+                else []
+            )
+            negative_parts = (
+                list(shared_lyrics_model().embed_queries(negative_prompts))
+                if negative_prompts
+                else []
+            )
             positive_parts.extend(matrix[positive_indices] if positive_indices else [])
             negative_parts.extend(matrix[negative_indices] if negative_indices else [])
             if not positive_parts:
-                raise HTTPException(status_code=422, detail=f"Concept {name} has no usable lyrics evidence")
-            positive = np.mean(positive_parts, axis=0); positive /= max(float(np.linalg.norm(positive)), 1e-8)
+                raise HTTPException(
+                    status_code=422, detail=f"Concept {name} has no usable lyrics evidence"
+                )
+            positive = np.mean(positive_parts, axis=0)
+            positive /= max(float(np.linalg.norm(positive)), 1e-8)
             raw = matrix @ positive
             if negative_parts:
-                negative = np.mean(negative_parts, axis=0); negative /= max(float(np.linalg.norm(negative)), 1e-8)
+                negative = np.mean(negative_parts, axis=0)
+                negative /= max(float(np.linalg.norm(negative)), 1e-8)
                 raw -= matrix @ negative
             percentiles = empirical_percentiles(raw)
             lyrics_evidence = percentiles
         else:
             semantic_raw, percentiles = score_concept(
-                matrix, positive_prompts, negative_prompts,
+                matrix,
+                positive_prompts,
+                negative_prompts,
                 matrix[positive_indices] if positive_indices else None,
                 matrix[negative_indices] if negative_indices else None,
             )
             raw = semantic_raw
             semantic_evidence = empirical_percentiles(semantic_raw)
-            if request.representation == "hybrid" and lyrics_matrix is not None and lyrics_available is not None:
-                positive_parts = list(shared_lyrics_model().embed_queries(positive_prompts)) if positive_prompts else []
-                negative_parts = list(shared_lyrics_model().embed_queries(negative_prompts)) if negative_prompts else []
-                positive_parts.extend(lyrics_matrix[index] for index in positive_indices if lyrics_available[index])
-                negative_parts.extend(lyrics_matrix[index] for index in negative_indices if lyrics_available[index])
+            if (
+                request.representation == "hybrid"
+                and lyrics_matrix is not None
+                and lyrics_available is not None
+            ):
+                positive_parts = (
+                    list(shared_lyrics_model().embed_queries(positive_prompts))
+                    if positive_prompts
+                    else []
+                )
+                negative_parts = (
+                    list(shared_lyrics_model().embed_queries(negative_prompts))
+                    if negative_prompts
+                    else []
+                )
+                positive_parts.extend(
+                    lyrics_matrix[index] for index in positive_indices if lyrics_available[index]
+                )
+                negative_parts.extend(
+                    lyrics_matrix[index] for index in negative_indices if lyrics_available[index]
+                )
                 if positive_parts:
-                    positive = np.mean(positive_parts, axis=0); positive /= max(float(np.linalg.norm(positive)), 1e-8)
+                    positive = np.mean(positive_parts, axis=0)
+                    positive /= max(float(np.linalg.norm(positive)), 1e-8)
                     lyrics_raw = lyrics_matrix @ positive
                     if negative_parts:
-                        negative = np.mean(negative_parts, axis=0); negative /= max(float(np.linalg.norm(negative)), 1e-8)
+                        negative = np.mean(negative_parts, axis=0)
+                        negative /= max(float(np.linalg.norm(negative)), 1e-8)
                         lyrics_raw -= lyrics_matrix @ negative
                     lyrics_evidence = empirical_percentiles(lyrics_raw, lyrics_available)
-                    raw, percentiles = combine_concept_percentiles(semantic_raw, lyrics_raw, lyrics_available)
+                    raw, percentiles = combine_concept_percentiles(
+                        semantic_raw, lyrics_raw, lyrics_available
+                    )
         for index, row in enumerate(rows):
             if percentiles[index] >= request.minimum_percentile:
-                result[str(row["id"])].append({
-                    "name": name, "raw_score": float(raw[index]), "percentile": float(percentiles[index]),
-                    "semantic_percentile": float(semantic_evidence[index]) if semantic_evidence is not None else None,
-                    "lyrics_percentile": float(lyrics_evidence[index]) if lyrics_evidence is not None else None,
-                    "lyrics_available": bool(lyrics_available[index]) if lyrics_available is not None else request.representation == "lyrics",
-                })
+                result[str(row["id"])].append(
+                    {
+                        "name": name,
+                        "raw_score": float(raw[index]),
+                        "percentile": float(percentiles[index]),
+                        "semantic_percentile": float(semantic_evidence[index])
+                        if semantic_evidence is not None
+                        else None,
+                        "lyrics_percentile": float(lyrics_evidence[index])
+                        if lyrics_evidence is not None
+                        else None,
+                        "lyrics_available": bool(lyrics_available[index])
+                        if lyrics_available is not None
+                        else request.representation == "lyrics",
+                    }
+                )
     return {
-        "run_id": run_id, "corpus_size": len(rows), "calibration": "empirical-library-percentile",
-        "minimum_percentile": request.minimum_percentile, "representation": request.representation,
+        "run_id": run_id,
+        "corpus_size": len(rows),
+        "calibration": "empirical-library-percentile",
+        "minimum_percentile": request.minimum_percentile,
+        "representation": request.representation,
         "scores": result,
     }
 
 
 def _curation_corpus(
-    user_id: uuid.UUID, connection_id: uuid.UUID,
+    user_id: uuid.UUID,
+    connection_id: uuid.UUID,
 ) -> tuple[
-    list[dict[str, object]], np.ndarray, np.ndarray, np.ndarray,
-    np.ndarray, np.ndarray, list[tuple[np.ndarray, np.ndarray] | None],
-    np.ndarray | None, np.ndarray, list[tuple[np.ndarray, np.ndarray] | None],
+    list[dict[str, object]],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    list[tuple[np.ndarray, np.ndarray] | None],
+    np.ndarray | None,
+    np.ndarray,
+    list[tuple[np.ndarray, np.ndarray] | None],
 ]:
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """WITH selected_embeddings AS (
                  SELECT DISTINCT ON (e.track_id) e.track_id, e.embedding::text AS embedding,
@@ -1810,8 +2400,10 @@ def _curation_corpus(
         )
         rows = cursor.fetchall()
         profile_ids = [
-            value for row in rows
-            for value in (row.get("muq_profile_id"), row.get("mert_profile_id")) if value is not None
+            value
+            for row in rows
+            for value in (row.get("muq_profile_id"), row.get("mert_profile_id"))
+            if value is not None
         ]
         mode_rows: list[dict[str, object]] = []
         if profile_ids:
@@ -1823,25 +2415,37 @@ def _curation_corpus(
             )
             mode_rows = cursor.fetchall()
     if not rows:
-        raise HTTPException(status_code=409, detail="No semantic embeddings are available in this library")
+        raise HTTPException(
+            status_code=409, detail="No semantic embeddings are available in this library"
+        )
     matrix = np.stack([np.fromstring(row.pop("embedding").strip("[]"), sep=",") for row in rows])
-    lyrics_available = np.asarray([row.get("lyrics_embedding") is not None for row in rows], dtype=bool)
+    lyrics_available = np.asarray(
+        [row.get("lyrics_embedding") is not None for row in rows], dtype=bool
+    )
     lyrics_matrix = np.zeros((len(rows), 1024), dtype=np.float32)
     for index, row in enumerate(rows):
         encoded = row.pop("lyrics_embedding")
         if encoded is not None:
             lyrics_matrix[index] = np.fromstring(str(encoded).strip("[]"), sep=",")
-    voice_available = np.asarray([row.get("voice_embedding") is not None for row in rows], dtype=bool)
+    voice_available = np.asarray(
+        [row.get("voice_embedding") is not None for row in rows], dtype=bool
+    )
     voice_matrix = np.zeros((len(rows), 3), dtype=np.float32)
     for index, row in enumerate(rows):
         encoded = row.pop("voice_embedding")
         if encoded is not None:
             voice_matrix[index] = np.fromstring(str(encoded).strip("[]"), sep=",")
-    acoustic_available = np.asarray([row.get("acoustic_embedding") is not None for row in rows], dtype=bool)
-    acoustic_dimension = next((
-        len(np.fromstring(str(row["acoustic_embedding"]).strip("[]"), sep=","))
-        for row in rows if row.get("acoustic_embedding") is not None
-    ), 0)
+    acoustic_available = np.asarray(
+        [row.get("acoustic_embedding") is not None for row in rows], dtype=bool
+    )
+    acoustic_dimension = next(
+        (
+            len(np.fromstring(str(row["acoustic_embedding"]).strip("[]"), sep=","))
+            for row in rows
+            if row.get("acoustic_embedding") is not None
+        ),
+        0,
+    )
     acoustic_matrix = np.zeros((len(rows), acoustic_dimension), dtype=np.float32)
     for index, row in enumerate(rows):
         encoded = row.pop("acoustic_embedding")
@@ -1854,16 +2458,20 @@ def _curation_corpus(
     for profile_id, members in grouped_modes.items():
         if members:
             modes_by_profile[profile_id] = (
-                np.stack([np.fromstring(str(row["embedding"]).strip("[]"), sep=",") for row in members]),
+                np.stack(
+                    [np.fromstring(str(row["embedding"]).strip("[]"), sep=",") for row in members]
+                ),
                 np.asarray([row["duration_weight"] for row in members], dtype=np.float32),
             )
     for row in rows:
         row["representation_runs"] = {
-            model: str(run_id) for model, run_id in (
+            model: str(run_id)
+            for model, run_id in (
                 ("muq_mulan", row.pop("muq_run_id")),
                 ("mert", row.pop("mert_run_id")),
                 ("bge_m3", row.pop("lyrics_run_id")),
-            ) if run_id is not None
+            )
+            if run_id is not None
         }
     semantic_modes = [modes_by_profile.get(row.pop("muq_profile_id")) for row in rows]
     acoustic_modes = [modes_by_profile.get(row.pop("mert_profile_id")) for row in rows]
@@ -1874,13 +2482,17 @@ def _curation_corpus(
         loudness = descriptors.get("loudness") or {}
         activity = row.pop("vocal_activity", None) or {}
         activity_windows = activity.get("windows") or []
+
         def _mean(values: list[object], field: str) -> float | None:
             usable = [
-                float(item[field]) for item in values
-                if isinstance(item, dict) and item.get(field) is not None
+                float(item[field])
+                for item in values
+                if isinstance(item, dict)
+                and item.get(field) is not None
                 and np.isfinite(float(item[field]))
             ]
             return float(np.mean(usable)) if usable else None
+
         row["sound_descriptors"] = {
             "pace": rhythm.get("bpm"),
             "energy": descriptors.get("rms_dbfs"),
@@ -1890,9 +2502,16 @@ def _curation_corpus(
             "dynamics": loudness.get("range_lu"),
         }
     return (
-        rows, matrix, lyrics_matrix, lyrics_available, voice_matrix, voice_available,
-        semantic_modes, acoustic_matrix if acoustic_dimension else None,
-        acoustic_available, acoustic_modes,
+        rows,
+        matrix,
+        lyrics_matrix,
+        lyrics_available,
+        voice_matrix,
+        voice_available,
+        semantic_modes,
+        acoustic_matrix if acoustic_dimension else None,
+        acoustic_available,
+        acoustic_modes,
     )
 
 
@@ -1901,15 +2520,25 @@ SONIC_SCORING_REVISION = 1
 
 
 def _preview_sonic_journey(
-    request: CurationPreviewRequest, rows: list[dict[str, object]], matrix: np.ndarray,
-    acoustic_matrix: np.ndarray | None, lyrics_matrix: np.ndarray, lyrics_available: np.ndarray,
+    request: CurationPreviewRequest,
+    rows: list[dict[str, object]],
+    matrix: np.ndarray,
+    acoustic_matrix: np.ndarray | None,
+    lyrics_matrix: np.ndarray,
+    lyrics_available: np.ndarray,
 ) -> dict[str, object]:
     identifiers = {str(row["id"]): index for index, row in enumerate(rows)}
-    waypoints = [request.journey_start_track_id, *request.journey_stop_track_ids, request.journey_end_track_id]
+    waypoints = [
+        request.journey_start_track_id,
+        *request.journey_stop_track_ids,
+        request.journey_end_track_id,
+    ]
     if not waypoints[0] or not waypoints[-1]:
         raise HTTPException(status_code=422, detail="Pick a start and an end track")
     if waypoints[0] == waypoints[-1]:
-        raise HTTPException(status_code=422, detail="Journey start and end must be different tracks")
+        raise HTTPException(
+            status_code=422, detail="Journey start and end must be different tracks"
+        )
     indices: list[int] = []
     for waypoint in waypoints:
         index = identifiers.get(str(waypoint))
@@ -1919,54 +2548,79 @@ def _preview_sonic_journey(
     if len(set(indices)) != len(indices):
         raise HTTPException(status_code=422, detail="Each journey stop must be a different track")
     if acoustic_matrix is None:
-        raise HTTPException(status_code=409, detail="MERT analysis has not run for this library yet")
+        raise HTTPException(
+            status_code=409, detail="MERT analysis has not run for this library yet"
+        )
 
     def _norm(values: np.ndarray) -> np.ndarray:
         return normalize_journey_rows(np.asarray(values, dtype=np.float32))
 
     lyrics_share = request.journey_lyrics_weight / 100.0
-    audio = np.concatenate([
-        _norm(matrix) * np.sqrt(SONIC_AUDIO_SPLIT[0]),
-        _norm(acoustic_matrix) * np.sqrt(SONIC_AUDIO_SPLIT[1]),
-    ], axis=1)
-    fused = np.concatenate([
-        audio * np.sqrt(1 - lyrics_share),
-        _norm(lyrics_matrix) * np.sqrt(lyrics_share),
-    ], axis=1)
+    audio = np.concatenate(
+        [
+            _norm(matrix) * np.sqrt(SONIC_AUDIO_SPLIT[0]),
+            _norm(acoustic_matrix) * np.sqrt(SONIC_AUDIO_SPLIT[1]),
+        ],
+        axis=1,
+    )
+    fused = np.concatenate(
+        [
+            audio * np.sqrt(1 - lyrics_share),
+            _norm(lyrics_matrix) * np.sqrt(lyrics_share),
+        ],
+        axis=1,
+    )
 
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             "SELECT track_id::text AS id, group_id::text AS group_id FROM recording_group_members WHERE track_id=ANY(%s)",
             ([row["id"] for row in rows],),
         )
         groups_by_id = {row["id"]: row["group_id"] for row in cursor.fetchall()}
     steps = select_multistop_journey(
-        fused, indices, request.track_limit,
+        fused,
+        indices,
+        request.track_limit,
         [row.get("artist") for row in rows],
         [groups_by_id.get(str(row["id"])) for row in rows],
     )
     tracks = []
     for position, (index, target_similarity, transition_similarity) in enumerate(steps):
         row = rows[index]
-        tracks.append({
-            "id": row["id"], "title": row["title"], "artist": row.get("artist"),
-            "album": row.get("album"), "duration_seconds": row.get("duration_seconds"),
-            "source_id": row.get("source_id"), "cover_art": row.get("cover_art"),
-            "position": position, "score": float(target_similarity),
-            "percentile": float(target_similarity), "retained": False,
-            "waypoint": index in indices,
-            "evidence": {
-                "target_similarity": float(target_similarity),
-                "transition_similarity": float(transition_similarity),
-                "lyrics_available": bool(lyrics_available[index]) if index < len(lyrics_available) else False,
-            },
-        })
+        tracks.append(
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "artist": row.get("artist"),
+                "album": row.get("album"),
+                "duration_seconds": row.get("duration_seconds"),
+                "source_id": row.get("source_id"),
+                "cover_art": row.get("cover_art"),
+                "position": position,
+                "score": float(target_similarity),
+                "percentile": float(target_similarity),
+                "retained": False,
+                "waypoint": index in indices,
+                "evidence": {
+                    "target_similarity": float(target_similarity),
+                    "transition_similarity": float(transition_similarity),
+                    "lyrics_available": bool(lyrics_available[index])
+                    if index < len(lyrics_available)
+                    else False,
+                },
+            }
+        )
     lyrics_weight = request.journey_lyrics_weight / 100.0
     return {
-        "tracks": tracks, "references": {"positive": [], "negative": []},
+        "tracks": tracks,
+        "references": {"positive": [], "negative": []},
         "corpus_size": len(rows),
         "selection": {
-            "requested": request.track_limit, "selected": len(tracks),
+            "requested": request.track_limit,
+            "selected": len(tracks),
             "shortfall": max(0, request.track_limit - len(tracks)),
             "match_basis": "sonic_journey",
         },
@@ -1990,58 +2644,99 @@ def _preview_sonic_journey(
 
 
 def _preview_curation(
-    user_id: uuid.UUID, connection_id: uuid.UUID, request: CurationPreviewRequest,
+    user_id: uuid.UUID,
+    connection_id: uuid.UUID,
+    request: CurationPreviewRequest,
 ) -> dict[str, object]:
     (
-        rows, matrix, lyrics_matrix, lyrics_available, voice_matrix, voice_available,
-        semantic_modes, acoustic_matrix, acoustic_available, acoustic_modes,
+        rows,
+        matrix,
+        lyrics_matrix,
+        lyrics_available,
+        voice_matrix,
+        voice_available,
+        semantic_modes,
+        acoustic_matrix,
+        acoustic_available,
+        acoustic_modes,
     ) = _curation_corpus(user_id, connection_id)
     if request.curation_type == "sonic_journey":
-        return _preview_sonic_journey(request, rows, matrix, acoustic_matrix, lyrics_matrix, lyrics_available)
+        return _preview_sonic_journey(
+            request, rows, matrix, acoustic_matrix, lyrics_matrix, lyrics_available
+        )
     language_map: dict[str, dict[str, object]] = {}
     if request.target_language:
-        with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+        with (
+            psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+            connection.cursor() as cursor,
+        ):
             cursor.execute(
                 """SELECT l.track_id::text AS id, l.provenance->'languages' AS distribution
-                   FROM lyrics l WHERE l.provenance ? 'languages'""")
-            language_map = {row["id"]: row["distribution"] for row in cursor.fetchall() if row["distribution"]}
+                   FROM lyrics l WHERE l.provenance ? 'languages'"""
+            )
+            language_map = {
+                row["id"]: row["distribution"] for row in cursor.fetchall() if row["distribution"]
+            }
     time_of_day_enabled = request.time_of_day_enabled or request.curation_type == "time_of_day"
     if time_of_day_enabled and (not request.period_start or not request.period_end):
         raise HTTPException(status_code=422, detail="Choose a start and end time")
     if request.curation_type == "language" and not (
-        request.positive_prompt.strip() or request.sound_prompts or request.themes_prompts or request.target_language
+        request.positive_prompt.strip()
+        or request.sound_prompts
+        or request.themes_prompts
+        or request.target_language
     ):
-        raise HTTPException(status_code=422, detail="Pick a language or add a positive direction for this language curation")
+        raise HTTPException(
+            status_code=422,
+            detail="Pick a language or add a positive direction for this language curation",
+        )
     if request.curation_type == "examples" and not request.positive_track_ids:
         raise HTTPException(status_code=422, detail="Add at least one Songs like track")
     overlap = set(request.positive_track_ids) & set(request.negative_track_ids)
     if overlap:
-        raise HTTPException(status_code=422, detail="A track cannot appear in both Songs like and Songs not like")
+        raise HTTPException(
+            status_code=422, detail="A track cannot appear in both Songs like and Songs not like"
+        )
     with session_scope() as session:
         preference = session.get(UserPreference, user_id)
         if preference is None:
             raise HTTPException(status_code=404, detail="User preferences are unavailable")
         timezone_name = preference.timezone
         lastfm_username = preference.lastfm_username
-        encrypted_key = bytes(preference.lastfm_api_key_encrypted) if preference.lastfm_api_key_encrypted else None
+        encrypted_key = (
+            bytes(preference.lastfm_api_key_encrypted)
+            if preference.lastfm_api_key_encrypted
+            else None
+        )
     listen_counts: dict[str, int] | None = None
     recent_ids: set[str] | None = None
     period_counts: dict[str, int] = {}
     if lastfm_username and encrypted_key:
         try:
             api_key = _cipher().decrypt(encrypted_key).decode()
-            listens = recent_listens(lastfm_username, api_key, datetime.now(timezone.utc) - timedelta(days=request.lookback_days))
+            listens = recent_listens(
+                lastfm_username,
+                api_key,
+                datetime.now(timezone.utc) - timedelta(days=request.lookback_days),
+            )
             all_counts, period_counts = track_listen_counts(
-                rows, listens, timezone_name,
+                rows,
+                listens,
+                timezone_name,
                 request.period_start if time_of_day_enabled else None,
                 request.period_end if time_of_day_enabled else None,
             )
             listen_counts = period_counts if time_of_day_enabled else all_counts
             recent_ids = set(all_counts)
         except Exception as error:
-            raise HTTPException(status_code=502, detail=f"Could not read Last.fm listening history: {error}") from error
+            raise HTTPException(
+                status_code=502, detail=f"Could not read Last.fm listening history: {error}"
+            ) from error
     elif time_of_day_enabled:
-        raise HTTPException(status_code=409, detail="Connect Last.fm in Settings before creating a time-of-day curation")
+        raise HTTPException(
+            status_code=409,
+            detail="Connect Last.fm in Settings before creating a time-of-day curation",
+        )
     sound_profile = request.sound_profile.model_dump(exclude_none=True, exclude_defaults=True)
     instrumental_only = bool(sound_profile.pop("instrumental_only", False))
     effective_positive_ids = list(request.positive_track_ids)
@@ -2049,20 +2744,40 @@ def _preview_curation(
     if time_of_day_enabled:
         time_of_day_track_ids = [uuid.UUID(identifier) for identifier in period_counts]
         if not time_of_day_track_ids:
-            raise HTTPException(status_code=409, detail="No matched listens were found in that time period during the lookback window")
+            raise HTTPException(
+                status_code=409,
+                detail="No matched listens were found in that time period during the lookback window",
+            )
     sound_tags = [tag.strip() for tag in request.sound_prompts if tag.strip()]
     theme_tags = [tag.strip() for tag in request.themes_prompts if tag.strip()]
     sound_negatives = [tag.strip() for tag in request.sound_negative_prompts if tag.strip()]
     theme_negatives = [tag.strip() for tag in request.themes_negative_prompts if tag.strip()]
     structured = bool(sound_tags or theme_tags or sound_negatives or theme_negatives)
-    semantic_prompts = sound_tags if structured else ([request.positive_prompt] if request.positive_prompt.strip() else [])
-    theme_prompts = theme_tags if structured else ([request.positive_prompt] if request.positive_prompt.strip() else [])
+    semantic_prompts = (
+        sound_tags
+        if structured
+        else ([request.positive_prompt] if request.positive_prompt.strip() else [])
+    )
+    theme_prompts = (
+        theme_tags
+        if structured
+        else ([request.positive_prompt] if request.positive_prompt.strip() else [])
+    )
     visible_ids = {str(row["id"]) for row in rows}
     has_language_constraint = bool(request.target_language)
-    if not has_language_constraint and not semantic_prompts and not theme_prompts and not sound_profile and not instrumental_only and not any(
-        str(value) in visible_ids for value in [*effective_positive_ids, *time_of_day_track_ids]
+    if (
+        not has_language_constraint
+        and not semantic_prompts
+        and not theme_prompts
+        and not sound_profile
+        and not instrumental_only
+        and not any(
+            str(value) in visible_ids for value in [*effective_positive_ids, *time_of_day_track_ids]
+        )
     ):
-        raise HTTPException(status_code=422, detail="None of the Songs like tracks are available in this library")
+        raise HTTPException(
+            status_code=422, detail="None of the Songs like tracks are available in this library"
+        )
     lyrics_model = shared_lyrics_model()
 
     def _tag_query_centers(tags: list[str]) -> list[np.ndarray]:
@@ -2074,15 +2789,25 @@ def _preview_curation(
         return centers
 
     positive_queries = _tag_query_centers(theme_prompts) if theme_prompts else None
-    lyrics_negatives = (theme_negatives if structured else ([request.negative_prompt] if request.negative_prompt.strip() else []))
-    negative_queries = np.asarray(_tag_query_centers(lyrics_negatives), dtype=np.float32) if lyrics_negatives else None
+    lyrics_negatives = (
+        theme_negatives
+        if structured
+        else ([request.negative_prompt] if request.negative_prompt.strip() else [])
+    )
+    negative_queries = (
+        np.asarray(_tag_query_centers(lyrics_negatives), dtype=np.float32)
+        if lyrics_negatives
+        else None
+    )
     shuffle_seed = secrets.randbits(63)
     language_mode = bool(request.target_language)
     language_eligible_ids: set[str] | None = None
     if language_mode and request.language_strictness == "only":
         language_eligible_ids = {
-            str(row["id"]) for row in rows
-            if language_affinity(language_map.get(str(row["id"])), request.target_language) >= PRIMARY_SHARE
+            str(row["id"])
+            for row in rows
+            if language_affinity(language_map.get(str(row["id"])), request.target_language)
+            >= PRIMARY_SHARE
         }
         if not language_eligible_ids:
             raise HTTPException(
@@ -2093,27 +2818,46 @@ def _preview_curation(
                     "lyrics were found in this library"
                 ),
             )
-    rank_limit = len(rows) if language_mode and language_eligible_ids is None else request.track_limit
+    rank_limit = (
+        len(rows) if language_mode and language_eligible_ids is None else request.track_limit
+    )
     expanded_sound_prompts = expand_tag_groups(sound_tags) if structured and sound_tags else None
-    expanded_sound_negatives = expand_tag_groups(sound_negatives) if structured and sound_negatives else None
+    expanded_sound_negatives = (
+        expand_tag_groups(sound_negatives) if structured and sound_negatives else None
+    )
     has_sound_profile = bool(sound_profile)
     tracks, references = rank_curation(
-        rows, matrix, request.positive_prompt, request.negative_prompt,
-        rank_limit, request.refresh_mode, [str(value) for value in request.existing_track_ids],
+        rows,
+        matrix,
+        request.positive_prompt,
+        request.negative_prompt,
+        rank_limit,
+        request.refresh_mode,
+        [str(value) for value in request.existing_track_ids],
         [str(value) for value in effective_positive_ids],
         [str(value) for value in request.negative_track_ids],
-        lyrics_matrix, lyrics_available, positive_queries, negative_queries,
-        listen_counts, recent_ids, request.familiarity_percent, shuffle_seed,
-        voice_matrix=voice_matrix, voice_available=voice_available,
+        lyrics_matrix,
+        lyrics_available,
+        positive_queries,
+        negative_queries,
+        listen_counts,
+        recent_ids,
+        request.familiarity_percent,
+        shuffle_seed,
+        voice_matrix=voice_matrix,
+        voice_available=voice_available,
         sound_prompts=expanded_sound_prompts,
         themes_prompts=expand_tag_groups(theme_tags) if structured and theme_tags else None,
         sound_negative_prompts=expanded_sound_negatives,
-        themes_negative_prompts=expand_tag_groups(theme_negatives) if structured and theme_negatives else None,
+        themes_negative_prompts=expand_tag_groups(theme_negatives)
+        if structured and theme_negatives
+        else None,
         sound_weight=request.sound_weight if structured else None,
         sound_profile=sound_profile,
         instrumental_only=instrumental_only,
         semantic_modes=semantic_modes,
-        acoustic_matrix=acoustic_matrix, acoustic_available=acoustic_available,
+        acoustic_matrix=acoustic_matrix,
+        acoustic_available=acoustic_available,
         acoustic_modes=acoustic_modes,
         context_track_ids=[str(value) for value in time_of_day_track_ids],
         eligible_track_ids=language_eligible_ids,
@@ -2121,20 +2865,33 @@ def _preview_curation(
         # A profile-only recipe therefore ranks the measured library without
         # applying the embedding match cutoff intended for text and examples.
         minimum_match_percentile=(
-            0.0 if (has_sound_profile or instrumental_only) and not (semantic_prompts or theme_prompts or effective_positive_ids or time_of_day_track_ids)
+            0.0
+            if (has_sound_profile or instrumental_only)
+            and not (
+                semantic_prompts or theme_prompts or effective_positive_ids or time_of_day_track_ids
+            )
             else MATCH_PERCENTILE
         ),
     )
     language_report: dict[str, object] | None = None
     if language_mode:
-        affinity = {str(track["id"]): language_affinity(language_map.get(str(track["id"])), request.target_language) for track in tracks}
+        affinity = {
+            str(track["id"]): language_affinity(
+                language_map.get(str(track["id"])), request.target_language
+            )
+            for track in tracks
+        }
         if request.language_strictness == "primarily":
             ranked = sorted(tracks, key=lambda track: float(track["percentile"]), reverse=True)
             primary = [track for track in ranked if affinity[str(track["id"])] >= PRIMARY_SHARE]
             filler = [track for track in ranked if affinity[str(track["id"])] < PRIMARY_SHARE]
             tracks = (primary + filler)[: request.track_limit]
-            language_report = {"target": request.target_language, "strictness": "primarily",
-                               "matched_tracks": len(primary), "requested": request.track_limit}
+            language_report = {
+                "target": request.target_language,
+                "strictness": "primarily",
+                "matched_tracks": len(primary),
+                "requested": request.track_limit,
+            }
         elif request.language_strictness == "sprinkle":
             boosted = [
                 (0.85 * float(track["percentile"]) + 0.15 * affinity[str(track["id"])], track)
@@ -2142,13 +2899,23 @@ def _preview_curation(
             ]
             tracks = [track for _, track in sorted(boosted, key=lambda item: -item[0])]
             tracks = tracks[: request.track_limit]
-            language_report = {"target": request.target_language, "strictness": "sprinkle",
-                               "matched_tracks": sum(value >= PRIMARY_SHARE for value in affinity.values()), "requested": request.track_limit}
+            language_report = {
+                "target": request.target_language,
+                "strictness": "sprinkle",
+                "matched_tracks": sum(value >= PRIMARY_SHARE for value in affinity.values()),
+                "requested": request.track_limit,
+            }
         else:
-            language_report = {"target": request.target_language, "strictness": "only",
-                               "matched_tracks": len(tracks), "requested": request.track_limit}
-    if not structured and not request.positive_prompt.strip() and not (
-        effective_positive_ids or time_of_day_track_ids
+            language_report = {
+                "target": request.target_language,
+                "strictness": "only",
+                "matched_tracks": len(tracks),
+                "requested": request.track_limit,
+            }
+    if (
+        not structured
+        and not request.positive_prompt.strip()
+        and not (effective_positive_ids or time_of_day_track_ids)
     ):
         weights = {"semantic": 0.0, "lyrics": 0.0}
     elif structured and (sound_tags or sound_negatives) and not (theme_tags or theme_negatives):
@@ -2156,7 +2923,10 @@ def _preview_curation(
     elif structured and (theme_tags or theme_negatives) and not (sound_tags or sound_negatives):
         weights = {"semantic": 0.0, "lyrics": 1.0}
     elif structured:
-        weights = {"semantic": request.sound_weight / 100.0, "lyrics": (100 - request.sound_weight) / 100.0}
+        weights = {
+            "semantic": request.sound_weight / 100.0,
+            "lyrics": (100 - request.sound_weight) / 100.0,
+        }
     else:
         weights = {"semantic": 0.45, "lyrics": 0.55}
     signal_weights: dict[str, float] = {}
@@ -2181,24 +2951,32 @@ def _preview_curation(
         signal_weights["instrumental_only"] = 1.0
     signal_total = sum(signal_weights.values())
     if signal_total:
-        signal_weights = {
-            name: value / signal_total for name, value in signal_weights.items()
-        }
+        signal_weights = {name: value / signal_total for name, value in signal_weights.items()}
     return {
-        "tracks": tracks, "references": references, "corpus_size": len(rows),
+        "tracks": tracks,
+        "references": references,
+        "corpus_size": len(rows),
         "selection": {
-            "requested": request.track_limit, "selected": len(tracks),
+            "requested": request.track_limit,
+            "selected": len(tracks),
             "shortfall": max(0, request.track_limit - len(tracks)),
-            "below_threshold_filling": False, "match_basis": "library_relative",
+            "below_threshold_filling": False,
+            "match_basis": "library_relative",
             "confidence_calibrated": False,
         },
         "representation_runs": {
-            model: sorted({row["representation_runs"][model] for row in rows
-                           if model in row["representation_runs"]})
+            model: sorted(
+                {
+                    row["representation_runs"][model]
+                    for row in rows
+                    if model in row["representation_runs"]
+                }
+            )
             for model in ("muq_mulan", "mert", "bge_m3")
         },
         "curation_type": request.curation_type,
-        "model": "muq_mulan+mert+bge_m3", "weights": weights,
+        "model": "muq_mulan+mert+bge_m3",
+        "weights": weights,
         "signal_weights": signal_weights,
         "scoring_revision": CURATION_SCORING_REVISION,
         "example_component_weights": EXAMPLE_COMPONENT_WEIGHTS,
@@ -2207,13 +2985,19 @@ def _preview_curation(
             "mert": sum(profile is not None for profile in acoustic_modes),
             "mert_global": int(acoustic_available.sum()),
         },
-        "lyrics_coverage": int(lyrics_available.sum()), "shuffle_seed": shuffle_seed,
+        "lyrics_coverage": int(lyrics_available.sum()),
+        "shuffle_seed": shuffle_seed,
         "language": language_report,
         "familiarity": {
-            "percent": request.familiarity_percent, "active": listen_counts is not None,
+            "percent": request.familiarity_percent,
+            "active": listen_counts is not None,
             "lookback_days": request.lookback_days,
-            "familiar_tracks": sum(track["evidence"]["selection_pool"] == "familiar" for track in tracks),
-            "discovery_tracks": sum(track["evidence"]["selection_pool"] == "discovery" for track in tracks),
+            "familiar_tracks": sum(
+                track["evidence"]["selection_pool"] == "familiar" for track in tracks
+            ),
+            "discovery_tracks": sum(
+                track["evidence"]["selection_pool"] == "discovery" for track in tracks
+            ),
             "matched_listens": sum((listen_counts or {}).values()),
         },
     }
@@ -2226,7 +3010,9 @@ def _refresh_curation(curation_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, o
 
 
 @app.post("/library/curations/preview")
-def preview_curation(request: CurationPreviewRequest, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def preview_curation(
+    request: CurationPreviewRequest, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
     connection_id = user.get("navidrome_connection_id")
     if connection_id is None:
@@ -2237,7 +3023,10 @@ def preview_curation(request: CurationPreviewRequest, echora_session: str | None
 @app.get("/library/curations")
 def list_curations(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT c.*, latest.recipe,
                    coalesce((SELECT jsonb_agg(jsonb_build_object('id', pt.id, 'title', pt.title, 'artist', pt.artist, 'album', pt.album)) FROM tracks pt WHERE pt.id=ANY(c.positive_track_ids)), '[]') AS positive_tracks,
@@ -2272,7 +3061,9 @@ def list_curations(echora_session: str | None = Cookie(default=None)) -> dict[st
 
 
 @app.post("/library/curations", status_code=201)
-def create_curation(request: CurationCreateRequest, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def create_curation(
+    request: CurationCreateRequest, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
     connection_id = user.get("navidrome_connection_id")
     if connection_id is None:
@@ -2280,20 +3071,31 @@ def create_curation(request: CurationCreateRequest, echora_session: str | None =
     try:
         with session_scope() as session:
             curation = Curation(
-                user_id=user["id"], navidrome_connection_id=connection_id, name=request.name.strip(),
+                user_id=user["id"],
+                navidrome_connection_id=connection_id,
+                name=request.name.strip(),
                 curation_type=request.curation_type,
-                positive_prompt=request.positive_prompt.strip(), negative_prompt=request.negative_prompt.strip(),
-                sound_prompts=request.sound_prompts, themes_prompts=request.themes_prompts,
+                positive_prompt=request.positive_prompt.strip(),
+                negative_prompt=request.negative_prompt.strip(),
+                sound_prompts=request.sound_prompts,
+                themes_prompts=request.themes_prompts,
                 sound_negative_prompts=request.sound_negative_prompts,
                 themes_negative_prompts=request.themes_negative_prompts,
                 sound_weight=request.sound_weight,
-                sound_profile=request.sound_profile.model_dump(exclude_none=True, exclude_defaults=True),
-                positive_track_ids=request.positive_track_ids, negative_track_ids=request.negative_track_ids,
-                familiarity_percent=request.familiarity_percent, period_start=request.period_start,
-                period_end=request.period_end, lookback_days=request.lookback_days,
+                sound_profile=request.sound_profile.model_dump(
+                    exclude_none=True, exclude_defaults=True
+                ),
+                positive_track_ids=request.positive_track_ids,
+                negative_track_ids=request.negative_track_ids,
+                familiarity_percent=request.familiarity_percent,
+                period_start=request.period_start,
+                period_end=request.period_end,
+                lookback_days=request.lookback_days,
                 time_of_day_enabled=request.time_of_day_enabled,
-                track_limit=request.track_limit, refresh_mode=request.refresh_mode,
-                target_language=request.target_language, language_strictness=request.language_strictness,
+                track_limit=request.track_limit,
+                refresh_mode=request.refresh_mode,
+                target_language=request.target_language,
+                language_strictness=request.language_strictness,
                 journey_start_track_id=request.journey_start_track_id,
                 journey_stop_track_ids=request.journey_stop_track_ids,
                 journey_end_track_id=request.journey_end_track_id,
@@ -2305,7 +3107,9 @@ def create_curation(request: CurationCreateRequest, echora_session: str | None =
             curation_id = curation.id
     except IntegrityError as error:
         if "curations_user_name_idx" in str(error.orig):
-            raise HTTPException(status_code=409, detail="A curation with this name already exists") from error
+            raise HTTPException(
+                status_code=409, detail="A curation with this name already exists"
+            ) from error
         raise
     queued = _refresh_curation(curation_id, user["id"])
     return {**request.model_dump(mode="json"), "id": str(curation_id), "tracks": [], **queued}
@@ -2313,7 +3117,8 @@ def create_curation(request: CurationCreateRequest, echora_session: str | None =
 
 @app.put("/library/curations/{curation_id}", status_code=202)
 def replace_curation(
-    curation_id: uuid.UUID, request: CurationCreateRequest,
+    curation_id: uuid.UUID,
+    request: CurationCreateRequest,
     echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     """Replace a saved recipe and generate a new playlist revision."""
@@ -2323,7 +3128,11 @@ def replace_curation(
     with curation_jobs.locked(curation_id) as lock_connection:
         try:
             with session_scope() as session:
-                curation = session.scalar(select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"]))
+                curation = session.scalar(
+                    select(Curation).where(
+                        Curation.id == curation_id, Curation.user_id == user["id"]
+                    )
+                )
                 if curation is None:
                     raise HTTPException(status_code=404, detail="Curation not found")
                 curation_jobs.assert_mutable(lock_connection, curation_id)
@@ -2336,7 +3145,9 @@ def replace_curation(
                 curation.sound_negative_prompts = request.sound_negative_prompts
                 curation.themes_negative_prompts = request.themes_negative_prompts
                 curation.sound_weight = request.sound_weight
-                curation.sound_profile = request.sound_profile.model_dump(exclude_none=True, exclude_defaults=True)
+                curation.sound_profile = request.sound_profile.model_dump(
+                    exclude_none=True, exclude_defaults=True
+                )
                 curation.positive_track_ids = request.positive_track_ids
                 curation.negative_track_ids = request.negative_track_ids
                 curation.familiarity_percent = request.familiarity_percent
@@ -2355,12 +3166,15 @@ def replace_curation(
                 curation.refresh_enabled = request.refresh_enabled
                 curation.next_refresh_at = (
                     datetime.now(timezone.utc) + timedelta(hours=curation.refresh_interval_hours)
-                    if request.refresh_enabled else None
+                    if request.refresh_enabled
+                    else None
                 )
                 curation.updated_at = datetime.now(timezone.utc)
         except IntegrityError as error:
             if "curations_user_name_idx" in str(error.orig):
-                raise HTTPException(status_code=409, detail="A curation with this name already exists") from error
+                raise HTTPException(
+                    status_code=409, detail="A curation with this name already exists"
+                ) from error
             raise
     queued = _refresh_curation(curation_id, user["id"])
     return {**request.model_dump(mode="json"), "id": str(curation_id), "tracks": [], **queued}
@@ -2368,7 +3182,8 @@ def replace_curation(
 
 @app.patch("/library/curations/{curation_id}")
 def update_curation(
-    curation_id: uuid.UUID, request: CurationUpdateRequest,
+    curation_id: uuid.UUID,
+    request: CurationUpdateRequest,
     echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
@@ -2377,7 +3192,9 @@ def update_curation(
 
     with curation_jobs.locked(curation_id) as lock_connection:
         with session_scope() as session:
-            curation = session.scalar(select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"]))
+            curation = session.scalar(
+                select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"])
+            )
             if curation is None:
                 raise HTTPException(status_code=404, detail="Curation not found")
             curation_jobs.assert_mutable(lock_connection, curation_id)
@@ -2386,21 +3203,25 @@ def update_curation(
             if "refresh_enabled" in values:
                 curation.next_refresh_at = (
                     datetime.now(timezone.utc) + timedelta(hours=curation.refresh_interval_hours)
-                    if values["refresh_enabled"] else None
+                    if values["refresh_enabled"]
+                    else None
                 )
             curation.updated_at = datetime.now(timezone.utc)
         return {"id": str(curation_id), **values}
 
 
 @app.post("/library/curations/{curation_id}/refresh", status_code=202)
-def refresh_curation(curation_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def refresh_curation(
+    curation_id: uuid.UUID, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
     return _refresh_curation(curation_id, user["id"])
 
 
 @app.delete("/library/curations/{curation_id}", status_code=204)
 def delete_curation(
-    curation_id: uuid.UUID, delete_navidrome: bool = True,
+    curation_id: uuid.UUID,
+    delete_navidrome: bool = True,
     echora_session: str | None = Cookie(default=None),
 ) -> Response:
     user = _session_user(echora_session)
@@ -2408,23 +3229,35 @@ def delete_curation(
 
     with curation_jobs.locked(curation_id) as lock_connection:
         with session_scope() as session:
-            curation = session.scalar(select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"]))
+            curation = session.scalar(
+                select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"])
+            )
             if curation is None:
                 raise HTTPException(status_code=404, detail="Curation not found")
-            curation_jobs.assert_mutable(lock_connection, curation_id, deleting=True, delete_remote=delete_navidrome)
-            connection_id, playlist_id = curation.navidrome_connection_id, curation.navidrome_playlist_id
+            curation_jobs.assert_mutable(
+                lock_connection, curation_id, deleting=True, delete_remote=delete_navidrome
+            )
+            connection_id, playlist_id = (
+                curation.navidrome_connection_id,
+                curation.navidrome_playlist_id,
+            )
 
         # Delete remotely first so a Navidrome failure does not leave an orphaned
         # playlist after Echora has already forgotten its ID.
         if delete_navidrome and playlist_id:
             credentials = _load_connection(str(connection_id))
             if credentials is None:
-                raise HTTPException(status_code=409, detail="Navidrome connection is unavailable; keep the Navidrome playlist or reconnect the server")
+                raise HTTPException(
+                    status_code=409,
+                    detail="Navidrome connection is unavailable; keep the Navidrome playlist or reconnect the server",
+                )
             with NavidromeClient(*credentials) as client:
                 client.delete_playlist(str(playlist_id))
 
         with session_scope() as session:
-            curation = session.scalar(select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"]))
+            curation = session.scalar(
+                select(Curation).where(Curation.id == curation_id, Curation.user_id == user["id"])
+            )
             if curation is not None:
                 session.delete(curation)
         return Response(status_code=204)
@@ -2436,12 +3269,18 @@ def _curation_scheduler() -> None:
     return None
 
 
-def _cluster_embeddings(normalized: np.ndarray, similarities: np.ndarray) -> tuple[np.ndarray, dict[str, object]]:
+def _cluster_embeddings(
+    normalized: np.ndarray, similarities: np.ndarray
+) -> tuple[np.ndarray, dict[str, object]]:
     count = len(normalized)
     if count < 3:
-        return np.zeros(count, dtype=int), {"algorithm": "SNN-Leiden", "clusters": 1, "neighbors": max(0, count - 1)}
+        return np.zeros(count, dtype=int), {
+            "algorithm": "SNN-Leiden",
+            "clusters": 1,
+            "neighbors": max(0, count - 1),
+        }
     neighbor_count = min(count - 1, max(5, round(np.sqrt(count))))
-    nearest = np.argsort(similarities, axis=1)[:, -(neighbor_count + 1):-1]
+    nearest = np.argsort(similarities, axis=1)[:, -(neighbor_count + 1) : -1]
     neighbor_sets = [set(map(int, row)) for row in nearest]
     edge_weights: dict[tuple[int, int], float] = {}
     for left in range(count):
@@ -2449,7 +3288,9 @@ def _cluster_embeddings(normalized: np.ndarray, similarities: np.ndarray) -> tup
             right = int(right_value)
             edge = (min(left, right), max(left, right))
             shared = len(neighbor_sets[left] & neighbor_sets[right])
-            weight = max(0.01, shared / neighbor_count) * max(0.01, float(similarities[left, right]))
+            weight = max(0.01, shared / neighbor_count) * max(
+                0.01, float(similarities[left, right])
+            )
             edge_weights[edge] = max(edge_weights.get(edge, 0.0), weight)
     graph = ig.Graph(n=count, edges=list(edge_weights), directed=False)
     weights = list(edge_weights.values())
@@ -2460,30 +3301,61 @@ def _cluster_embeddings(normalized: np.ndarray, similarities: np.ndarray) -> tup
         for seed in range(6):
             ig.set_random_number_generator(random.Random(104729 + seed))
             partition = graph.community_leiden(
-                objective_function="modularity", weights=weights, resolution=resolution, n_iterations=-1,
+                objective_function="modularity",
+                weights=weights,
+                resolution=resolution,
+                n_iterations=-1,
             )
             runs.append((np.asarray(partition.membership, dtype=int), float(partition.quality)))
         best_labels, quality = max(runs, key=lambda item: item[1])
-        comparisons = [adjusted_rand_score(runs[left][0], runs[right][0]) for left in range(len(runs)) for right in range(left + 1, len(runs))]
+        comparisons = [
+            adjusted_rand_score(runs[left][0], runs[right][0])
+            for left in range(len(runs))
+            for right in range(left + 1, len(runs))
+        ]
         stability = float(np.mean(comparisons)) if comparisons else 1.0
         clusters = len(np.unique(best_labels))
-        silhouette = float(silhouette_score(normalized, best_labels, metric="cosine")) if 1 < clusters < count else -1.0
-        candidates.append({"resolution": resolution, "labels": best_labels, "clusters": clusters, "silhouette": silhouette, "stability": stability})
+        silhouette = (
+            float(silhouette_score(normalized, best_labels, metric="cosine"))
+            if 1 < clusters < count
+            else -1.0
+        )
+        candidates.append(
+            {
+                "resolution": resolution,
+                "labels": best_labels,
+                "clusters": clusters,
+                "silhouette": silhouette,
+                "stability": stability,
+            }
+        )
     has_multiple = any(int(candidate["clusters"]) > 1 for candidate in candidates)
     for index, candidate in enumerate(candidates):
-        plateau = sum(index + offset in range(len(candidates)) and candidates[index + offset]["clusters"] == candidate["clusters"] for offset in (-1, 1))
-        candidate["score"] = float(candidate["silhouette"]) + 0.35 * float(candidate["stability"]) + 0.1 * plateau
+        plateau = sum(
+            index + offset in range(len(candidates))
+            and candidates[index + offset]["clusters"] == candidate["clusters"]
+            for offset in (-1, 1)
+        )
+        candidate["score"] = (
+            float(candidate["silhouette"]) + 0.35 * float(candidate["stability"]) + 0.1 * plateau
+        )
         if has_multiple and int(candidate["clusters"]) == 1:
             candidate["score"] = -10.0
     selected = max(candidates, key=lambda candidate: float(candidate["score"]))
     labels = np.asarray(selected["labels"], dtype=int)
-    ordered = sorted(np.unique(labels), key=lambda label: (-int(np.sum(labels == label)), int(label)))
+    ordered = sorted(
+        np.unique(labels), key=lambda label: (-int(np.sum(labels == label)), int(label))
+    )
     remap = {old: new for new, old in enumerate(ordered)}
     labels = np.asarray([remap[int(label)] for label in labels], dtype=int)
     return labels, {
-        "algorithm": "SNN-Leiden", "clusters": len(ordered), "neighbors": neighbor_count,
-        "resolution": selected["resolution"], "silhouette": selected["silhouette"],
-        "seed_stability_ari": selected["stability"], "resolutions_tested": resolutions,
+        "algorithm": "SNN-Leiden",
+        "clusters": len(ordered),
+        "neighbors": neighbor_count,
+        "resolution": selected["resolution"],
+        "silhouette": selected["silhouette"],
+        "seed_stability_ari": selected["stability"],
+        "resolutions_tested": resolutions,
     }
 
 
@@ -2491,7 +3363,10 @@ def _cluster_embeddings(normalized: np.ndarray, similarities: np.ndarray) -> tup
 def audio_profile_status(echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
     user = _session_user(echora_session)
     models: dict[str, dict[str, int]] = {}
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         for model_name in SUPPORTED_PROFILE_MODELS:
             cursor.execute(
                 """WITH latest_source AS (
@@ -2548,7 +3423,9 @@ def start_audio_profile_rebuild(
         source_rows = cursor.fetchall()
         track_ids = sorted({row[0] for row in source_rows})
     return jobs.enqueue(
-        "audio_profiles", "analysis", user["id"],
+        "audio_profiles",
+        "analysis",
+        user["id"],
         payload={"track_ids": [str(track_id) for track_id in track_ids]},
         dedupe_key=f"audio_profiles:{user['id']}",
     )
@@ -2556,13 +3433,17 @@ def start_audio_profile_rebuild(
 
 @app.get("/library/tracks/{track_id}/audio-profile")
 def track_audio_profile(
-    track_id: uuid.UUID, model: str = "muq_mulan",
+    track_id: uuid.UUID,
+    model: str = "muq_mulan",
     echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     if model not in SUPPORTED_PROFILE_MODELS:
         raise HTTPException(status_code=422, detail="Audio profiles support muq_mulan or mert")
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT tap.*, profile_run.model_revision AS profile_revision,
                       profile_run.config AS profile_config, profile_run.created_at AS profile_created_at,
@@ -2604,32 +3485,38 @@ def track_audio_profile(
             )
             mode["intervals"] = cursor.fetchall()
             mode.pop("id")
-    return jsonable_encoder({
-        "track_id": track_id,
-        "profile_run_id": profile["profile_run_id"],
-        "source_run_id": profile["source_run_id"],
-        "profile_revision": profile["profile_revision"],
-        "profile_created_at": profile["profile_created_at"],
-        "profile_config": profile["profile_config"],
-        "source": {
-            "model": profile["model_name"], "revision": profile["source_model_revision"],
-            "config": profile["source_config"],
-        },
-        "timestamps_exact": profile["timestamps_exact"],
-        "diagnostics": {
-            "resultant_length": profile["resultant_length"],
-            "mean_global_similarity": profile["mean_global_similarity"],
-            "p05_global_similarity": profile["p05_global_similarity"],
-            "adjacent_change_mean": profile["adjacent_change_mean"],
-            "adjacent_change_p95": profile["adjacent_change_p95"],
-        },
-        "segments": segments, "modes": modes,
-    })
+    return jsonable_encoder(
+        {
+            "track_id": track_id,
+            "profile_run_id": profile["profile_run_id"],
+            "source_run_id": profile["source_run_id"],
+            "profile_revision": profile["profile_revision"],
+            "profile_created_at": profile["profile_created_at"],
+            "profile_config": profile["profile_config"],
+            "source": {
+                "model": profile["model_name"],
+                "revision": profile["source_model_revision"],
+                "config": profile["source_config"],
+            },
+            "timestamps_exact": profile["timestamps_exact"],
+            "diagnostics": {
+                "resultant_length": profile["resultant_length"],
+                "mean_global_similarity": profile["mean_global_similarity"],
+                "p05_global_similarity": profile["p05_global_similarity"],
+                "adjacent_change_mean": profile["adjacent_change_mean"],
+                "adjacent_change_p95": profile["adjacent_change_p95"],
+            },
+            "segments": segments,
+            "modes": modes,
+        }
+    )
 
 
 @app.get("/library/map")
 def library_map(
-    model: str = "muq_mulan", limit: int = 1500, semantic_weight: float | None = None,
+    model: str = "muq_mulan",
+    limit: int = 1500,
+    semantic_weight: float | None = None,
     echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
@@ -2640,7 +3527,10 @@ def library_map(
         semantic_weight = 0.5 if semantic_weight is None else semantic_weight
         if not 0 <= semantic_weight <= 1:
             raise HTTPException(status_code=422, detail="semantic_weight must be between 0 and 1")
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         if model == "blend":
             cursor.execute(
                 """
@@ -2704,26 +3594,46 @@ def library_map(
                 (
                     "lyrics" if model == "lyrics" else "audio-track",
                     "bge_m3" if model == "lyrics" else model,
-                    user["id"], user["id"], limit,
+                    user["id"],
+                    user["id"],
+                    limit,
                 ),
             )
         rows = cursor.fetchall()
     if not rows:
         return {"points": [], "model": model}
     if model == "blend":
-        semantic = np.stack([np.fromstring(row.pop("semantic_embedding").strip("[]"), sep=",") for row in rows])
-        acoustic = np.stack([np.fromstring(row.pop("acoustic_embedding").strip("[]"), sep=",") for row in rows])
+        semantic = np.stack(
+            [np.fromstring(row.pop("semantic_embedding").strip("[]"), sep=",") for row in rows]
+        )
+        acoustic = np.stack(
+            [np.fromstring(row.pop("acoustic_embedding").strip("[]"), sep=",") for row in rows]
+        )
         semantic /= np.maximum(np.linalg.norm(semantic, axis=1, keepdims=True), 1e-8)
         acoustic /= np.maximum(np.linalg.norm(acoustic, axis=1, keepdims=True), 1e-8)
-        matrix = np.concatenate([np.sqrt(semantic_weight) * semantic, np.sqrt(1 - semantic_weight) * acoustic], axis=1)
+        matrix = np.concatenate(
+            [np.sqrt(semantic_weight) * semantic, np.sqrt(1 - semantic_weight) * acoustic], axis=1
+        )
     else:
-        matrix = np.stack([np.fromstring(row.pop("embedding").strip("[]"), sep=",") for row in rows])
-    effective_weight = float(semantic_weight if model == "blend" else (1 if model == "muq_mulan" else 0))
+        matrix = np.stack(
+            [np.fromstring(row.pop("embedding").strip("[]"), sep=",") for row in rows]
+        )
+    effective_weight = float(
+        semantic_weight if model == "blend" else (1 if model == "muq_mulan" else 0)
+    )
     corpus_material = "|".join(
-        [model, f"{effective_weight:.4f}", str(_COMMUNITY_SNAPSHOT_REVISION), *[f"{row['id']}:{row['run_id']}" for row in rows]]
+        [
+            model,
+            f"{effective_weight:.4f}",
+            str(_COMMUNITY_SNAPSHOT_REVISION),
+            *[f"{row['id']}:{row['run_id']}" for row in rows],
+        ]
     )
     corpus_hash = hashlib.sha256(corpus_material.encode()).hexdigest()
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT id, payload, created_at FROM community_snapshots
                WHERE model_name=%s AND semantic_weight=%s AND corpus_hash=%s AND algorithm_revision=%s""",
@@ -2745,14 +3655,18 @@ def library_map(
     projection = projection / np.maximum(scale, 1e-6)
     labels, clustering = _cluster_embeddings(normalized, similarities)
     cluster_count = len(np.unique(labels))
-    embedding_centers = np.stack([normalized[labels == index].mean(axis=0) for index in range(cluster_count)])
+    embedding_centers = np.stack(
+        [normalized[labels == index].mean(axis=0) for index in range(cluster_count)]
+    )
     embedding_centers /= np.maximum(np.linalg.norm(embedding_centers, axis=1, keepdims=True), 1e-8)
     membership_logits = normalized @ embedding_centers.T / 0.08
     membership_logits -= membership_logits.max(axis=1, keepdims=True)
     memberships = np.exp(membership_logits)
     memberships /= memberships.sum(axis=1, keepdims=True)
     if cluster_count:
-        center_matrix = np.stack([projection[labels == index].mean(axis=0) for index in range(cluster_count)])
+        center_matrix = np.stack(
+            [projection[labels == index].mean(axis=0) for index in range(cluster_count)]
+        )
         layout_centers = center_matrix.copy()
         for _ in range(80):
             for left in range(cluster_count):
@@ -2769,41 +3683,74 @@ def library_map(
                         layout_centers[right] += shift
         packed = projection.copy()
         clustered = labels >= 0
-        packed[clustered] = layout_centers[labels[clustered]] + (projection[clustered] - center_matrix[labels[clustered]]) * 0.34
+        packed[clustered] = (
+            layout_centers[labels[clustered]]
+            + (projection[clustered] - center_matrix[labels[clustered]]) * 0.34
+        )
         projection = packed
     projection -= projection.mean(axis=0, keepdims=True)
     packed_scale = np.percentile(np.abs(projection), 97, axis=0)
     projection /= np.maximum(packed_scale, 1e-6)
-    center_matrix = np.stack([projection[labels == index].mean(axis=0) for index in range(cluster_count)]) if cluster_count else np.empty((0, 2))
+    center_matrix = (
+        np.stack([projection[labels == index].mean(axis=0) for index in range(cluster_count)])
+        if cluster_count
+        else np.empty((0, 2))
+    )
     communities = []
     for cluster in range(cluster_count):
         member_indices = np.flatnonzero(labels == cluster)
-        genres = Counter(genre for item in member_indices for genre in (rows[item].get("genres") or []) if genre)
+        genres = Counter(
+            genre for item in member_indices for genre in (rows[item].get("genres") or []) if genre
+        )
         top_genres = [{"name": name, "tracks": count} for name, count in genres.most_common(3)]
-        representatives = sorted(member_indices, key=lambda item: float(normalized[item] @ embedding_centers[cluster]), reverse=True)[:3]
+        representatives = sorted(
+            member_indices,
+            key=lambda item: float(normalized[item] @ embedding_centers[cluster]),
+            reverse=True,
+        )[:3]
         label_parts = [item["name"] for item in top_genres[:2]]
         label = " / ".join(label_parts) if label_parts else f"Community {cluster + 1}"
         cohesion = float(np.mean(normalized[member_indices] @ embedding_centers[cluster]))
-        communities.append({
-            "id": cluster, "label": label, "x": float(center_matrix[cluster, 0]),
-            "y": float(center_matrix[cluster, 1]), "size": len(member_indices), "cohesion": cohesion,
-            "top_genres": top_genres,
-            "representative_tracks": [{"id": str(rows[item]["id"]), "title": rows[item]["title"], "artist": rows[item].get("artist")} for item in representatives],
-        })
+        communities.append(
+            {
+                "id": cluster,
+                "label": label,
+                "x": float(center_matrix[cluster, 0]),
+                "y": float(center_matrix[cluster, 1]),
+                "size": len(member_indices),
+                "cohesion": cohesion,
+                "top_genres": top_genres,
+                "representative_tracks": [
+                    {
+                        "id": str(rows[item]["id"]),
+                        "title": rows[item]["title"],
+                        "artist": rows[item].get("artist"),
+                    }
+                    for item in representatives
+                ],
+            }
+        )
     nearest_count = min(6, max(0, len(rows) - 1))
-    nearest_sets = [set(map(int, np.argsort(similarities[index])[::-1][1:nearest_count + 1])) for index in range(len(rows))]
+    nearest_sets = [
+        set(map(int, np.argsort(similarities[index])[::-1][1 : nearest_count + 1]))
+        for index in range(len(rows))
+    ]
     edge_map: dict[tuple[int, int], dict[str, object]] = {}
     for left, neighbors_for_left in enumerate(nearest_sets):
         for right in neighbors_for_left:
             edge = (min(left, right), max(left, right))
             edge_map[edge] = {
-                "source_id": str(rows[edge[0]]["id"]), "target_id": str(rows[edge[1]]["id"]),
+                "source_id": str(rows[edge[0]]["id"]),
+                "target_id": str(rows[edge[1]]["id"]),
                 "similarity": float(similarities[edge[0], edge[1]]),
-                "mutual": left in nearest_sets[right], "cross_community": bool(labels[edge[0]] != labels[edge[1]]),
+                "mutual": left in nearest_sets[right],
+                "cross_community": bool(labels[edge[0]] != labels[edge[1]]),
             }
     provenance = {
-        "run_id": str(rows[0]["run_id"]), "model_revision": rows[0].get("model_revision"),
-        "run_created_at": rows[0].get("run_created_at"), "track_count": len(rows),
+        "run_id": str(rows[0]["run_id"]),
+        "model_revision": rows[0].get("model_revision"),
+        "run_created_at": rows[0].get("run_created_at"),
+        "track_count": len(rows),
     }
     points = []
     for index, row in enumerate(rows):
@@ -2812,23 +3759,66 @@ def library_map(
         entropy = float(-np.sum(memberships[index] * np.log(np.maximum(memberships[index], 1e-12))))
         bridge_score = entropy / max(np.log(cluster_count), 1e-8) if cluster_count > 1 else 0.0
         strongest = np.argsort(memberships[index])[::-1][:3]
-        cluster_memberships = [{"cluster": int(value), "strength": float(memberships[index, value])} for value in strongest]
+        cluster_memberships = [
+            {"cluster": int(value), "strength": float(memberships[index, value])}
+            for value in strongest
+        ]
         nearest = np.argsort(similarities[index])[::-1]
-        neighbors = [{"id": str(rows[item]["id"]), "title": rows[item]["title"], "artist": rows[item]["artist"], "similarity": float(similarities[index, item])} for item in nearest if item != index][:4]
-        public_row = {key: value for key, value in row.items() if key not in {"run_id", "model_revision", "run_created_at"}}
-        points.append({**public_row, "x": float(projection[index, 0]), "y": float(projection[index, 1]), "cluster": cluster, "cluster_affinity": affinity, "cluster_memberships": cluster_memberships, "bridge_score": bridge_score, "neighbors": neighbors})
-    payload = jsonable_encoder({
-        "points": points, "clusters": communities, "communities": communities,
-        "edges": list(edge_map.values()), "model": model, "semantic_weight": effective_weight,
-        "clustering": {**clustering, **provenance}, "corpus_hash": corpus_hash,
-    })
+        neighbors = [
+            {
+                "id": str(rows[item]["id"]),
+                "title": rows[item]["title"],
+                "artist": rows[item]["artist"],
+                "similarity": float(similarities[index, item]),
+            }
+            for item in nearest
+            if item != index
+        ][:4]
+        public_row = {
+            key: value
+            for key, value in row.items()
+            if key not in {"run_id", "model_revision", "run_created_at"}
+        }
+        points.append(
+            {
+                **public_row,
+                "x": float(projection[index, 0]),
+                "y": float(projection[index, 1]),
+                "cluster": cluster,
+                "cluster_affinity": affinity,
+                "cluster_memberships": cluster_memberships,
+                "bridge_score": bridge_score,
+                "neighbors": neighbors,
+            }
+        )
+    payload = jsonable_encoder(
+        {
+            "points": points,
+            "clusters": communities,
+            "communities": communities,
+            "edges": list(edge_map.values()),
+            "model": model,
+            "semantic_weight": effective_weight,
+            "clustering": {**clustering, **provenance},
+            "corpus_hash": corpus_hash,
+        }
+    )
     parameters = {
-        "algorithm": clustering["algorithm"], "algorithm_revision": _COMMUNITY_SNAPSHOT_REVISION,
-        "neighbors": clustering["neighbors"], "resolution": clustering["resolution"],
-        "resolutions_tested": clustering["resolutions_tested"], "semantic_weight": effective_weight,
+        "algorithm": clustering["algorithm"],
+        "algorithm_revision": _COMMUNITY_SNAPSHOT_REVISION,
+        "neighbors": clustering["neighbors"],
+        "resolution": clustering["resolution"],
+        "resolutions_tested": clustering["resolutions_tested"],
+        "semantic_weight": effective_weight,
     }
-    metrics = {"silhouette": clustering["silhouette"], "seed_stability_ari": clustering["seed_stability_ari"]}
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    metrics = {
+        "silhouette": clustering["silhouette"],
+        "seed_stability_ari": clustering["seed_stability_ari"],
+    }
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """INSERT INTO community_snapshots
                  (model_name, semantic_weight, corpus_hash, algorithm_revision, track_count, parameters, metrics, payload)
@@ -2836,20 +3826,37 @@ def library_map(
                ON CONFLICT (model_name, semantic_weight, corpus_hash, algorithm_revision)
                DO UPDATE SET payload=EXCLUDED.payload, parameters=EXCLUDED.parameters, metrics=EXCLUDED.metrics
                RETURNING id, created_at""",
-            (model, effective_weight, corpus_hash, _COMMUNITY_SNAPSHOT_REVISION, len(rows),
-             Jsonb(parameters), Jsonb(metrics), Jsonb(payload)),
+            (
+                model,
+                effective_weight,
+                corpus_hash,
+                _COMMUNITY_SNAPSHOT_REVISION,
+                len(rows),
+                Jsonb(parameters),
+                Jsonb(metrics),
+                Jsonb(payload),
+            ),
         )
         snapshot = cursor.fetchone()
-    return {**payload, "snapshot_id": str(snapshot["id"]), "snapshot_created_at": snapshot["created_at"], "cache_hit": False}
+    return {
+        **payload,
+        "snapshot_id": str(snapshot["id"]),
+        "snapshot_created_at": snapshot["created_at"],
+        "cache_hit": False,
+    }
 
 
 @app.get("/library/community-snapshots", dependencies=[Depends(require_user)])
 def community_snapshots(
-    limit: int = 20, echora_session: str | None = Cookie(default=None),
+    limit: int = 20,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     _session_user(echora_session)
     limit = min(max(limit, 1), 100)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT id, model_name, semantic_weight, corpus_hash, algorithm_revision,
                       track_count, parameters, metrics, created_at
@@ -2862,21 +3869,35 @@ def community_snapshots(
 
 @app.get("/library/community-snapshots/{snapshot_id}", dependencies=[Depends(require_user)])
 def community_snapshot(
-    snapshot_id: uuid.UUID, echora_session: str | None = Cookie(default=None),
+    snapshot_id: uuid.UUID,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     _session_user(echora_session)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT payload, created_at FROM community_snapshots WHERE id=%s", (snapshot_id,))
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            "SELECT payload, created_at FROM community_snapshots WHERE id=%s", (snapshot_id,)
+        )
         snapshot = cursor.fetchone()
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Community snapshot not found")
-    return {**snapshot["payload"], "snapshot_id": str(snapshot_id), "snapshot_created_at": snapshot["created_at"], "cache_hit": True}
+    return {
+        **snapshot["payload"],
+        "snapshot_id": str(snapshot_id),
+        "snapshot_created_at": snapshot["created_at"],
+        "cache_hit": True,
+    }
 
 
 def _artist_embedding_corpus(model: str) -> tuple[list[dict[str, object]], np.ndarray, str]:
     if model not in {"muq_mulan", "mert"}:
         raise HTTPException(status_code=422, detail="Artist profiles support muq_mulan or mert")
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT DISTINCT ON (e.track_id) t.id, t.title, t.artist, t.album,
                       e.embedding::text AS embedding, ar.id AS run_id
@@ -2889,13 +3910,17 @@ def _artist_embedding_corpus(model: str) -> tuple[list[dict[str, object]], np.nd
     if not rows:
         raise HTTPException(status_code=409, detail="No artist embeddings are available")
     matrix = np.stack([np.fromstring(row.pop("embedding").strip("[]"), sep=",") for row in rows])
-    corpus_hash = hashlib.sha256("|".join(f"{row['id']}:{row['run_id']}" for row in rows).encode()).hexdigest()
+    corpus_hash = hashlib.sha256(
+        "|".join(f"{row['id']}:{row['run_id']}" for row in rows).encode()
+    ).hexdigest()
     for row in rows:
         row.pop("run_id", None)
     return rows, matrix, corpus_hash
 
 
-def _artist_payload(name: str, rows: list[dict[str, object]], matrix: np.ndarray, indices: list[int]) -> tuple[dict[str, object], object]:
+def _artist_payload(
+    name: str, rows: list[dict[str, object]], matrix: np.ndarray, indices: list[int]
+) -> tuple[dict[str, object], object]:
     artist_matrix = matrix[indices]
     profile = fit_artist_profile(artist_matrix)
     representatives = representative_indices(artist_matrix, profile)
@@ -2903,33 +3928,64 @@ def _artist_payload(name: str, rows: list[dict[str, object]], matrix: np.ndarray
     for component, representative in enumerate(representatives):
         members = np.flatnonzero(profile.component_labels == component)
         track = rows[indices[representative]]
-        facets.append({
-            "index": component, "weight": float(profile.weights[component]), "track_count": int(len(members)),
-            "representative_track": {"id": str(track["id"]), "title": track["title"], "artist": track["artist"], "album": track["album"]},
-        })
-    return {"artist": name, "track_count": len(indices), "component_count": len(profile.weights), "facets": facets}, profile
+        facets.append(
+            {
+                "index": component,
+                "weight": float(profile.weights[component]),
+                "track_count": int(len(members)),
+                "representative_track": {
+                    "id": str(track["id"]),
+                    "title": track["title"],
+                    "artist": track["artist"],
+                    "album": track["album"],
+                },
+            }
+        )
+    return {
+        "artist": name,
+        "track_count": len(indices),
+        "component_count": len(profile.weights),
+        "facets": facets,
+    }, profile
 
 
 @app.get("/library/artists/profile", dependencies=[Depends(require_user)])
 def artist_profile(
-    artist: str, model: str = "muq_mulan", echora_session: str | None = Cookie(default=None),
+    artist: str,
+    model: str = "muq_mulan",
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     _session_user(echora_session)
     rows, matrix, corpus_hash = _artist_embedding_corpus(model)
-    indices = [index for index, row in enumerate(rows) if str(row["artist"]).casefold() == artist.casefold()]
+    indices = [
+        index
+        for index, row in enumerate(rows)
+        if str(row["artist"]).casefold() == artist.casefold()
+    ]
     if not indices:
         raise HTTPException(status_code=404, detail="Artist not found")
     display_name = str(rows[indices[0]]["artist"])
     payload, profile = _artist_payload(display_name, rows, matrix, indices)
     stored = jsonable_encoder({**payload, "model": model, "corpus_hash": corpus_hash})
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """INSERT INTO artist_profiles
                  (artist_key, artist_name, model_name, corpus_hash, track_count, component_count, payload)
                VALUES (%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT (artist_key, model_name, corpus_hash) DO UPDATE SET payload=EXCLUDED.payload
                RETURNING id, created_at""",
-            (display_name.casefold(), display_name, model, corpus_hash, len(indices), len(profile.weights), Jsonb(stored)),
+            (
+                display_name.casefold(),
+                display_name,
+                model,
+                corpus_hash,
+                len(indices),
+                len(profile.weights),
+                Jsonb(stored),
+            ),
         )
         saved = cursor.fetchone()
     return {**stored, "profile_id": str(saved["id"]), "created_at": saved["created_at"]}
@@ -2937,7 +3993,9 @@ def artist_profile(
 
 @app.get("/library/artists/similar", dependencies=[Depends(require_user)])
 def similar_artists(
-    artist: str, model: str = "muq_mulan", limit: int = 12,
+    artist: str,
+    model: str = "muq_mulan",
+    limit: int = 12,
     echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     _session_user(echora_session)
@@ -2961,30 +4019,46 @@ def similar_artists(
         center = np.mean(matrix[indices], axis=0)
         center /= max(float(np.linalg.norm(center)), 1e-8)
         centroid_candidates.append((key, float(target_center @ center)))
-    candidates = sorted(centroid_candidates, key=lambda item: item[1], reverse=True)[:max(limit * 3, 30)]
+    candidates = sorted(centroid_candidates, key=lambda item: item[1], reverse=True)[
+        : max(limit * 3, 30)
+    ]
     results = []
     for key, coarse_similarity in candidates:
         payload, profile = _artist_payload(names[key], rows, matrix, groups[key])
         similarity, forward, backward, component_matrix = soft_chamfer_similarity(target, profile)
-        target_component, candidate_component = np.unravel_index(np.argmax(component_matrix), component_matrix.shape)
-        results.append({
-            **payload, "similarity": similarity, "target_coverage": forward, "candidate_coverage": backward,
-            "coarse_similarity": coarse_similarity,
-            "strongest_facet_match": {"target_facet": int(target_component), "candidate_facet": int(candidate_component),
-                                      "similarity": float(component_matrix[target_component, candidate_component])},
-        })
+        target_component, candidate_component = np.unravel_index(
+            np.argmax(component_matrix), component_matrix.shape
+        )
+        results.append(
+            {
+                **payload,
+                "similarity": similarity,
+                "target_coverage": forward,
+                "candidate_coverage": backward,
+                "coarse_similarity": coarse_similarity,
+                "strongest_facet_match": {
+                    "target_facet": int(target_component),
+                    "candidate_facet": int(candidate_component),
+                    "similarity": float(component_matrix[target_component, candidate_component]),
+                },
+            }
+        )
     results.sort(key=lambda item: float(item["similarity"]), reverse=True)
     return {"artist": names[target_key], "model": model, "results": results[:limit]}
 
 
 @app.post("/library/journeys/preview", dependencies=[Depends(require_user)])
 def preview_journey(
-    request: JourneyRequest, echora_session: str | None = Cookie(default=None),
+    request: JourneyRequest,
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     _session_user(echora_session)
     if request.start_track_id == request.end_track_id:
         raise HTTPException(status_code=422, detail="Journey endpoints must be different tracks")
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """
             WITH semantic AS (
@@ -3010,16 +4084,30 @@ def preview_journey(
         )
         rows = cursor.fetchall()
     identifiers = {str(row["id"]): index for index, row in enumerate(rows)}
-    start_index, end_index = identifiers.get(str(request.start_track_id)), identifiers.get(str(request.end_track_id))
+    start_index, end_index = (
+        identifiers.get(str(request.start_track_id)),
+        identifiers.get(str(request.end_track_id)),
+    )
     if start_index is None or end_index is None:
-        raise HTTPException(status_code=404, detail="One or both journey endpoints lack required embeddings")
+        raise HTTPException(
+            status_code=404, detail="One or both journey endpoints lack required embeddings"
+        )
     start_group = rows[start_index].get("recording_group_id")
     if start_group and start_group == rows[end_index].get("recording_group_id"):
         raise HTTPException(
-            status_code=422, detail="Journey endpoints must be different recordings",
+            status_code=422,
+            detail="Journey endpoints must be different recordings",
         )
-    semantic = normalize_journey_rows(np.stack([np.fromstring(row.pop("semantic_embedding").strip("[]"), sep=",") for row in rows]))
-    acoustic = normalize_journey_rows(np.stack([np.fromstring(row.pop("acoustic_embedding").strip("[]"), sep=",") for row in rows]))
+    semantic = normalize_journey_rows(
+        np.stack(
+            [np.fromstring(row.pop("semantic_embedding").strip("[]"), sep=",") for row in rows]
+        )
+    )
+    acoustic = normalize_journey_rows(
+        np.stack(
+            [np.fromstring(row.pop("acoustic_embedding").strip("[]"), sep=",") for row in rows]
+        )
+    )
     if request.mode == "semantic":
         matrix = semantic
         semantic_weight = 1.0
@@ -3028,27 +4116,44 @@ def preview_journey(
         semantic_weight = 0.0
     else:
         semantic_weight = request.semantic_weight
-        matrix = np.concatenate([np.sqrt(semantic_weight) * semantic, np.sqrt(1 - semantic_weight) * acoustic], axis=1)
+        matrix = np.concatenate(
+            [np.sqrt(semantic_weight) * semantic, np.sqrt(1 - semantic_weight) * acoustic], axis=1
+        )
     targets = spherical_targets(matrix[start_index], matrix[end_index], request.length)
     selected = select_journey(
-        matrix, targets, start_index, end_index,
-        [row.get("artist") for row in rows], [row.get("recording_group_id") for row in rows],
+        matrix,
+        targets,
+        start_index,
+        end_index,
+        [row.get("artist") for row in rows],
+        [row.get("recording_group_id") for row in rows],
     )
     steps = []
     for position, (index, target_similarity, transition_similarity) in enumerate(selected):
         row = rows[index]
-        steps.append({
-            **row, "position": position, "target_progress": position / max(len(selected) - 1, 1),
-            "target_similarity": target_similarity, "transition_similarity": transition_similarity,
-        })
-    return {"mode": request.mode, "semantic_weight": semantic_weight, "requested_length": request.length, "steps": steps}
+        steps.append(
+            {
+                **row,
+                "position": position,
+                "target_progress": position / max(len(selected) - 1, 1),
+                "target_similarity": target_similarity,
+                "transition_similarity": transition_similarity,
+            }
+        )
+    return {
+        "mode": request.mode,
+        "semantic_weight": semantic_weight,
+        "requested_length": request.length,
+        "steps": steps,
+    }
 
 
 @app.get("/library/filter-options")
 def browse_filter_options(echora_session: str | None = Cookie(default=None)):
     user = _session_user(echora_session)
     with psycopg.connect(get_settings().database_url, row_factory=dict_row) as db:
-        rows = db.execute("""WITH visible AS MATERIALIZED (
+        rows = db.execute(
+            """WITH visible AS MATERIALIZED (
             SELECT DISTINCT track_id FROM user_track_links WHERE user_id=%s
         ), options AS (
             SELECT 'language' AS kind, coalesce(nullif(l.language,''),'unknown') AS value, v.track_id
@@ -3060,9 +4165,15 @@ def browse_filter_options(echora_session: str | None = Cookie(default=None)):
             SELECT 'translation', lt.target_language, v.track_id FROM visible v
             JOIN lyric_translations lt ON lt.track_id=v.track_id WHERE lt.status='ready'
         ) SELECT kind,value,count(DISTINCT track_id) AS tracks FROM options
-          GROUP BY kind,value ORDER BY kind,lower(value)""", (user['id'],)).fetchall()
-    return {kind: [{'name': row['value'], 'tracks': row['tracks']} for row in rows if row['kind']==kind]
-            for kind in ('language','genre','translation')}
+          GROUP BY kind,value ORDER BY kind,lower(value)""",
+            (user["id"],),
+        ).fetchall()
+    return {
+        kind: [
+            {"name": row["value"], "tracks": row["tracks"]} for row in rows if row["kind"] == kind
+        ]
+        for kind in ("language", "genre", "translation")
+    }
 
 
 # Navidrome play counts need a full catalog scan, so keep each user's ranking briefly.
@@ -3088,7 +4199,10 @@ def _navidrome_ranking(user_id: str, connection_id: str) -> list[tuple[str, int]
 
 
 def _library_track_rows(user_id: object) -> list[dict[str, object]]:
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT t.id::text AS id, t.title, t.artist, t.album, t.duration_seconds,
                       source.external_id AS source_id, source.cover_art
@@ -3110,7 +4224,9 @@ def _library_track_rows(user_id: object) -> list[dict[str, object]]:
 
 @app.get("/library/top-tracks")
 def library_top_tracks(
-    limit: int = 10, period: str = "1month", echora_session: str | None = Cookie(default=None),
+    limit: int = 10,
+    period: str = "1month",
+    echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     """The user's most played library tracks. Echora records no plays itself.
 
@@ -3124,38 +4240,62 @@ def library_top_tracks(
     with session_scope() as session:
         preference = session.get(UserPreference, user["id"])
         username = preference.lastfm_username if preference else None
-        encrypted_key = bytes(preference.lastfm_api_key_encrypted) if preference and preference.lastfm_api_key_encrypted else None
+        encrypted_key = (
+            bytes(preference.lastfm_api_key_encrypted)
+            if preference and preference.lastfm_api_key_encrypted
+            else None
+        )
     if username and encrypted_key:
         try:
             # Ask for more than we show: some top tracks are not in this library.
-            entries = top_tracks(username, _cipher().decrypt(encrypted_key).decode(), period, min(limit * 5, 200))
+            entries = top_tracks(
+                username, _cipher().decrypt(encrypted_key).decode(), period, min(limit * 5, 200)
+            )
         except Exception as error:
-            raise HTTPException(status_code=502, detail=f"Could not read Last.fm listening history: {error}") from error
+            raise HTTPException(
+                status_code=502, detail=f"Could not read Last.fm listening history: {error}"
+            ) from error
         matched = match_top_tracks(_library_track_rows(user["id"]), entries)
-        return {"available": True, "source": "lastfm", "period": period,
-                "tracks": [{**row, "play_count": count} for row, count in matched[:limit]]}
+        return {
+            "available": True,
+            "source": "lastfm",
+            "period": period,
+            "tracks": [{**row, "play_count": count} for row, count in matched[:limit]],
+        }
     connection_id = user.get("navidrome_connection_id")
     if not connection_id:
         return {"available": False, "source": None, "period": period, "tracks": []}
     try:
         ranking = _navidrome_ranking(str(user["id"]), str(connection_id))
     except Exception as error:
-        raise HTTPException(status_code=502, detail=f"Could not read Navidrome play counts: {error}") from error
+        raise HTTPException(
+            status_code=502, detail=f"Could not read Navidrome play counts: {error}"
+        ) from error
     if ranking is None:
         return {"available": False, "source": None, "period": period, "tracks": []}
     matched = match_navidrome_play_counts(_library_track_rows(user["id"]), ranking)
-    return {"available": True, "source": "navidrome", "period": "overall",
-            "tracks": [{**row, "play_count": count} for row, count in matched[:limit]]}
+    return {
+        "available": True,
+        "source": "navidrome",
+        "period": "overall",
+        "tracks": [{**row, "play_count": count} for row, count in matched[:limit]],
+    }
 
 
 @app.get("/library/facets")
 def library_facets(
-    artist_query: str = "", album_query: str = "", artist: str = "", limit: int = 20,
+    artist_query: str = "",
+    album_query: str = "",
+    artist: str = "",
+    limit: int = 20,
     echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
     limit = min(max(limit, 1), 50)
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection, connection.cursor() as cursor:
+    with (
+        psycopg.connect(get_settings().database_url, row_factory=dict_row) as connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(
             """SELECT artist AS name, count(*) AS tracks FROM tracks t
                WHERE artist IS NOT NULL AND artist ILIKE %s
@@ -3166,7 +4306,8 @@ def library_facets(
         )
         artists = cursor.fetchall()
         album_clauses = [
-            "album IS NOT NULL", "album ILIKE %s",
+            "album IS NOT NULL",
+            "album ILIKE %s",
             "EXISTS (SELECT 1 FROM user_track_links utl WHERE utl.track_id=t.id AND utl.user_id=%s)",
         ]
         album_parameters: list[object] = [f"%{album_query.strip()}%", user["id"]]
@@ -3183,14 +4324,22 @@ def library_facets(
 
 @app.get("/jobs")
 def list_user_jobs(
-    connection_id: uuid.UUID | None = None, active_only: bool = False, limit: int = 20,
+    connection_id: uuid.UUID | None = None,
+    active_only: bool = False,
+    limit: int = 20,
     library_only: bool = False,
     echora_session: str | None = Cookie(default=None),
 ) -> dict[str, object]:
     user = _session_user(echora_session)
-    return {"jobs": jobs.list_jobs(user["id"], connection_id=connection_id,
-                                   active_only=active_only, limit=min(max(limit, 1), 100),
-                                   library_only=library_only)}
+    return {
+        "jobs": jobs.list_jobs(
+            user["id"],
+            connection_id=connection_id,
+            active_only=active_only,
+            limit=min(max(limit, 1), 100),
+            library_only=library_only,
+        )
+    }
 
 
 @app.get("/jobs/{job_id}")
@@ -3203,7 +4352,9 @@ def job(job_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) ->
 
 
 @app.post("/jobs/{job_id}/cancel")
-def cancel_job(job_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def cancel_job(
+    job_id: uuid.UUID, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
     value = jobs.cancel(job_id, user["id"])
     if value is None:
@@ -3212,7 +4363,9 @@ def cancel_job(job_id: uuid.UUID, echora_session: str | None = Cookie(default=No
 
 
 @app.post("/jobs/{job_id}/dismiss")
-def dismiss_job(job_id: uuid.UUID, echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def dismiss_job(
+    job_id: uuid.UUID, echora_session: str | None = Cookie(default=None)
+) -> dict[str, object]:
     user = _session_user(echora_session)
     try:
         value = jobs.dismiss(job_id, user["id"])
@@ -3224,10 +4377,14 @@ def dismiss_job(job_id: uuid.UUID, echora_session: str | None = Cookie(default=N
 
 
 @app.get("/jobs/{job_id}/batches")
-def job_batches(job_id: uuid.UUID, limit: int = 25, offset: int = 0,
-                echora_session: str | None = Cookie(default=None)) -> dict[str, object]:
+def job_batches(
+    job_id: uuid.UUID,
+    limit: int = 25,
+    offset: int = 0,
+    echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
     user = _session_user(echora_session)
-    result = jobs.list_batches(job_id, user['id'], limit=limit, offset=offset)
+    result = jobs.list_batches(job_id, user["id"], limit=limit, offset=offset)
     if result is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return result
