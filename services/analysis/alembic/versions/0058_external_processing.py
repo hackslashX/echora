@@ -24,8 +24,6 @@ def upgrade():
             -- Non-admin users may choose Modal, spending the instance's Modal credit.
             allow_users boolean NOT NULL DEFAULT false,
             workspace text,
-            -- Hugging Face token for gated motion artwork models, encrypted like the secret.
-            hf_token_encrypted bytea,
             -- What Echora last confirmed in the Modal workspace.
             status text NOT NULL DEFAULT 'unprepared'
                 CHECK (status IN ('unprepared', 'preparing', 'ready', 'failed')),

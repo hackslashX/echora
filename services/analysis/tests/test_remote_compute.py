@@ -2,6 +2,7 @@
 
 from contextlib import nullcontext
 from hashlib import sha256
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
@@ -668,3 +669,54 @@ def test_comfyui_finds_models_wherever_the_cache_lives(monkeypatch):
     assert (
         "base_path: /echora-models/huggingface/hub/models--Comfy-Org--gemma-4/snapshots/" in config
     )
+
+
+# Hugging Face token (Settings → Analysis models)
+
+
+def test_downloads_use_the_saved_token_unless_one_is_given(monkeypatch):
+    from echora_analysis import download_models, huggingface_token
+
+    calls = []
+    monkeypatch.setattr(huggingface_token, "token_or_none", lambda: "hf_saved")
+    for name in ("download_recording_model", "_download_essentia", "_prune_huggingface_cache"):
+        monkeypatch.setattr(download_models, name, lambda *args: None)
+    monkeypatch.setattr(
+        download_models,
+        "snapshot_download",
+        lambda **kwargs: calls.append(os.environ.get("HF_TOKEN")) or "/tmp/snapshot",
+    )
+    monkeypatch.setattr(download_models, "_pin_main_ref", lambda path: None)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://test")
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    get_settings.cache_clear()
+    try:
+        download_models.main()
+        assert set(calls) == {"hf_saved"}
+        calls.clear()
+        monkeypatch.setenv("HF_TOKEN", "hf_given")
+        download_models.main()
+        assert set(calls) == {"hf_given"}
+    finally:
+        os.environ.pop("HF_TOKEN", None)
+
+
+def test_saved_token_is_verified_and_encrypted(monkeypatch):
+    from cryptography.fernet import Fernet
+
+    from echora_analysis import huggingface_token
+
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("DATABASE_URL", "postgresql://test")
+    get_settings.cache_clear()
+    db = MagicMock()
+    monkeypatch.setattr(huggingface_token.psycopg, "connect", lambda url: nullcontext(db))
+    monkeypatch.setattr(
+        huggingface_token, "account", lambda token: "hcX02" if token == "hf_good" else 1 / 0
+    )
+    assert huggingface_token.save(" hf_good ") == "hcX02"
+    encrypted, account = db.execute.call_args.args[1]
+    assert account == "hcX02" and b"hf_good" not in encrypted
+    with pytest.raises(ZeroDivisionError):
+        huggingface_token.save("hf_bad")
+    assert huggingface_token.save("") is None and db.execute.call_args.args[1] == (None, None)

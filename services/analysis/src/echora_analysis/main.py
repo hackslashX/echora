@@ -206,6 +206,11 @@ class TranscriptionLanguageRequest(BaseModel):
     language: str = Field(pattern="^[a-z]{2,3}(?:-[A-Z]{2})?$")
 
 
+class HuggingFaceTokenRequest(BaseModel):
+    # Blank clears the stored token.
+    token: SecretStr = Field(max_length=1000)
+
+
 class HumProcessingSettingsRequest(BaseModel):
     enabled: bool
     location: str = Field(default="local", pattern="^(local|modal)$")
@@ -613,7 +618,8 @@ def settings(echora_session: str | None = Cookie(default=None)) -> dict[str, obj
         model_settings = session.execute(
             text(
                 """SELECT karaoke_processing_enabled, hum_processing_enabled, transcription_processing_enabled,
-                      karaoke_modal_enabled, hum_modal_enabled, transcription_modal_enabled
+                      karaoke_modal_enabled, hum_modal_enabled, transcription_modal_enabled,
+                      hf_token_account, hf_token_encrypted IS NOT NULL
                FROM analysis_settings WHERE singleton=true"""
             )
         ).one_or_none()
@@ -636,6 +642,9 @@ def settings(echora_session: str | None = Cookie(default=None)) -> dict[str, obj
                 else bool(model_settings[3]),
                 "hum_modal_enabled": True if model_settings is None else bool(model_settings[4]),
                 "transcription_modal_enabled": bool(model_settings and model_settings[5]),
+                # Gated model downloads, here and on Modal (only the account name, never the token).
+                "huggingface_account": model_settings[6] if model_settings else None,
+                "has_huggingface_token": bool(model_settings and model_settings[7]),
             },
             "timezone": preference.timezone,
             "navidrome": None
@@ -689,6 +698,27 @@ def update_karaoke_processing_settings(
             )
             pending = int(cursor.fetchone()["pending"])
     return {"enabled": request.enabled, "location": request.location, "pending": pending}
+
+
+@app.put("/settings/models/huggingface")
+def update_huggingface_token(
+    request: HuggingFaceTokenRequest,
+    echora_session: str | None = Cookie(default=None),
+) -> dict[str, object]:
+    """Store the Hugging Face token for gated model downloads, after checking it."""
+    user = _session_user(echora_session)
+    if not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Administrator access required")
+    from .huggingface_token import save
+
+    try:
+        account = save(request.token.get_secret_value())
+    except Exception:
+        # Never echo the token or Hugging Face's response.
+        raise HTTPException(
+            status_code=422, detail="Hugging Face did not accept this token"
+        ) from None
+    return {"has_token": account is not None, "account": account}
 
 
 @app.put("/settings/models/transcription")

@@ -41,8 +41,6 @@ class SettingsUpdate(BaseModel):
     gpu: str = "L40S"
     default_compute: str = Field(default="local", pattern="^(local|modal)$")
     allow_users: bool = False
-    # Hugging Face token for gated motion artwork models. Same rules as the Modal secret.
-    hf_token: SecretStr | None = Field(default=None, max_length=1000, exclude=True)
 
     @field_validator("token_id")
     @classmethod
@@ -82,7 +80,6 @@ def load(db=None) -> dict[str, object]:
             "default_compute": "local",
             "allow_users": False,
             "workspace": None,
-            "hf_token_encrypted": None,
             "status": "unprepared",
             "status_detail": None,
             "deployed_code": None,
@@ -104,11 +101,10 @@ def config(row: dict[str, object] | None = None) -> ModalConfig | None:
     if not row["enabled"] or not row["token_id"] or not row["token_secret_encrypted"]:
         return None
     secret = _cipher().decrypt(bytes(row["token_secret_encrypted"])).decode()
-    hf_token = (
-        _cipher().decrypt(bytes(row["hf_token_encrypted"])).decode()
-        if row.get("hf_token_encrypted")
-        else None
-    )
+    from .huggingface_token import token_or_none
+
+    # Gated models (LTX-2.5) download with the shared token from Analysis models settings.
+    hf_token = token_or_none()
     return ModalConfig(
         str(row["token_id"]), secret, str(row["gpu"]), get_settings().modal_image, hf_token
     )
@@ -256,7 +252,7 @@ def _public(row: dict[str, object], setup: dict[str, object] | None) -> dict[str
         "token_id": row["token_id"],
         "has_secret": bool(row["token_secret_encrypted"]),
         "gpu": row["gpu"],
-        "has_hf_token": bool(row.get("hf_token_encrypted")),
+        "has_hf_token": _has_hf_token(),
         "default_compute": row["default_compute"],
         "allow_users": row["allow_users"],
         "workspace": row["workspace"],
@@ -267,6 +263,12 @@ def _public(row: dict[str, object], setup: dict[str, object] | None) -> dict[str
         "gpu_types": list(GPU_TYPES),
         "setup": setup,
     }
+
+
+def _has_hf_token() -> bool:
+    from .huggingface_token import token_or_none
+
+    return token_or_none() is not None
 
 
 def _setup_job(db) -> dict[str, object] | None:
@@ -314,10 +316,6 @@ def router(require_user):
             if secret is not None:
                 encrypted = _cipher().encrypt(secret.encode()) if secret else None
             credentials_changed = secret is not None or body.token_id != current["token_id"]
-            hf_encrypted = current.get("hf_token_encrypted")
-            if body.hf_token is not None:
-                hf_value = body.hf_token.get_secret_value().strip()
-                hf_encrypted = _cipher().encrypt(hf_value.encode()) if hf_value else None
             workspace_name = current["workspace"]
             if body.enabled and not (body.token_id and encrypted):
                 raise HTTPException(422, "Enter a Modal token ID and secret before enabling Modal")
@@ -344,7 +342,6 @@ def router(require_user):
                 "default_compute": body.default_compute,
                 "allow_users": body.allow_users,
                 "workspace": workspace_name,
-                "hf_token_encrypted": hf_encrypted,
                 "updated_at": datetime.now().astimezone(),
             }
             if stale:

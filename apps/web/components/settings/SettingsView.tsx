@@ -76,6 +76,8 @@ type Settings = {
     transcription_modal_enabled: boolean;
     karaoke_modal_enabled: boolean;
     hum_modal_enabled: boolean;
+    huggingface_account: string | null;
+    has_huggingface_token: boolean;
   };
 };
 type OidcSettings = {
@@ -154,6 +156,12 @@ export default function SettingsView() {
   // Only load failures stay on the page; action results are toasts.
   const [loadError, setLoadError] = useState("");
   const [playback, setPlayback] = useState<PlaybackPreferences>(defaultPlaybackPreferences);
+  // Hugging Face token for gated model downloads, shared by this server and Modal.
+  const [huggingface, setHuggingface] = useState<{ has: boolean; account: string | null }>({
+    has: false,
+    account: null,
+  });
+  const [huggingfaceToken, setHuggingfaceToken] = useState("");
   const [motionArtwork, setMotionArtwork] = useState<{
     enabled: boolean;
     generate_during_sync: boolean;
@@ -173,6 +181,10 @@ export default function SettingsView() {
     setLastfmUsername(value.lastfm.username || "");
     setTimezone(value.timezone);
     setDisplayName(value.profile.display_name);
+    setHuggingface({
+      has: value.models.has_huggingface_token,
+      account: value.models.huggingface_account,
+    });
     setFeatures({
       transcription: {
         local: value.models.transcription_processing_enabled,
@@ -206,6 +218,28 @@ export default function SettingsView() {
   }
   function saveAnimationSpeed(next: PlaybackPreferences["animationSpeed"]) {
     savePlayback({ ...playback, animationSpeed: next });
+  }
+  async function saveHuggingfaceToken(token: string) {
+    setBusy(true);
+    try {
+      const result = await api<{ has_token: boolean; account: string | null }>(
+        "/settings/models/huggingface",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ token }),
+        },
+      );
+      setHuggingface({ has: result.has_token, account: result.account });
+      setHuggingfaceToken("");
+      toast.success(result.has_token ? "Hugging Face token saved" : "Hugging Face token removed", {
+        description: result.account ? `Signed in as ${result.account}.` : undefined,
+      });
+    } catch (reason) {
+      fail("Could not save the Hugging Face token", reason);
+    } finally {
+      setBusy(false);
+    }
   }
   async function saveMotionArtwork(location: Location, next: boolean) {
     setBusy(true);
@@ -745,6 +779,57 @@ export default function SettingsView() {
                     </SettingRow>
                     <SettingRow label="Voice detection" description="Vocal presence and voice type">
                       <span className="text-[12px] text-muted-foreground">Every sync</span>
+                    </SettingRow>
+                    <div className={styles.group}>
+                      <SectionHeading
+                        title="Model downloads"
+                        description="Some models are gated on Hugging Face, such as LTX-2.5 for motion artwork. One token serves downloads on this server and on Modal."
+                      />
+                    </div>
+                    <SettingRow
+                      label="Hugging Face token"
+                      htmlFor="huggingface-token"
+                      description={
+                        huggingface.has
+                          ? `Saved${huggingface.account ? ` for ${huggingface.account}` : ""}. Enter a new token to replace it. Accept each gated model's license with this account.`
+                          : "A read token from Hugging Face → Settings → Access Tokens. Accept each gated model's license with the same account. Stored encrypted."
+                      }
+                    >
+                      <form
+                        className="flex gap-2"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          if (huggingfaceToken.trim()) void saveHuggingfaceToken(huggingfaceToken);
+                        }}
+                      >
+                        <Input
+                          id="huggingface-token"
+                          type="password"
+                          autoComplete="new-password"
+                          maxLength={1000}
+                          value={huggingfaceToken}
+                          placeholder={huggingface.has ? "••••••••••••••••" : "hf_…"}
+                          onChange={(event) => setHuggingfaceToken(event.target.value)}
+                          disabled={busy}
+                        />
+                        <Button
+                          type="submit"
+                          variant="outline"
+                          disabled={busy || !huggingfaceToken.trim()}
+                        >
+                          Save
+                        </Button>
+                        {huggingface.has && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={busy}
+                            onClick={() => saveHuggingfaceToken("")}
+                          >
+                            Remove
+                          </Button>
+                        )}
+                      </form>
                     </SettingRow>
                   </section>
                 )}

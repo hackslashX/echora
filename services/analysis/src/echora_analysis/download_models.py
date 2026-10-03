@@ -176,6 +176,13 @@ def _download_motion_artwork() -> None:
 
 
 def main(*, prune_only: bool = False, motion_artwork: bool = False) -> None:
+    if not prune_only and not os.environ.get("HF_TOKEN") and get_settings().database_url:
+        # The token saved in Settings → Analysis models, for gated models such as LTX-2.5.
+        from .huggingface_token import token_or_none
+
+        token = token_or_none()
+        if token:
+            os.environ["HF_TOKEN"] = token
     motion_artwork = motion_artwork or get_settings().motion_artwork_models
     required = required_models() + motion_artwork_snapshots(motion_artwork)
     if not prune_only:

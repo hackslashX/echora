@@ -85,8 +85,6 @@ export default function ExternalProcessingSettings() {
   const [value, setValue] = useState<Configuration | null>(null);
   const [secret, setSecret] = useState("");
   const [clearSecret, setClearSecret] = useState(false);
-  const [hfToken, setHfToken] = useState("");
-  const [clearHfToken, setClearHfToken] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -150,14 +148,11 @@ export default function ExternalProcessingSettings() {
           default_compute: value.default_compute,
           allow_users: value.allow_users,
           ...(clearSecret ? { token_secret: "" } : secret ? { token_secret: secret } : {}),
-          ...(clearHfToken ? { hf_token: "" } : hfToken ? { hf_token: hfToken } : {}),
         }),
       });
       setValue(next);
       setSecret("");
       setClearSecret(false);
-      setHfToken("");
-      setClearHfToken(false);
       toast.success("External processing saved", {
         description:
           next.enabled && next.status !== "ready"
@@ -304,35 +299,9 @@ export default function ExternalProcessingSettings() {
                 </SettingRow>
                 <SettingRow
                   label="Hugging Face token"
-                  htmlFor="modal-hf-token"
-                  description="Needed for motion artwork on Modal: LTX-2.5 is a gated model. Accept its license on Hugging Face with this account. Used only while Modal downloads models; stored encrypted."
+                  description="Motion artwork on Modal downloads the gated LTX-2.5 model with the token saved in Analysis models."
                 >
-                  <div className={styles.keyControls}>
-                    <Input
-                      id="modal-hf-token"
-                      type="password"
-                      autoComplete="new-password"
-                      maxLength={1000}
-                      disabled={clearHfToken}
-                      value={hfToken}
-                      placeholder={
-                        value.has_hf_token && !clearHfToken ? "••••••••••••••••" : "hf_…"
-                      }
-                      onChange={(event) => setHfToken(event.target.value)}
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="shrink-0"
-                      aria-pressed={clearHfToken}
-                      onClick={() => {
-                        setClearHfToken((current) => !current);
-                        setHfToken("");
-                      }}
-                    >
-                      {clearHfToken ? "Cancel removal" : "Clear on save"}
-                    </Button>
-                  </div>
+                  <span className="text-[13px]">{value.has_hf_token ? "Saved" : "Not saved"}</span>
                 </SettingRow>
                 <Toggle
                   label="Let all users choose Modal"

@@ -21,10 +21,12 @@ Every sync runs in exactly one location, and does the optional features switched
 | AI lyrics generation (Roformer vocals, MOSS) | This server / Modal |
 | Karaoke timing (Roformer vocals, FA-Kara) | This server / Modal |
 | Query by humming (Roformer stems, Melodia) | This server / Modal |
-| Motion artwork | This server only, for now |
+| Motion artwork (LTX-2.5 in ComfyUI) | This server / Modal |
 | Audio embeddings (MuQ-MuLan, MERT) | Always |
 | Lyrics embeddings (BGE-M3) | Always |
 | Voice detection (Essentia classifiers) | Always |
+
+Motion artwork on Modal downloads the gated LTX-2.5 model (about 44 GB, once) with the Hugging Face token saved in **Settings → Analysis models → Model downloads**, the same token local downloads use. Modal receives it for that download only. Loops render in a separate GPU class with a private ComfyUI, and finished videos come back through the transfer Volume, then are stored and recorded on this server.
 
 A feature switched on only for Modal is skipped by syncs on this server and left pending; the next Modal sync processes it, and the reverse holds too. Sync planning (what counts as missing) follows the sync's location.
 
