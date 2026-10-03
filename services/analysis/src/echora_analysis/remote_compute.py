@@ -191,6 +191,23 @@ def deploy(config: ModalConfig) -> None:
     _modal_cli(config, "deploy", "-m", "echora_analysis.modal_app", timeout=DEPLOY_TIMEOUT_SECONDS)
 
 
+def _complete(results, count: int) -> Iterator[object]:
+    """Yield a batched call's results, finishing Modal's stream as the last one arrives.
+
+    Stages read exactly one result per input and stop. Left unfinished, Modal's
+    stream is closed later by garbage collection, which its client logs as an
+    error. Finishing it before handing over the last result avoids that without
+    delaying any result.
+    """
+    iterator = iter(results)
+    for index in range(count):
+        item = next(iterator)
+        if index == count - 1:
+            for _ in iterator:
+                pass
+        yield item
+
+
 class ModalSession:
     """One batch's connection to the deployed Modal app."""
 
@@ -316,22 +333,31 @@ class ModalSession:
         """Run one call per input in order; yields each result or the exception it raised."""
         if not inputs or not inputs[0]:
             return iter(())
-        return method.map(
-            *inputs, kwargs={"settings": self.settings}, order_outputs=True, return_exceptions=True
+        return _complete(
+            method.map(
+                *inputs,
+                kwargs={"settings": self.settings},
+                order_outputs=True,
+                return_exceptions=True,
+            ),
+            len(inputs[0]),
         )
 
     def embed_audio(self, model: RemoteModel, digests: list[str]) -> Iterator[object]:
         """Audio window embeddings for uploaded tracks."""
         if not digests:
             return iter(())
-        return self.analysis.embed_audio.map(
-            digests,
-            kwargs={
-                "model": (model.name, model.model_id, model.revision),
-                "settings": self.settings,
-            },
-            order_outputs=True,
-            return_exceptions=True,
+        return _complete(
+            self.analysis.embed_audio.map(
+                digests,
+                kwargs={
+                    "model": (model.name, model.model_id, model.revision),
+                    "settings": self.settings,
+                },
+                order_outputs=True,
+                return_exceptions=True,
+            ),
+            len(digests),
         )
 
     def melody(self, digests: list[str]) -> Iterator[object]:

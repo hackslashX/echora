@@ -743,3 +743,17 @@ def test_token_check_reaches_hugging_face_even_when_models_load_offline(monkeypa
     assert seen == {"url": "https://huggingface.co/api/whoami-v2", "auth": "Bearer hf_good"}
     with pytest.raises(huggingface_token.TokenRejected):
         huggingface_token.account("hf_bad")
+
+
+def test_batched_results_finish_modals_stream_with_the_last_result():
+    finished = []
+
+    def stream():
+        yield "a"
+        yield "b"
+        finished.append(True)
+
+    results = remote_compute._complete(stream(), 2)
+    assert next(results) == "a" and not finished
+    # The stream ends as the last result is handed over, not at garbage collection.
+    assert next(results) == "b" and finished
