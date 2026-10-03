@@ -2,6 +2,7 @@
 
 import json
 import os
+from types import SimpleNamespace
 import runpy
 import subprocess
 import sys
@@ -369,6 +370,22 @@ class FakeNavidrome:
 
     def cover_art(self, cover_id, size):
         return self.covers[cover_id], "image/jpeg"
+
+    def tracks(self, ids):
+        # External IDs are "<album id>-<n>"; album "al-a" uses cover "cover-a".
+        return [
+            SimpleNamespace(
+                id=song,
+                title=f"Song {song}",
+                artist="Artist",
+                album=song[3].upper(),
+                raw={"coverArt": f"cover-{song[3]}"},
+            )
+            for song in ids
+        ]
+
+    def lyrics(self, song_id):
+        return {"text": f"Lyrics for {song_id}"}
 
 
 def _library(database, owner):
@@ -823,3 +840,37 @@ def test_modal_sync_renders_on_modal_and_stores_loops_here(database, batch, monk
     )
     # A local sync with generation off for this server renders nothing more.
     assert batch["run"]() is None
+
+
+def test_external_prompts_are_written_before_the_batch_and_used_by_render(
+    database, batch, monkeypatch
+):
+    _enable(database, prompt_mode="external")
+    monkeypatch.setattr(
+        "echora_analysis.translation_storage.load_settings", lambda: (_external_ai(), None)
+    )
+    written = []
+
+    def write_prompt(settings, key, data, content_type, instructions, **song):
+        written.append(song["title"])
+        return CAPTION, 1
+
+    monkeypatch.setattr("echora_analysis.motion_artwork_writer.write_prompt", write_prompt)
+    prepare = lambda: motion_artwork_jobs.prepare_prompts(  # noqa: E731
+        ("http://navidrome", "u", "p"),
+        batch["external_ids"],
+        progress=lambda _: None,
+        check=lambda: None,
+    )
+    prompts = prepare()
+    assert len(prompts) == 4 and len(written) == 4
+    written.clear()
+    # The render stage uses the prepared prompts and writes none itself.
+    assert batch["run"](prompts=prompts)["rendered"] == 4
+    assert written == []
+    with database() as db:
+        assert {row["prompt"] for row in db.execute("SELECT prompt FROM motion_artworks")} == {
+            CAPTION
+        }
+    # Songs that now have a loop need no prompt in a later batch.
+    assert prepare() == {} and written == []

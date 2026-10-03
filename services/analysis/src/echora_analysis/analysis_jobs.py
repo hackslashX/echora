@@ -14,6 +14,7 @@ from .settings import get_settings, require_database_url
 
 from contextlib import ExitStack
 from dataclasses import asdict
+import logging
 import uuid
 
 import psycopg
@@ -21,6 +22,8 @@ import psycopg
 from .navidrome import NavidromeClient, batch_audio_cache
 from .preprocessing import preprocessing_session
 from . import remote_compute
+
+logger = logging.getLogger(__name__)
 
 OPERATIONS = frozenset(
     {
@@ -326,6 +329,19 @@ def execute(job: dict, context) -> dict | None:
         if operation == "audio_profiles":
             allowed = {str(v) for v in main._user_audio_track_ids(user_id)}
             return _profiles([v for v in ids if str(v) in allowed], report)
+        artwork_prompts = None
+        if operation in {"navidrome_sync", "import"}:
+            # Motion artwork prompts from External AI first, before any GPU stage starts, so
+            # no GPU (here or on Modal) idles while they are written.
+            from .motion_artwork_jobs import prepare_prompts
+
+            try:
+                artwork_prompts = prepare_prompts(
+                    credentials, ids, progress=report, check=context.check
+                )
+            except Exception:
+                # Optional: the render stage writes any prompt still missing.
+                logger.exception("Could not prepare motion artwork prompts")
         # Model computation runs on Modal for this batch when the job chose it.
         # Each batch re-checks the deployment, so none runs stale code or models.
         from .external_processing import open_session
@@ -380,7 +396,14 @@ def execute(job: dict, context) -> dict | None:
             # Last, so earlier stages have released their models before ComfyUI needs the GPU.
             from .motion_artwork_jobs import render_batch
 
-            artwork = render_batch(credentials, user_id, ids, progress=report, check=context.check)
+            artwork = render_batch(
+                credentials,
+                user_id,
+                ids,
+                progress=report,
+                check=context.check,
+                prompts=artwork_prompts,
+            )
             if artwork is not None:
                 summary["motion_artwork"] = artwork
         if operation == "recordings_backfill":

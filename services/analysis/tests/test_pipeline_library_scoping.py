@@ -1,6 +1,7 @@
 """Dependency-free orchestration regressions; execute real function bodies with fake IO."""
 
 import ast
+from contextlib import nullcontext
 from echora_analysis.settings import Settings
 from pathlib import Path
 from types import SimpleNamespace
@@ -86,6 +87,10 @@ class LibraryScopingTests(unittest.TestCase):
             prepare_audio=MagicMock(),
             get_check=lambda: lambda: None,
             current_remote=lambda: None,
+            separation_phase=nullcontext,
+            SongTranscriber=MagicMock(),
+            needs_repair=lambda draft: False,
+            diagnostic_writer=MagicMock(),
         )
         for name in (
             "resolve_library_id",

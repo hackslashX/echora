@@ -361,11 +361,11 @@ def test_every_call_carries_the_exact_model_and_settings():
 
 def test_transcription_relays_progress_and_diagnostics():
     session, modal = ready_session()
-    modal.analysis.transcribe.remote_gen.return_value = iter(
-        [{"progress": "window 1"}, {"diagnostic": {"start": 0}}, {"result": {"text": "lyrics"}}]
+    modal.analysis.transcribe_generate.remote_gen.return_value = iter(
+        [{"progress": "window 1"}, {"diagnostic": {"start": 0}}, {"draft": {"repairs": {}}}]
     )
     progress, diagnostics = [], []
-    result = session.transcribe(
+    draft = session.transcribe_generate(
         b"audio",
         language="ja",
         vocal_activity=None,
@@ -373,12 +373,10 @@ def test_transcription_relays_progress_and_diagnostics():
         diagnostic_sink=diagnostics.append,
         check=lambda: None,
     )
-    assert (
-        result == {"text": "lyrics"} and progress == ["window 1"] and diagnostics == [{"start": 0}]
-    )
-    modal.analysis.transcribe.remote_gen.return_value = iter([{"progress": "window 1"}])
+    assert draft == {"repairs": {}} and progress == ["window 1"] and diagnostics == [{"start": 0}]
+    modal.analysis.transcribe_generate.remote_gen.return_value = iter([{"progress": "window 1"}])
     with pytest.raises(RuntimeError, match="without a result"):
-        session.transcribe(
+        session.transcribe_generate(
             b"audio",
             language=None,
             vocal_activity=None,
@@ -386,6 +384,19 @@ def test_transcription_relays_progress_and_diagnostics():
             diagnostic_sink=print,
             check=lambda: None,
         )
+
+
+def test_separation_phase_asks_for_exactly_the_stages_artifacts():
+    session, modal = ready_session()
+    modal.analysis.prepare_vocals.map.return_value = iter([None, None])
+    assert list(session.prepare_vocals(["a", "b"], vocals=True, reference=True)) == [None, None]
+    args, kwargs = modal.analysis.prepare_vocals.map.call_args
+    assert args == (["a", "b"],)
+    assert kwargs["kwargs"] == {
+        "artifacts": {"vocals": True, "reference": True},
+        "settings": processing_settings(),
+    }
+    assert list(session.prepare_vocals([], melody=True)) == []
 
 
 # Stages
@@ -481,6 +492,7 @@ def test_modal_batch_extracts_melody_remotely(ingest_batch):
     )
     contours = {"vocals": (np.ones(40), np.ones(40, bool))}
     remote = Mock()
+    remote.prepare_vocals.side_effect = lambda digests, **artifacts: [None for _ in digests]
     remote.melody.side_effect = failing(audio, "bad", contours)
     with remote_compute.session("modal", factory=lambda: remote):
         summary = ingest.ingest_navidrome("url", "user", "password", list(tracks))
@@ -488,6 +500,9 @@ def test_modal_batch_extracts_melody_remotely(ingest_batch):
     assert [call.args[1] for call in stored] == [tracks["a"], tracks["c"]]
     assert all(call.kwargs["usable"] is contours for call in stored)
     assert summary.melody_indexed == 2 and summary.failed == 1
+    # One separation phase for the melody songs, before any contour call.
+    assert len(remote.prepare_vocals.call_args.args[0]) == 3
+    assert remote.prepare_vocals.call_args.kwargs == {"melody": True}
 
 
 def database(rows):
@@ -566,6 +581,7 @@ def test_modal_batch_aligns_karaoke_remotely(monkeypatch):
     }
     remote = Mock()
     remote.upload_audio.side_effect = lambda audio: sha256(audio).hexdigest()
+    remote.prepare_vocals.side_effect = lambda digests, **artifacts: [None for _ in digests]
     remote.karaoke.side_effect = lambda digests, texts, languages, lines: [
         aligned,
         RuntimeError("failed"),
@@ -580,6 +596,9 @@ def test_modal_batch_aligns_karaoke_remotely(monkeypatch):
         and lines == [[{"text": "a"}], []]
     )
     assert digests == [sha256(b"audio a").hexdigest(), sha256(b"audio b").hexdigest()]
+    # Separated first, for exactly the songs being aligned, with what alignment reads.
+    assert remote.prepare_vocals.call_args.args[0] == digests
+    assert remote.prepare_vocals.call_args.kwargs == {"vocals": True, "reference": True}
 
 
 # Motion artwork
