@@ -1,6 +1,6 @@
 """Ranking behavior, native lyrics mapping, credential lifecycle and source isolation."""
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import importlib.util
 import os
@@ -794,6 +794,10 @@ def test_import_archives_provider_before_preserving_manual_lyrics_without_model_
         "release_model": Mock(),
         "_store_embeddings": embedding_write,
         "current_remote": lambda: None,
+        "separation_phase": nullcontext,
+        "SongTranscriber": Mock(),
+        "needs_repair": lambda draft: False,
+        "diagnostic_writer": Mock(),
     }
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), globals_)
     result = globals_["backfill_lyrics"]("http://navidrome", "user", "password")

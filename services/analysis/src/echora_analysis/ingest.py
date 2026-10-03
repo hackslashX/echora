@@ -383,42 +383,46 @@ def ingest_navidrome(
             preparing = [
                 (song, needs) for song, needs in preparing if needs.mono_rates or needs.stereo_rates
             ]
-            for index, (song, needs) in enumerate(preparing):
-                report(
-                    {
-                        "phase": "preprocess",
-                        "message": f"Preparing audio for {song.title}",
-                        "completed": index,
-                        "total": len(preparing),
-                        "unit": "tracks",
-                    }
-                )
-                try:
-                    audio, _ = audio_track(song)
-                    # Melody needs Roformer vocals; on Modal those are separated remotely.
-                    prepare_audio(
-                        audio,
-                        mono_rates=needs.mono_rates,
-                        stereo_rates=needs.stereo_rates,
-                        melody=needs.melody and current_remote() is None,
-                        check=get_check(),
+            from .roformer import separation_phase
+
+            # Separation phase for melody stems: Roformer loads once, and only if a song needs it.
+            with separation_phase():
+                for index, (song, needs) in enumerate(preparing):
+                    report(
+                        {
+                            "phase": "preprocess",
+                            "message": f"Preparing audio for {song.title}",
+                            "completed": index,
+                            "total": len(preparing),
+                            "unit": "tracks",
+                        }
                     )
-                    del audio
-                    connection.commit()
-                except Exception:
-                    connection.rollback()
-                    # Individual consumers retain their existing failure accounting
-                    # and may retry; one bad source must not stop the whole batch.
-                    logger.exception("Could not prepare audio for Navidrome song %s", song.id)
-                report(
-                    {
-                        "phase": "preprocess",
-                        "message": f"Prepared audio for {song.title}",
-                        "completed": index + 1,
-                        "total": len(preparing),
-                        "unit": "tracks",
-                    }
-                )
+                    try:
+                        audio, _ = audio_track(song)
+                        # Melody needs Roformer vocals; on Modal those are separated remotely.
+                        prepare_audio(
+                            audio,
+                            mono_rates=needs.mono_rates,
+                            stereo_rates=needs.stereo_rates,
+                            melody=needs.melody and current_remote() is None,
+                            check=get_check(),
+                        )
+                        del audio
+                        connection.commit()
+                    except Exception:
+                        connection.rollback()
+                        # Individual consumers retain their existing failure accounting
+                        # and may retry; one bad source must not stop the whole batch.
+                        logger.exception("Could not prepare audio for Navidrome song %s", song.id)
+                    report(
+                        {
+                            "phase": "preprocess",
+                            "message": f"Prepared audio for {song.title}",
+                            "completed": index + 1,
+                            "total": len(preparing),
+                            "unit": "tracks",
+                        }
+                    )
 
         def embedding_phase(
             phase: str,
@@ -667,6 +671,14 @@ def ingest_navidrome(
                         pending.append(song)
                     except Exception as error:
                         unavailable[song.id] = error
+                # Separation phase on Modal first: one Roformer for every melody song.
+                separated = remote.prepare_vocals(
+                    [bindings[song.id][1] for song in pending], melody=True
+                )
+                for song, outcome in zip(list(pending), separated):
+                    if isinstance(outcome, BaseException):
+                        unavailable[song.id] = outcome
+                        pending.remove(song)
                 outcomes = iter(remote.melody([bindings[song.id][1] for song in pending]))
             for index, song in enumerate(melody_songs):
                 report(
