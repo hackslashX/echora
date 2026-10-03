@@ -3,13 +3,17 @@
 import {
   AArrowDown,
   AArrowUp,
+  ChevronDown,
   Clapperboard,
   Image as ImageIcon,
   Languages,
   Disc3,
   ListMusic,
   MicVocal,
+  Pause,
   Play,
+  SkipBack,
+  SkipForward,
   Type,
 } from "lucide-react";
 import { sizedPlayerCoverArtUrl } from "../media/coverArt";
@@ -47,6 +51,8 @@ import { ScrollArea } from "../ui/scroll-area";
 import { groupSyllablesByWord, lyricWordIsRtl as isRtlText } from "./lyricWords";
 import KaraokeLine from "./KaraokeLine";
 import LyricsScroller from "./LyricsScroller";
+import WaveformSeek from "./WaveformSeek";
+import { formatDuration } from "../ui/TrackRow";
 import { playbackTimeSnapshot, subscribePlaybackTime } from "./playbackClock";
 import LyricTranslationLine from "./LyricTranslationLine";
 import { mediaUrl } from "../media/mediaOrigin";
@@ -57,6 +63,20 @@ import {
   resolveArtworkStyle,
   type ArtworkStyle,
 } from "./motionArtwork";
+
+// Phones get their own now-playing layout: full screen, with its own controls.
+const compactQuery = "(max-width: 767px)";
+function useCompactLayout() {
+  return useSyncExternalStore(
+    (notify) => {
+      const query = window.matchMedia(compactQuery);
+      query.addEventListener("change", notify);
+      return () => query.removeEventListener("change", notify);
+    },
+    () => window.matchMedia(compactQuery).matches,
+    () => false,
+  );
+}
 
 function FullscreenMarquee({ children }: { children: ReactNode }) {
   const ref = useRef<HTMLSpanElement>(null);
@@ -105,6 +125,10 @@ const lyricsSizeClasses: Record<LyricsTextSize, string> = {
 export default function FullscreenPlayer() {
   const player = usePlayer();
   const dialogRef = useRef<HTMLElement>(null);
+  const compact = useCompactLayout();
+  // Phone layout: the cover (or its motion loop), the lyrics, or the queue fill the middle.
+  const [mobileView, setMobileView] = useState<"artwork" | "lyrics" | "queue">("artwork");
+  const artworkVisible = !compact || mobileView === "artwork";
   const [panel, setPanel] = useState<"lyrics" | "queue" | null>(null);
   const [showTranslation, setShowTranslation] = useState(false);
   const [translationLanguage, setTranslationLanguage] = useState("");
@@ -245,7 +269,8 @@ export default function FullscreenPlayer() {
       cancelAnimationFrame(frame);
       videos.forEach((video) => video.pause());
     };
-  }, [player.playing, showMotion, currentMotion?.src]);
+    // The loop's videos remount when the phone layout returns to the artwork view.
+  }, [player.playing, showMotion, currentMotion?.src, artworkVisible]);
   const currentLyrics = player.lyrics?.trackId === player.track?.id ? player.lyrics : null;
   const lyricFragments = useMemo(
     () =>
@@ -443,6 +468,287 @@ export default function FullscreenPlayer() {
       )}
     </>
   );
+  // The cover, with its motion loop when there is one; desktop also puts the style switch on it.
+  function renderArtwork(styleSwitch: boolean) {
+    return (
+      <div className={`motion-fade ${styles.art}`} key={`art-${trackId}`}>
+        {fullCover ? (
+          <LoadingImage
+            sizes="(max-width: 767px) 100vw, (max-width: 960px) 64px, 640px"
+            src={fullCover}
+            alt=""
+            priority
+          />
+        ) : (
+          <Disc3 />
+        )}
+        {showMotion &&
+          currentMotion &&
+          [0, 1].map((index) => (
+            <video
+              ref={(video) => {
+                motionVideos.current[index] = video;
+              }}
+              key={`${currentMotion.src}-${index}`}
+              className={styles.motionVideo}
+              data-ready={motionReady === currentMotion.src || undefined}
+              src={currentMotion.src}
+              muted
+              playsInline
+              disablePictureInPicture
+              preload="auto"
+              aria-hidden="true"
+              onCanPlay={() => setMotionReady(currentMotion.src)}
+            />
+          ))}
+        {styleSwitch && currentMotion && (
+          <div className={styles.artworkStyle}>
+            <Tabs
+              value={artworkStyle}
+              onValueChange={(value) => chooseArtworkStyle(value as ArtworkStyle)}
+            >
+              <TabsList aria-label="Artwork style" className={styles.segmented}>
+                <TabsTrigger value="still" title="Still cover">
+                  <ImageIcon />
+                  <span className={styles.optionLabel}>Still</span>
+                </TabsTrigger>
+                <TabsTrigger value="motion" title="Motion artwork">
+                  <Clapperboard />
+                  <span className={styles.optionLabel}>Motion</span>
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+        )}
+      </div>
+    );
+  }
+  const lyricsBody = hasLyrics ? (
+    <div
+      lang={lyricsLanguage}
+      className={`${styles.lyrics} ${karaokeMode && karaokeAvailable ? styles.karaoke : ""} ${lyricsSizeClasses[lyricsTextSize]} ${translationVisible ? styles.bilingual : ""}`}
+    >
+      {timedLines.length > 0 ? (
+        <LyricsScroller
+          key={`${player.track.id}-${karaokeMode}`}
+          activeIndex={activeLine}
+          className={styles.lineList}
+          layoutKey={`${lyricsTextSize}-${translationVisible}-${translation?.target_language ?? ""}`}
+        >
+          {timedLines.map((line, index) => {
+            const current = index === activeLine && lineSinging;
+            return (
+              <button
+                key={`${line.start_ms}-${index}`}
+                data-index={index}
+                style={
+                  {
+                    "--distance": Math.min(4, Math.abs(index - Math.max(0, activeLine))),
+                  } as CSSProperties
+                }
+                data-state={current ? "active" : index <= activeLine ? "past" : "next"}
+                className={styles.line}
+                onClick={() => player.seek(Number(line.start_ms) / 1000)}
+              >
+                <span dir={isRtlText(line.text) ? "rtl" : "ltr"} className={styles.originalLine}>
+                  {current ? karaokeLine(line, true) : line.text || "…"}
+                </span>
+                {translatedLine(line)}
+              </button>
+            );
+          })}
+        </LyricsScroller>
+      ) : (
+        untimedTranslation()
+      )}
+    </div>
+  ) : (
+    <div className={styles.panelEmpty}>
+      {player.lyricsLoading ? (
+        <>
+          <Spinner className="size-5 text-current" />
+          Looking for lyrics…
+        </>
+      ) : (
+        <>
+          <MicVocal className="size-6" />
+          <strong>No lyrics for this track</strong>
+          <span>Add them from the track menu in your library.</span>
+        </>
+      )}
+    </div>
+  );
+  const queueBody = (
+    <div className={styles.queueBody}>
+      <ScrollArea className={styles.queueScroll}>
+        <ol className={styles.queueList}>
+          {player.queue.map((track, index) => (
+            <li key={`${track.id}-${index}`}>
+              <button
+                type="button"
+                className={styles.queueTrack}
+                aria-current={index === player.queueIndex ? "true" : undefined}
+                onClick={() => player.playQueue(player.queue, index)}
+              >
+                <span className={styles.queueIndex}>
+                  {index === player.queueIndex ? (
+                    <Play className="size-3.5" fill="currentColor" />
+                  ) : (
+                    index + 1
+                  )}
+                </span>
+                <Artwork
+                  trackId={track.id}
+                  src={track.coverUrl ? sizedPlayerCoverArtUrl(track.coverUrl, 96) : undefined}
+                  className={styles.queueArt}
+                />
+                <span className={styles.queueText}>
+                  <strong>{track.title}</strong>
+                  <small>
+                    {track.artist || "Unknown artist"}
+                    {track.album ? ` · ${track.album}` : ""}
+                  </small>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ol>
+      </ScrollArea>
+      <footer className={styles.queueFooter}>
+        <span>{upcoming} upcoming</span>
+        <Button variant="ghost" size="sm" onClick={player.clearQueue} disabled={upcoming === 0}>
+          Clear upcoming
+        </Button>
+      </footer>
+    </div>
+  );
+  const hasNext = player.queueIndex >= 0 && player.queueIndex < player.queue.length - 1;
+  const toggleMobileView = (view: "lyrics" | "queue") =>
+    setMobileView((current) => (current === view ? "artwork" : view));
+  // Phones: full screen over the player bar, with its own playback controls.
+  const mobileLayout = (
+    <div className={`${styles.mobileStage} ${motionStyles.content}`}>
+      <header className={styles.mobileHeader}>
+        <Button variant="ghost" size="icon" onClick={close} aria-label="Close player">
+          <ChevronDown />
+        </Button>
+        <p className={styles.mobileSource}>
+          <small>Playing from</small>
+          <strong>{player.track.album || player.track.artist || "Your library"}</strong>
+        </p>
+        <Button
+          variant="ghost"
+          size="icon"
+          className={mobileView === "queue" ? styles.toggleOn : undefined}
+          aria-label={`Up next${upcoming ? `, ${upcoming} tracks` : ""}`}
+          aria-pressed={mobileView === "queue"}
+          onClick={() => toggleMobileView("queue")}
+        >
+          <ListMusic />
+        </Button>
+      </header>
+      <section
+        className={`motion-fade ${styles.mobileBody}`}
+        key={mobileView}
+        aria-label={
+          mobileView === "artwork" ? "Artwork" : mobileView === "lyrics" ? "Lyrics" : "Up next"
+        }
+      >
+        {mobileView === "artwork" ? (
+          <div className={styles.mobileArt}>{renderArtwork(false)}</div>
+        ) : mobileView === "lyrics" ? (
+          <>
+            {hasLyrics && <div className={styles.mobileLyricsControls}>{lyricsControls}</div>}
+            {lyricsBody}
+          </>
+        ) : (
+          queueBody
+        )}
+      </section>
+      <section className={styles.mobileTrack} aria-label="Track" key={`track-${player.track.id}`}>
+        {mobileView !== "artwork" && (
+          <Artwork
+            trackId={player.track.id}
+            src={
+              player.track.coverUrl ? sizedPlayerCoverArtUrl(player.track.coverUrl, 112) : undefined
+            }
+            className={styles.mobileThumb}
+          />
+        )}
+        <div className={styles.mobileMeta}>
+          <h1 className={styles.title}>
+            <FullscreenMarquee>{player.track.title}</FullscreenMarquee>
+          </h1>
+          <p className={styles.artist}>{player.track.artist || "Unknown artist"}</p>
+        </div>
+        {(qualityParts[0] || aiLyrics) && (
+          <span className={styles.tag} title={aiLyrics ? "Lyrics were generated by AI" : undefined}>
+            {qualityParts[0] || "AI lyrics"}
+          </span>
+        )}
+      </section>
+      <div className={styles.mobileSeek}>
+        <WaveformSeek compact />
+        <div className={styles.mobileTimes}>
+          <time>{formatDuration(player.currentTime)}</time>
+          <time>{formatDuration(player.duration)}</time>
+        </div>
+      </div>
+      <div className={styles.mobileControls}>
+        <Button
+          variant="ghost"
+          size="icon"
+          disabled={!currentMotion}
+          className={showMotion ? styles.toggleOn : undefined}
+          aria-label="Motion artwork"
+          aria-pressed={showMotion}
+          title={currentMotion ? "Motion artwork" : "No motion artwork for this track"}
+          onClick={() => {
+            chooseArtworkStyle(artworkStyle === "motion" ? "still" : "motion");
+            setMobileView("artwork");
+          }}
+        >
+          <Clapperboard />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={player.previous} aria-label="Previous track">
+          <SkipBack fill="currentColor" />
+        </Button>
+        <Button
+          className={styles.mobilePlay}
+          onClick={player.toggle}
+          aria-label={player.buffering ? "Loading audio" : player.playing ? "Pause" : "Play"}
+          aria-busy={player.buffering || undefined}
+        >
+          {player.buffering ? (
+            <Spinner className="text-current" />
+          ) : player.playing ? (
+            <Pause fill="currentColor" />
+          ) : (
+            <Play fill="currentColor" />
+          )}
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={player.next}
+          disabled={!hasNext}
+          aria-label="Next track"
+        >
+          <SkipForward fill="currentColor" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className={mobileView === "lyrics" ? styles.toggleOn : undefined}
+          aria-label="Lyrics"
+          aria-pressed={mobileView === "lyrics"}
+          onClick={() => toggleMobileView("lyrics")}
+        >
+          <MicVocal />
+        </Button>
+      </div>
+    </div>
+  );
   // Non-modal: the player bar below stays interactive, so outside clicks must not dismiss the view.
   return (
     <Dialog
@@ -465,230 +771,69 @@ export default function FullscreenPlayer() {
         <main
           ref={dialogRef}
           tabIndex={-1}
-          className={`${styles.player} ${motionStyles.surface} ${closing ? `${styles.closing} ${motionStyles.closing}` : ""}`}
+          className={`${styles.player} ${compact ? styles.mobile : ""} ${motionStyles.surface} ${closing ? `${styles.closing} ${motionStyles.closing}` : ""}`}
           aria-label="Now playing"
         >
           <DialogTitle className="sr-only">Now playing</DialogTitle>
           {karaokeMode && karaokeAvailable && (
             <LyricsGlow container={dialogRef} playing={player.playing} />
           )}
-          <div className={`${styles.stage} ${motionStyles.content}`}>
-            <section className={styles.nowPlaying} aria-label="Track">
-              <div className={`motion-fade ${styles.art}`} key={`art-${player.track.id}`}>
-                {fullCover ? (
-                  <LoadingImage
-                    sizes="(max-width: 860px) 64px, 640px"
-                    src={fullCover}
-                    alt=""
-                    priority
-                  />
-                ) : (
-                  <Disc3 />
-                )}
-                {showMotion &&
-                  currentMotion &&
-                  [0, 1].map((index) => (
-                    <video
-                      ref={(video) => {
-                        motionVideos.current[index] = video;
-                      }}
-                      key={`${currentMotion.src}-${index}`}
-                      className={styles.motionVideo}
-                      data-ready={motionReady === currentMotion.src || undefined}
-                      src={currentMotion.src}
-                      muted
-                      playsInline
-                      disablePictureInPicture
-                      preload="auto"
-                      aria-hidden="true"
-                      onCanPlay={() => setMotionReady(currentMotion.src)}
-                    />
-                  ))}
-                {currentMotion && (
-                  <div className={styles.artworkStyle}>
-                    <Tabs
-                      value={artworkStyle}
-                      onValueChange={(value) => chooseArtworkStyle(value as ArtworkStyle)}
-                    >
-                      <TabsList aria-label="Artwork style" className={styles.segmented}>
-                        <TabsTrigger value="still" title="Still cover">
-                          <ImageIcon />
-                          <span className={styles.optionLabel}>Still</span>
-                        </TabsTrigger>
-                        <TabsTrigger value="motion" title="Motion artwork">
-                          <Clapperboard />
-                          <span className={styles.optionLabel}>Motion</span>
-                        </TabsTrigger>
-                      </TabsList>
-                    </Tabs>
-                  </div>
-                )}
-              </div>
-              <div className={`motion-fade ${styles.meta}`} key={`meta-${player.track.id}`}>
-                <h1 className={styles.title}>
-                  <FullscreenMarquee>{player.track.title}</FullscreenMarquee>
-                </h1>
-                <p className={styles.artist}>{player.track.artist || "Unknown artist"}</p>
-                <p className={styles.album}>{player.track.album || "Unknown album"}</p>
-                {(qualityParts.length > 0 || aiLyrics) && (
-                  <p className={styles.tags} aria-label="Audio quality">
-                    {qualityParts.map((part) => (
-                      <span key={part} className={styles.tag}>
-                        {part}
-                      </span>
-                    ))}
-                    {aiLyrics && (
-                      <span
-                        className={styles.tag}
-                        title="Lyrics were generated by AI and may be inaccurate"
-                      >
-                        AI lyrics
-                      </span>
-                    )}
-                  </p>
-                )}
-              </div>
-            </section>
-
-            <section className={styles.panel} aria-label="Lyrics and queue">
-              <header className={styles.panelHeader}>
-                <Tabs
-                  value={activePanel}
-                  onValueChange={(value) => setPanel(value as "lyrics" | "queue")}
-                  className="gap-0"
-                >
-                  <TabsList variant="line" aria-label="Panel" className={styles.panelTabs}>
-                    <TabsTrigger value="lyrics">Lyrics</TabsTrigger>
-                    <TabsTrigger value="queue">
-                      Up next{upcoming > 0 && <span className={styles.count}>{upcoming}</span>}
-                    </TabsTrigger>
-                  </TabsList>
-                </Tabs>
-                {activePanel === "lyrics" && (
-                  <div className={styles.panelControls}>{lyricsControls}</div>
-                )}
-              </header>
-              <div className={`motion-fade ${styles.panelBody}`} key={activePanel}>
-                {activePanel === "lyrics" ? (
-                  hasLyrics ? (
-                    <div
-                      lang={lyricsLanguage}
-                      className={`${styles.lyrics} ${karaokeMode && karaokeAvailable ? styles.karaoke : ""} ${lyricsSizeClasses[lyricsTextSize]} ${translationVisible ? styles.bilingual : ""}`}
-                    >
-                      {timedLines.length > 0 ? (
-                        <LyricsScroller
-                          key={`${player.track.id}-${karaokeMode}`}
-                          activeIndex={activeLine}
-                          className={styles.lineList}
-                          layoutKey={`${lyricsTextSize}-${translationVisible}-${translation?.target_language ?? ""}`}
+          {compact ? (
+            mobileLayout
+          ) : (
+            <div className={`${styles.stage} ${motionStyles.content}`}>
+              <section className={styles.nowPlaying} aria-label="Track">
+                {renderArtwork(true)}
+                <div className={`motion-fade ${styles.meta}`} key={`meta-${player.track.id}`}>
+                  <h1 className={styles.title}>
+                    <FullscreenMarquee>{player.track.title}</FullscreenMarquee>
+                  </h1>
+                  <p className={styles.artist}>{player.track.artist || "Unknown artist"}</p>
+                  <p className={styles.album}>{player.track.album || "Unknown album"}</p>
+                  {(qualityParts.length > 0 || aiLyrics) && (
+                    <p className={styles.tags} aria-label="Audio quality">
+                      {qualityParts.map((part) => (
+                        <span key={part} className={styles.tag}>
+                          {part}
+                        </span>
+                      ))}
+                      {aiLyrics && (
+                        <span
+                          className={styles.tag}
+                          title="Lyrics were generated by AI and may be inaccurate"
                         >
-                          {timedLines.map((line, index) => {
-                            const current = index === activeLine && lineSinging;
-                            return (
-                              <button
-                                key={`${line.start_ms}-${index}`}
-                                data-index={index}
-                                style={
-                                  {
-                                    "--distance": Math.min(
-                                      4,
-                                      Math.abs(index - Math.max(0, activeLine)),
-                                    ),
-                                  } as CSSProperties
-                                }
-                                data-state={
-                                  current ? "active" : index <= activeLine ? "past" : "next"
-                                }
-                                className={styles.line}
-                                onClick={() => player.seek(Number(line.start_ms) / 1000)}
-                              >
-                                <span
-                                  dir={isRtlText(line.text) ? "rtl" : "ltr"}
-                                  className={styles.originalLine}
-                                >
-                                  {current ? karaokeLine(line, true) : line.text || "…"}
-                                </span>
-                                {translatedLine(line)}
-                              </button>
-                            );
-                          })}
-                        </LyricsScroller>
-                      ) : (
-                        untimedTranslation()
+                          AI lyrics
+                        </span>
                       )}
-                    </div>
-                  ) : (
-                    <div className={styles.panelEmpty}>
-                      {player.lyricsLoading ? (
-                        <>
-                          <Spinner className="size-5 text-current" />
-                          Looking for lyrics…
-                        </>
-                      ) : (
-                        <>
-                          <MicVocal className="size-6" />
-                          <strong>No lyrics for this track</strong>
-                          <span>Add them from the track menu in your library.</span>
-                        </>
-                      )}
-                    </div>
-                  )
-                ) : (
-                  <div className={styles.queueBody}>
-                    <ScrollArea className={styles.queueScroll}>
-                      <ol className={styles.queueList}>
-                        {player.queue.map((track, index) => (
-                          <li key={`${track.id}-${index}`}>
-                            <button
-                              type="button"
-                              className={styles.queueTrack}
-                              aria-current={index === player.queueIndex ? "true" : undefined}
-                              onClick={() => player.playQueue(player.queue, index)}
-                            >
-                              <span className={styles.queueIndex}>
-                                {index === player.queueIndex ? (
-                                  <Play className="size-3.5" fill="currentColor" />
-                                ) : (
-                                  index + 1
-                                )}
-                              </span>
-                              <Artwork
-                                trackId={track.id}
-                                src={
-                                  track.coverUrl
-                                    ? sizedPlayerCoverArtUrl(track.coverUrl, 96)
-                                    : undefined
-                                }
-                                className={styles.queueArt}
-                              />
-                              <span className={styles.queueText}>
-                                <strong>{track.title}</strong>
-                                <small>
-                                  {track.artist || "Unknown artist"}
-                                  {track.album ? ` · ${track.album}` : ""}
-                                </small>
-                              </span>
-                            </button>
-                          </li>
-                        ))}
-                      </ol>
-                    </ScrollArea>
-                    <footer className={styles.queueFooter}>
-                      <span>{upcoming} upcoming</span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={player.clearQueue}
-                        disabled={upcoming === 0}
-                      >
-                        Clear upcoming
-                      </Button>
-                    </footer>
-                  </div>
-                )}
-              </div>
-            </section>
-          </div>
+                    </p>
+                  )}
+                </div>
+              </section>
+
+              <section className={styles.panel} aria-label="Lyrics and queue">
+                <header className={styles.panelHeader}>
+                  <Tabs
+                    value={activePanel}
+                    onValueChange={(value) => setPanel(value as "lyrics" | "queue")}
+                    className="gap-0"
+                  >
+                    <TabsList variant="line" aria-label="Panel" className={styles.panelTabs}>
+                      <TabsTrigger value="lyrics">Lyrics</TabsTrigger>
+                      <TabsTrigger value="queue">
+                        Up next{upcoming > 0 && <span className={styles.count}>{upcoming}</span>}
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                  {activePanel === "lyrics" && (
+                    <div className={styles.panelControls}>{lyricsControls}</div>
+                  )}
+                </header>
+                <div className={`motion-fade ${styles.panelBody}`} key={activePanel}>
+                  {activePanel === "lyrics" ? lyricsBody : queueBody}
+                </div>
+              </section>
+            </div>
+          )}
         </main>
       </DialogContent>
     </Dialog>

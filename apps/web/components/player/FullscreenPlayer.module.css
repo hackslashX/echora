@@ -141,3 +141,46 @@
   .lineList { padding: 0 16px; }
 }
 @media (prefers-reduced-motion: reduce) { .fullscreenMarquee[data-overflowing]>span { animation: none; } .line { transition: none; } }
+
+/*
+ * Phones: a full-screen now-playing view over the player bar, with its own controls.
+ * Header, then the artwork / lyrics / queue body, then track details, seek and controls.
+ */
+.mobile[data-slot="dialog-content"] { inset: 0; background: linear-gradient(180deg, rgb(0 0 0 / .62) 0%, rgb(0 0 0 / .3) 30%, rgb(0 0 0 / .4) 62%, rgb(0 0 0 / .78) 100%); }
+.mobileStage { position: relative; z-index: 2; min-height: 0; height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto auto;
+  padding: max(8px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom)); }
+.mobileHeader { display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px; align-items: center; gap: 8px; height: 52px; }
+.mobileHeader [data-slot=button] svg { width: 22px; height: 22px; }
+.mobileSource { margin: 0; min-width: 0; text-align: center; line-height: 1.3; }
+.mobileSource small { display: block; font-size: 10px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: rgb(255 255 255 / .55); }
+.mobileSource strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.mobileBody { min-height: 0; display: flex; flex-direction: column; padding: 12px 0; }
+/* The cover takes the largest square that fits between the header and the details. */
+.mobileArt { flex: 1; min-height: 0; display: grid; place-items: center; container-type: size; }
+.mobileArt .art { width: min(100cqw, 100cqh); height: min(100cqw, 100cqh); max-width: none; box-shadow: 0 30px 80px rgb(0 0 0 / .6); }
+.mobileArt .art>svg { width: 30%; height: 30%; }
+.mobileLyricsControls { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; padding-bottom: 8px; }
+.mobileBody .lyrics { --line: 22px; }
+.mobileBody .lyricsSmall { --line: 18px; }
+.mobileBody .lyricsNormal { --line: 22px; }
+.mobileBody .lyricsLarge { --line: 26px; }
+.mobileBody .lineList { padding: 0 4px; }
+.mobileBody .queueBody { border: 1px solid rgb(255 255 255 / .08); background: rgb(0 0 0 / .32); backdrop-filter: blur(6px); }
+.mobileTrack { display: flex; align-items: center; gap: 12px; min-width: 0; padding-top: 4px; }
+.mobileThumb { width: 48px; height: 48px; flex-shrink: 0; }
+.mobileMeta { flex: 1; min-width: 0; }
+.mobileMeta .title { font-size: 22px; }
+.mobileMeta .artist { margin-top: 2px; color: rgb(255 255 255 / .7); }
+.mobileTrack .tag { flex-shrink: 0; border-color: color-mix(in srgb, var(--accent) 50%, transparent); color: var(--accent); }
+.mobileSeek { padding-top: 14px; }
+.mobileTimes { display: flex; justify-content: space-between; margin-top: 4px; font-size: 11px; color: rgb(255 255 255 / .55); font-variant-numeric: tabular-nums; }
+.mobileControls { display: grid; grid-template-columns: repeat(5, auto); justify-content: space-between; align-items: center; padding-top: 10px; }
+.mobileControls [data-slot=button] svg { width: 24px; height: 24px; }
+.mobileControls [data-slot=button]:disabled { opacity: .3; }
+.mobilePlay[data-slot=button] { width: 68px; height: 68px; }
+.mobilePlay[data-slot=button] svg { width: 28px; height: 28px; }
+@media (max-height: 640px) {
+  .mobileMeta .title { font-size: 19px; }
+  .mobilePlay[data-slot=button] { width: 58px; height: 58px; }
+  .mobileSeek { padding-top: 8px; }
+}
