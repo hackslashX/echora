@@ -45,45 +45,63 @@ def test_parse_ass_karaoke_preserves_line_and_syllable_timing():
         "Dialogue: 0,0:00:01.00,0:00:03.20,Default,,0,0,0,karaoke,{\\k20}{\\k50}Hel{\\k70}lo{\\k80}\n"
     )
 
-    assert parse_ass_karaoke(ass) == [{
-        "start_ms": 1000,
-        "end_ms": 3200,
-        "text": "Hello",
-        "syllables": [
-            {"start_ms": 1200, "end_ms": 1700, "text": "Hel"},
-            {"start_ms": 1700, "end_ms": 2400, "text": "lo"},
-        ],
-    }]
+    assert parse_ass_karaoke(ass) == [
+        {
+            "start_ms": 1000,
+            "end_ms": 3200,
+            "text": "Hello",
+            "syllables": [
+                {"start_ms": 1200, "end_ms": 1700, "text": "Hel"},
+                {"start_ms": 1700, "end_ms": 2400, "text": "lo"},
+            ],
+        }
+    ]
 
 
 def test_alignment_document_restores_punctuation_and_spaces_to_display_syllables():
-    document = {"alignment": {"lines": [{
-        "text": "Hello, world!",
-        "start_ms": 1000,
-        "end_ms": 1800,
-        "tokens": [
-            {"text": "Hello", "start_ms": 1000, "end_ms": 1300},
-            {"text": "world", "start_ms": 1400, "end_ms": 1800},
-        ],
-    }]}}
+    document = {
+        "alignment": {
+            "lines": [
+                {
+                    "text": "Hello, world!",
+                    "start_ms": 1000,
+                    "end_ms": 1800,
+                    "tokens": [
+                        {"text": "Hello", "start_ms": 1000, "end_ms": 1300},
+                        {"text": "world", "start_ms": 1400, "end_ms": 1800},
+                    ],
+                }
+            ]
+        }
+    }
 
-    assert build_lines_from_alignment_document(document) == [{
-        "text": "Hello, world!",
-        "start_ms": 1000,
-        "end_ms": 1800,
-        "syllables": [
-            {"text": "Hello, ", "start_ms": 1000, "end_ms": 1300},
-            {"text": "world!", "start_ms": 1400, "end_ms": 1800},
-        ],
-    }]
+    assert build_lines_from_alignment_document(document) == [
+        {
+            "text": "Hello, world!",
+            "start_ms": 1000,
+            "end_ms": 1800,
+            "syllables": [
+                {"text": "Hello, ", "start_ms": 1000, "end_ms": 1300},
+                {"text": "world!", "start_ms": 1400, "end_ms": 1800},
+            ],
+        }
+    ]
 
 
 def test_adaptive_padding_never_steals_time_from_previous_syllable():
     lines = [
-        {"text": "uh-huh", "start_ms": 800, "end_ms": 2200,
-         "syllables": [{"text": "uh-huh", "start_ms": 1000, "end_ms": 2000}]},
-        {"text": "next", "start_ms": 1800, "end_ms": 3000,
-         "syllables": [{"text": "next", "start_ms": 2000, "end_ms": 2400}]},
+        {
+            "text": "uh-huh",
+            "start_ms": 800,
+            "end_ms": 2200,
+            "syllables": [{"text": "uh-huh", "start_ms": 1000, "end_ms": 2000}],
+        },
+        {
+            "text": "next",
+            "start_ms": 1800,
+            "end_ms": 3000,
+            "syllables": [{"text": "next", "start_ms": 2000, "end_ms": 2400}],
+        },
     ]
 
     result = apply_adaptive_line_padding(lines)
@@ -106,11 +124,18 @@ def test_adaptive_padding_uses_real_silence_and_syllable_duration():
 
 
 def test_lead_in_guard_matches_source_text_after_blank_lines():
-    karaoke = [{"text": "'Cause everything", "start_ms": 72877, "end_ms": 77179, "syllables": [
-        {"text": "'Cause ", "start_ms": 72877, "end_ms": 72977},
-        {"text": "ev", "start_ms": 72977, "end_ms": 76719},
-        {"text": "erything", "start_ms": 76719, "end_ms": 77179},
-    ]}]
+    karaoke = [
+        {
+            "text": "'Cause everything",
+            "start_ms": 72877,
+            "end_ms": 77179,
+            "syllables": [
+                {"text": "'Cause ", "start_ms": 72877, "end_ms": 72977},
+                {"text": "ev", "start_ms": 72977, "end_ms": 76719},
+                {"text": "erything", "start_ms": 76719, "end_ms": 77179},
+            ],
+        }
+    ]
     source = [
         {"text": "", "start_ms": 62660},
         {"text": "Other line", "start_ms": 68950},
@@ -130,23 +155,27 @@ def test_parse_ass_karaoke_ignores_headers():
 
 
 def test_timed_source_lines_filters_untimed_and_empty_entries():
-    assert _timed_source_lines([
-        {"text": " First line ", "start_ms": 1000},
-        {"text": "", "start_ms": 1500},
-        {"text": "Untimed"},
-        {"text": "Second line", "start_ms": 2200.9},
-    ]) == [
+    assert _timed_source_lines(
+        [
+            {"text": " First line ", "start_ms": 1000},
+            {"text": "", "start_ms": 1500},
+            {"text": "Untimed"},
+            {"text": "Second line", "start_ms": 2200.9},
+        ]
+    ) == [
         {"text": "First line", "start_ms": 1000},
         {"text": "Second line", "start_ms": 2200},
     ]
 
 
 def test_anchored_source_lines_interpolates_without_dropping_lyrics():
-    assert _anchored_source_lines([
-        {"text": "One", "start_ms": 1000},
-        {"text": "Missing"},
-        {"text": "Three", "start_ms": 5000},
-    ]) == [
+    assert _anchored_source_lines(
+        [
+            {"text": "One", "start_ms": 1000},
+            {"text": "Missing"},
+            {"text": "Three", "start_ms": 5000},
+        ]
+    ) == [
         {"text": "One", "start_ms": 1000, "interpolated": False},
         {"text": "Missing", "start_ms": 3000, "interpolated": True},
         {"text": "Three", "start_ms": 5000, "interpolated": False},
@@ -154,11 +183,18 @@ def test_anchored_source_lines_interpolates_without_dropping_lyrics():
 
 
 def test_stabilize_to_synced_lines_shifts_the_whole_line_not_only_first_syllable():
-    karaoke = [{"text": "Learn to sign", "start_ms": 5500, "end_ms": 7000, "syllables": [
-        {"text": "Learn", "start_ms": 5700, "end_ms": 6000},
-        {"text": " to", "start_ms": 6000, "end_ms": 6300},
-        {"text": " sign", "start_ms": 6300, "end_ms": 6800},
-    ]}]
+    karaoke = [
+        {
+            "text": "Learn to sign",
+            "start_ms": 5500,
+            "end_ms": 7000,
+            "syllables": [
+                {"text": "Learn", "start_ms": 5700, "end_ms": 6000},
+                {"text": " to", "start_ms": 6000, "end_ms": 6300},
+                {"text": " sign", "start_ms": 6300, "end_ms": 6800},
+            ],
+        }
+    ]
 
     result = stabilize_to_synced_lines(karaoke, [{"text": "Learn to sign", "start_ms": 6500}])
 
@@ -173,10 +209,14 @@ def test_stabilize_to_synced_lines_shifts_the_whole_line_not_only_first_syllable
 def test_validate_alignment_document_accepts_monotonic_structured_output():
     document = {
         "schema_version": 1,
-        "alignment": {"lines": [{
-            "source_index": 0,
-            "tokens": [{"start_ms": 100, "end_ms": 200, "ctc_score": 0.8}],
-        }]},
+        "alignment": {
+            "lines": [
+                {
+                    "source_index": 0,
+                    "tokens": [{"start_ms": 100, "end_ms": 200, "ctc_score": 0.8}],
+                }
+            ]
+        },
         "diagnostics": {"inference_passes": 1},
     }
 
@@ -186,13 +226,17 @@ def test_validate_alignment_document_accepts_monotonic_structured_output():
 def test_validate_alignment_document_rejects_reversed_tokens():
     document = {
         "schema_version": 1,
-        "alignment": {"lines": [{
-            "source_index": 0,
-            "tokens": [
-                {"start_ms": 200, "end_ms": 300, "ctc_score": 0.8},
-                {"start_ms": 100, "end_ms": 150, "ctc_score": 0.9},
-            ],
-        }]},
+        "alignment": {
+            "lines": [
+                {
+                    "source_index": 0,
+                    "tokens": [
+                        {"start_ms": 200, "end_ms": 300, "ctc_score": 0.8},
+                        {"start_ms": 100, "end_ms": 150, "ctc_score": 0.9},
+                    ],
+                }
+            ]
+        },
     }
 
     try:
@@ -205,13 +249,21 @@ def test_validate_alignment_document_rejects_reversed_tokens():
 
 def test_guard_pathological_lead_ins_delays_only_stretched_first_syllable():
     diagnostics = {"source_offset_ms": 0, "source_drift_ms_per_minute": 0}
-    result = guard_pathological_lead_ins([{
-        "text": "Siento frío", "start_ms": 197680, "end_ms": 205110,
-        "syllables": [
-            {"text": "Sien", "start_ms": 197880, "end_ms": 203830},
-            {"text": "to", "start_ms": 203990, "end_ms": 204470},
+    result = guard_pathological_lead_ins(
+        [
+            {
+                "text": "Siento frío",
+                "start_ms": 197680,
+                "end_ms": 205110,
+                "syllables": [
+                    {"text": "Sien", "start_ms": 197880, "end_ms": 203830},
+                    {"text": "to", "start_ms": 203990, "end_ms": 204470},
+                ],
+            }
         ],
-    }], [{"text": "Siento frío", "start_ms": 204010}], diagnostics)
+        [{"text": "Siento frío", "start_ms": 204010}],
+        diagnostics,
+    )
 
     assert result[0]["start_ms"] == 203810
     assert result[0]["syllables"] == [
@@ -222,10 +274,17 @@ def test_guard_pathological_lead_ins_delays_only_stretched_first_syllable():
 
 
 def test_bound_to_synced_lines_clamps_syllables_to_source_window():
-    karaoke = [{"text": "First line", "start_ms": 800, "end_ms": 2400, "syllables": [
-        {"text": "First", "start_ms": 900, "end_ms": 1300},
-        {"text": " line", "start_ms": 1900, "end_ms": 2400},
-    ]}]
+    karaoke = [
+        {
+            "text": "First line",
+            "start_ms": 800,
+            "end_ms": 2400,
+            "syllables": [
+                {"text": "First", "start_ms": 900, "end_ms": 1300},
+                {"text": " line", "start_ms": 1900, "end_ms": 2400},
+            ],
+        }
+    ]
     source = [{"text": "First line", "start_ms": 1000}, {"text": "Second line", "start_ms": 2000}]
 
     result = bound_to_synced_lines(karaoke, source)
@@ -244,13 +303,20 @@ def test_worker_uses_cached_vocals_and_original_reference(monkeypatch, tmp_path,
     get_settings.cache_clear()
     monkeypatch.setenv("FA_KARA_VOCAL_SEPARATION", "false")
     get_settings.cache_clear()
-    snapshot = tmp_path / "hub" / f"models--{pipeline.DEFAULT_MODEL_ID.replace('/', '--')}" / "snapshots" / pipeline.DEFAULT_MODEL_REVISION
+    snapshot = (
+        tmp_path
+        / "hub"
+        / f"models--{pipeline.DEFAULT_MODEL_ID.replace('/', '--')}"
+        / "snapshots"
+        / pipeline.DEFAULT_MODEL_REVISION
+    )
     snapshot.mkdir(parents=True)
     events = []
     original = b"original compressed full mix"
     waveform = np.array([0.25, -0.125], dtype=np.float32)
     buffer = io.BytesIO()
     sf.write(buffer, -waveform, 16000, format="WAV", subtype="FLOAT")
+
     def vocals(data, check, before_separate):
         assert data == original
         assert events == []
@@ -258,13 +324,17 @@ def test_worker_uses_cached_vocals_and_original_reference(monkeypatch, tmp_path,
         assert events == ["stop"]
         events.append("vocals")
         return buffer.getvalue()
+
     monkeypatch.setattr(pipeline, "_stop_fa_kara_worker", lambda: events.append("stop"))
     monkeypatch.setattr(pipeline, "vocal_audio_bytes", vocals)
+
     def decode(data, check):
         assert data == original and callable(check)
         return waveform
+
     monkeypatch.setattr(pipeline, "vocal_reference_waveform", decode)
     monkeypatch.setattr(pipeline, "_fa_kara_worker", lambda *args: object())
+
     def job(worker, argv):
         assert "--separate_vocals" not in argv
         work = Path(argv[argv.index("--path_io") + 1])
@@ -284,17 +354,35 @@ def test_worker_uses_cached_vocals_and_original_reference(monkeypatch, tmp_path,
         assert json.loads((work / "timeline.json").read_text())[0]["start_ms"] == 100
         (work / "o.ass").write_text("")
         (work / "o_ruby.lrc").write_text("")
-        (work / "o.alignment.json").write_text(json.dumps({
-            "schema_version": 1, "alignment": {"lines": [{
-                "source_index": 0, "text": "Hello", "tokens": [{
-                    "text": "Hello", "start_ms": 100, "end_ms": 200, "ctc_score": 0.9,
-                }],
-            }]},
-        }))
+        (work / "o.alignment.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "alignment": {
+                        "lines": [
+                            {
+                                "source_index": 0,
+                                "text": "Hello",
+                                "tokens": [
+                                    {
+                                        "text": "Hello",
+                                        "start_ms": 100,
+                                        "end_ms": 200,
+                                        "ctc_score": 0.9,
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                }
+            )
+        )
         return {"ok": True}
+
     monkeypatch.setattr(pipeline, "_run_worker_job", job)
-    result = pipeline._run_fa_kara(original, "Hello", "en",
-                                   [{"text": "Hello", "start_ms": 100}], separate)
+    result = pipeline._run_fa_kara(
+        original, "Hello", "en", [{"text": "Hello", "start_ms": 100}], separate
+    )
     assert result["diagnostics"]["separator"] == (None if separate is False else "roformer")
 
 
@@ -312,10 +400,14 @@ def test_backfill_prewarms_before_alignment_and_skips_failed_tracks(monkeypatch,
     client.audio_bytes.side_effect = lambda key: key.encode()
     monkeypatch.setattr(pipeline, "NavidromeClient", lambda *args: client)
     monkeypatch.setattr(pipeline, "resolve_library_id", lambda *args: "library")
-    monkeypatch.setattr(pipeline, "plan_karaoke", lambda *args, **kwargs:
-                        SimpleNamespace(karaoke_external_ids=["0", "1", "2"]))
+    monkeypatch.setattr(
+        pipeline,
+        "plan_karaoke",
+        lambda *args, **kwargs: SimpleNamespace(karaoke_external_ids=["0", "1", "2"]),
+    )
     events = []
     monkeypatch.setattr(pipeline, "_stop_fa_kara_worker", lambda: events.append("stop"))
+
     def prepare(data, **kwargs):
         assert kwargs["reference"] is True
         assert "mono_rates" not in kwargs
@@ -326,15 +418,27 @@ def test_backfill_prewarms_before_alignment_and_skips_failed_tracks(monkeypatch,
             if cancel:
                 raise KeyboardInterrupt()
             raise ValueError("bad audio")
+
     monkeypatch.setattr(pipeline, "prepare_audio", prepare)
+
     def align(data, *args):
         assert events[:4] == ["stop", b"0", b"1", b"2"]
         assert data != b"1"
         events.append(("align", data))
-        return {"lines": [], "diagnostics": {"audio_source": "roformer_vocals",
-                "reference_audio_source": "full_mix", "separator_revision": "revision"},
-                "model": "model", "model_revision": "revision", "ass": "", "lrc": "",
-                "alignment_document": {}}
+        return {
+            "lines": [],
+            "diagnostics": {
+                "audio_source": "roformer_vocals",
+                "reference_audio_source": "full_mix",
+                "separator_revision": "revision",
+            },
+            "model": "model",
+            "model_revision": "revision",
+            "ass": "",
+            "lrc": "",
+            "alignment_document": {},
+        }
+
     monkeypatch.setattr(pipeline, "_run_fa_kara", align)
     reports = []
     if cancel:
@@ -343,7 +447,9 @@ def test_backfill_prewarms_before_alignment_and_skips_failed_tracks(monkeypatch,
         assert events == ["stop", b"0", b"1"]
     else:
         assert pipeline._backfill_karaoke("url", "user", "pass", reports.append) == {
-            "total": 3, "aligned": 2, "failed": 1,
+            "total": 3,
+            "aligned": 2,
+            "failed": 1,
         }
         assert events[4:] == [("align", b"0"), ("align", b"2")]
         assert [r["phase"] for r in reports][:7] == ["preprocess"] * 6 + ["models"]
@@ -355,19 +461,24 @@ def test_backfill_prewarms_before_alignment_and_skips_failed_tracks(monkeypatch,
 @pytest.mark.parametrize("mode", ["complete", "partial_cancel", "timeout"])
 def test_worker_response_checks_cancellation_and_reaps(monkeypatch, mode):
     import os
+
     reader, writer = os.pipe()
     worker = MagicMock()
     worker.stdin = io.StringIO()
     worker.stdout = os.fdopen(reader, "r")
     worker.poll.return_value = None
+
     class Cancelled(BaseException):
         pass
+
     checks = 0
+
     def check():
         nonlocal checks
         checks += 1
         if mode == "partial_cancel" and checks == 2:
             raise Cancelled()
+
     monkeypatch.setattr(pipeline, "get_check", lambda: check)
     try:
         if mode == "complete":
@@ -395,12 +506,64 @@ def test_karaoke_lock_wait_checks_cancellation(monkeypatch):
     lock = MagicMock()
     lock.acquire.return_value = False
     monkeypatch.setattr(pipeline, "_KARAOKE_LOCK", lock)
+
     class Cancelled(BaseException):
         pass
+
     def check():
         raise Cancelled()
+
     monkeypatch.setattr(pipeline, "get_check", lambda: check)
     with pytest.raises(Cancelled):
         pipeline.backfill_karaoke("url", "user", "pass")
     lock.acquire.assert_called_once_with(timeout=0.25)
     lock.release.assert_not_called()
+
+
+def test_local_model_path_overrides_snapshot(monkeypatch, tmp_path):
+    checkpoint = tmp_path / "checkpoint-22000"
+    checkpoint.mkdir()
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "missing-cache"))
+    monkeypatch.setenv("FA_KARA_MODEL_PATH", str(checkpoint))
+    monkeypatch.setenv("FA_KARA_REVISION", "v6-checkpoint-22000")
+    get_settings.cache_clear()
+    monkeypatch.setattr(pipeline, "_fa_kara_worker", lambda *args: object())
+    seen = {}
+
+    def job(worker, argv):
+        seen["model"] = argv[argv.index("--hf_model_path") + 1]
+        work = Path(argv[argv.index("--path_io") + 1])
+        (work / "o.ass").write_text("")
+        (work / "o_ruby.lrc").write_text("")
+        (work / "o.alignment.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "alignment": {
+                        "lines": [
+                            {
+                                "source_index": 0,
+                                "text": "Hello",
+                                "tokens": [
+                                    {
+                                        "text": "Hello",
+                                        "start_ms": 100,
+                                        "end_ms": 200,
+                                        "ctc_score": 0.9,
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                }
+            )
+        )
+        return {"ok": True}
+
+    monkeypatch.setattr(pipeline, "_run_worker_job", job)
+    try:
+        result = pipeline._run_fa_kara(b"audio", "Hello", "en", [], False)
+    finally:
+        get_settings.cache_clear()
+    assert seen["model"] == str(checkpoint)
+    assert (result["model"], result["model_revision"]) == (str(checkpoint), "v6-checkpoint-22000")
