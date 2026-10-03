@@ -36,12 +36,16 @@ An administrator can enter an external ComfyUI URL instead (or set `ECHORA_COMFY
 
 ## Set up
 
-Download the models into the shared Hugging Face cache. Only the four files ComfyUI loads are fetched, at pinned revisions, not the whole repositories:
+Save your Hugging Face token in **Settings → Analysis models → Model downloads** (stored encrypted, shared with Modal). Then download the models into the shared Hugging Face cache. Only the four files ComfyUI loads are fetched, at pinned revisions, not the whole repositories:
 
 ```sh
-docker compose run --rm --no-deps -e HF_HUB_OFFLINE=0 -e HF_TOKEN=hf_... analysis \
+docker compose run --rm --no-deps -e HF_HUB_OFFLINE=0 analysis \
   python -m echora_analysis.download_models --motion-artwork
 ```
+
+The command uses the saved token; `-e HF_TOKEN=hf_...` overrides it.
+
+To render on Modal instead, switch on **Generate during syncs: Modal**. The next Modal sync downloads these models to Modal with the same token ([docs/modal-compute.md](modal-compute.md)).
 
 Setting `ECHORA_MOTION_ARTWORK_MODELS=true` in `.env` does the same as the flag. It also keeps these snapshots under cache management, so startup pruning removes them when their pinned revision changes.
 

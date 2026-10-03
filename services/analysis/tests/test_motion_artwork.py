@@ -272,6 +272,7 @@ def database(monkeypatch, tmp_path):
             """)
             with patch("alembic.op.execute", side_effect=db.execute):
                 runpy.run_path(str(VERSIONS / "0057_motion_artwork.py"))["upgrade"]()
+                runpy.run_path(str(VERSIONS / "0059_motion_artwork_on_modal.py"))["upgrade"]()
         yield connect
     finally:
         with psycopg.connect(url, autocommit=True) as db:
@@ -762,3 +763,63 @@ def test_external_prompts_skip_the_prompt_comfyui_and_pin_group_shots(database, 
     )
     # The three songs sharing the four-person cover are pinned mid-loop; album C's song is not.
     assert anchors == [0, 0.5, 0.5, 0.5]
+
+
+class FakeModalSession:
+    """Renders through the real render_loops, like the Modal Artwork class, and records what it got."""
+
+    def __init__(self):
+        self.calls = []
+
+    def motion_artwork(self, settings, recipe, covers):
+        self.calls.append((settings, recipe, covers))
+        for event in motion_artwork_jobs.render_loops(settings, recipe, covers):
+            if "rendered" in event:
+                # Like the transfer Volume: the worker receives its own copy of the video.
+                copy = Path(event["file"]).with_name(f"received-{event['rendered']}.mp4")
+                copy.write_bytes(Path(event["file"]).read_bytes())
+                event = {**event, "file": str(copy)}
+            yield event
+
+    def close(self):
+        pass
+
+
+def test_modal_syncs_render_only_when_switched_on_for_modal(database, batch):
+    from echora_analysis import remote_compute
+
+    _enable(database, generate_during_sync=True, generate_on_modal=False)
+    remote = FakeModalSession()
+    with (
+        remote_compute.computing_on("modal"),
+        remote_compute.session("modal", factory=lambda: remote),
+    ):
+        assert batch["run"]() is None
+        with database() as db:
+            assert (
+                motion_artwork.sync_selection(db, batch["library"], batch["external_ids"]) == set()
+            )
+    assert remote.calls == [] and FakeComfyUI.sessions == 0
+
+
+def test_modal_sync_renders_on_modal_and_stores_loops_here(database, batch, monkeypatch):
+    from echora_analysis import remote_compute
+
+    _enable(database, generate_during_sync=False, generate_on_modal=True)
+    remote = FakeModalSession()
+    with (
+        remote_compute.computing_on("modal"),
+        remote_compute.session("modal", factory=lambda: remote),
+    ):
+        with database() as db:
+            assert motion_artwork.sync_selection(db, batch["library"], batch["external_ids"])
+        summary = batch["run"]()
+    assert len(remote.calls) == 1 and summary["rendered"] == 4 and summary["errors"] == 0
+    with database() as db:
+        rows = db.execute("SELECT path, status FROM motion_artworks").fetchall()
+    root = Path(os.environ["ECHORA_MOTION_ARTWORK_DIR"])
+    assert len(rows) == 4 and all(
+        row["status"] == "complete" and (root / row["path"]).is_file() for row in rows
+    )
+    # A local sync with generation off for this server renders nothing more.
+    assert batch["run"]() is None
