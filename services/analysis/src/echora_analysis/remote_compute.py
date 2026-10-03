@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 DEPLOY_TIMEOUT_SECONDS = 30 * 60
 ROLLOVER_SECONDS = 120
-ROLLOVER_POLL_SECONDS = 5
+ROLLOVER_POLL_SECONDS = 10
 
 _current: ContextVar[ModalSession | None] = ContextVar("echora_remote_session", default=None)
 
@@ -188,7 +188,17 @@ def workspace(config: ModalConfig) -> str:
 
 def deploy(config: ModalConfig) -> None:
     """Deploy this worker's analysis code to the token's workspace."""
-    _modal_cli(config, "deploy", "-m", "echora_analysis.modal_app", timeout=DEPLOY_TIMEOUT_SECONDS)
+    # Recreate, not roll over: old containers would otherwise keep answering (and stay warm
+    # while being asked), and Echora only redeploys when the old code is wrong for it.
+    _modal_cli(
+        config,
+        "deploy",
+        "--strategy",
+        "recreate",
+        "-m",
+        "echora_analysis.modal_app",
+        timeout=DEPLOY_TIMEOUT_SECONDS,
+    )
 
 
 def _complete(results, count: int) -> Iterator[object]:

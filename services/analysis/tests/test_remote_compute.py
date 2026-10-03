@@ -757,3 +757,17 @@ def test_batched_results_finish_modals_stream_with_the_last_result():
     assert next(results) == "a" and not finished
     # The stream ends as the last result is handed over, not at garbage collection.
     assert next(results) == "b" and finished
+
+
+def test_deploys_replace_old_containers(monkeypatch):
+    run = Mock(return_value=SimpleNamespace(returncode=0, stdout="App deployed", stderr=""))
+    monkeypatch.setattr(remote_compute.subprocess, "run", run)
+    remote_compute.deploy(CONFIG)
+    command = run.call_args.args[0]
+    assert command[command.index("deploy") :] == [
+        "deploy",
+        "--strategy",
+        "recreate",
+        "-m",
+        "echora_analysis.modal_app",
+    ]
