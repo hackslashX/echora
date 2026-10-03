@@ -127,7 +127,19 @@ def launch(
             url = f"http://127.0.0.1:{port}"
             try:
                 _wait_until_ready(process, url, startup_timeout_seconds, check)
-                yield url
+                try:
+                    yield url
+                except httpx.TransportError as error:
+                    # A request failed because ComfyUI itself is gone: say why it stopped.
+                    if process.poll() is None:
+                        try:
+                            process.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            raise error from None
+                    raise ComfyUIUnavailable(
+                        f"ComfyUI stopped while running (exit code {process.returncode}). "
+                        f"Last log lines: {_log_tail(work / 'comfyui.log')}"
+                    ) from error
             finally:
                 process.terminate()
                 try:
@@ -135,6 +147,15 @@ def launch(
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
+
+
+def _log_tail(path: Path, lines: int = 12, limit: int = 1500) -> str:
+    """The end of ComfyUI's log, for errors that would otherwise only say "connection refused"."""
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return "(no log)"
+    return " | ".join(line.strip() for line in text.splitlines()[-lines:] if line.strip())[-limit:]
 
 
 def _wait_until_ready(

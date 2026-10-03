@@ -24,12 +24,15 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 from .modal_constants import APP_NAME, AUDIO_VOLUME
 
 logger = logging.getLogger(__name__)
 
 DEPLOY_TIMEOUT_SECONDS = 30 * 60
+ROLLOVER_SECONDS = 120
+ROLLOVER_POLL_SECONDS = 5
 
 _current: ContextVar[ModalSession | None] = ContextVar("echora_remote_session", default=None)
 
@@ -242,15 +245,22 @@ class ModalSession:
             progress({"phase": "modal", "message": "Deploying Echora analysis to Modal"})
             deploy(self.config)
             deployed = True
-            state = self.inspect()
-            if (
-                state is None
-                or state["code"] != expected["code"]
-                or state["deployment"] != expected["deployment"]
-            ):
-                raise RuntimeError(
-                    "The Modal deployment does not match this Echora version after deploying"
-                )
+            # Deploys roll over: an old container may still answer for a short while.
+            deadline = time.monotonic() + ROLLOVER_SECONDS
+            while True:
+                state = self.inspect()
+                if (
+                    state is not None
+                    and state["code"] == expected["code"]
+                    and state["deployment"] == expected["deployment"]
+                ):
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "The Modal deployment does not match this Echora version after deploying"
+                    )
+                check()
+                time.sleep(ROLLOVER_POLL_SECONDS)
         downloaded = False
         if state["models"] != expected["models"]:
             check()

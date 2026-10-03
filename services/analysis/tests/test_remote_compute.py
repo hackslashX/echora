@@ -146,7 +146,17 @@ def test_missing_or_stale_code_is_deployed_first(monkeypatch):
         deploy.assert_called_once_with(CONFIG)
 
 
+def test_deploy_waits_for_old_containers_to_roll_over(monkeypatch):
+    monkeypatch.setattr(remote_compute, "deploy", Mock())
+    monkeypatch.setattr(remote_compute, "ROLLOVER_POLL_SECONDS", 0)
+    # Right after deploying, a still-warm old container answers once more.
+    modal = FakeModal([current_status(code="old"), current_status(code="old"), current_status()])
+    session = remote_compute.ModalSession(CONFIG, processing_settings(), modal_api=modal)
+    assert session.ensure_ready()["deployed"]
+
+
 def test_deployment_that_still_differs_is_refused(monkeypatch):
+    monkeypatch.setattr(remote_compute, "ROLLOVER_SECONDS", 0)
     monkeypatch.setattr(remote_compute, "deploy", Mock())
     modal = FakeModal([None, current_status(code="other")])
     with pytest.raises(RuntimeError, match="does not match"):
