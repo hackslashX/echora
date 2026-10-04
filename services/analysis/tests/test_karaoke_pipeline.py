@@ -2,6 +2,7 @@ from echora_analysis.settings import get_settings
 
 import io
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -523,6 +524,7 @@ def test_karaoke_lock_wait_checks_cancellation(monkeypatch):
 def test_local_model_path_overrides_snapshot(monkeypatch, tmp_path):
     checkpoint = tmp_path / "checkpoint-22000"
     checkpoint.mkdir()
+    (checkpoint / "model.safetensors").write_bytes(b"weights v1")
     monkeypatch.setenv("HF_HOME", str(tmp_path / "missing-cache"))
     monkeypatch.setenv("FA_KARA_MODEL_PATH", str(checkpoint))
     monkeypatch.setenv("FA_KARA_REVISION", "v6-checkpoint-22000")
@@ -566,4 +568,33 @@ def test_local_model_path_overrides_snapshot(monkeypatch, tmp_path):
     finally:
         get_settings.cache_clear()
     assert seen["model"] == str(checkpoint)
-    assert (result["model"], result["model_revision"]) == (str(checkpoint), "v6-checkpoint-22000")
+    # A local checkpoint is identified by its weights, not by the FA_KARA_REVISION label.
+    assert result["model"] == str(checkpoint)
+    assert result["model_revision"].startswith("local-")
+
+
+def test_replacing_a_local_checkpoint_changes_its_identity(monkeypatch, tmp_path):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    weights = checkpoint / "model.safetensors"
+    weights.write_bytes(b"weights v1")
+    monkeypatch.setenv("FA_KARA_REVISION", "same-label")
+    monkeypatch.delenv("FA_KARA_MODEL_PATH", raising=False)
+    get_settings.cache_clear()
+    try:
+        # Without a local checkpoint, the pinned revision is the identity.
+        assert pipeline.current_model_revision() == "same-label"
+        monkeypatch.setenv("FA_KARA_MODEL_PATH", str(checkpoint))
+        get_settings.cache_clear()
+        first = pipeline.current_model_revision()
+        weights.write_bytes(b"weights v2, retrained")
+        os.utime(weights, ns=(1, 1))
+        second = pipeline.current_model_revision()
+        # Same FA_KARA_REVISION label, new weights: planning sees a different aligner.
+        assert first != second
+        assert pipeline._stored_model_revision(first) != pipeline._stored_model_revision(second)
+        (checkpoint / "model.safetensors").unlink()
+        with pytest.raises(RuntimeError, match="no weights file"):
+            pipeline.current_model_revision()
+    finally:
+        get_settings.cache_clear()
