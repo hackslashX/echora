@@ -23,6 +23,9 @@ from .representations import configure_representations, embedding_config
 from .analysis_attempts import start_attempt, record_track, finish_attempt
 from .preprocessing import prepare_audio, get_check
 from .remote_compute import RemoteModel, current as current_remote
+from .roformer import separation_phase
+from .song_transcription import SongTranscriber, needs_repair
+from .transcription_recovery import diagnostic_writer
 
 
 def _vector_literal(vector) -> str:
@@ -315,107 +318,175 @@ def backfill_lyrics(
 
         # Only genuine fallbacks reach this stage. Never separate songs solely
         # because their supplied lyrics need a new embedding.
+        # Phases (docs/batch-phases.md): separate every selected song's vocals with one
+        # Roformer, generate every song with MOSS loaded once, then repair compressed
+        # timing with the karaoke aligner loaded once, only for drafts that need it.
+        remote = current_remote()
         ready = []
-        for index, candidate in enumerate(transcriptions):
-            track_id, external_id, title, config, missing = candidate
-            report(
-                {
-                    "phase": "preprocess",
-                    "message": f"Preparing vocals for {title}",
-                    "completed": index,
-                    "total": len(transcriptions),
-                    "unit": "tracks",
-                }
-            )
-            try:
-                from .transcription_config import transcription_enabled
-
-                if not transcription_enabled(connection):
-                    accept_lyrics(track_id, title, missing)
-                    continue
-                remote = current_remote()
-                if remote is None:
-                    prepare_audio(client.audio_bytes(external_id), vocals=True, check=get_check())
-                else:
-                    # Vocals are separated on Modal; only the source audio goes up.
-                    remote.upload_audio(client.audio_bytes(external_id))
-                ready.append(candidate)
-                connection.commit()
-            except Exception:
-                connection.rollback()
-                summary["failed"] += 1
-                logging.getLogger(__name__).exception("Vocal preparation failed for %s", track_id)
-            report(
-                {
-                    "phase": "preprocess",
-                    "completed": index + 1,
-                    "total": len(transcriptions),
-                    "unit": "tracks",
-                    "summary": summary,
-                }
-            )
-
-        for index, (track_id, external_id, title, config, missing) in enumerate(ready):
-            try:
-                from .transcription_config import transcription_enabled
-
-                if not transcription_enabled(connection):
-                    accept_lyrics(track_id, title, missing)
-                    continue
-                from .song_transcription import SongTranscriber
-                from .transcription_recovery import diagnostic_writer
-
+        digests = {}
+        with separation_phase():
+            for index, candidate in enumerate(transcriptions):
+                track_id, external_id, title, config, missing = candidate
                 report(
                     {
-                        "phase": "transcription",
-                        "message": f"Transcribing lyrics for {title}",
+                        "phase": "preprocess",
+                        "message": f"Preparing vocals for {title}",
                         "completed": index,
-                        "total": len(ready),
+                        "total": len(transcriptions),
                         "unit": "tracks",
                     }
                 )
-                with connection.cursor() as cursor:
-                    cursor.execute(
-                        """SELECT a.activity FROM track_vocal_activity a
-                        JOIN current_embeddings e ON e.track_id=a.track_id AND e.run_id=a.run_id
-                        WHERE a.track_id=%s AND e.embedding_type='voice-gender'
-                        ORDER BY a.created_at DESC LIMIT 1""",
-                        (track_id,),
+                try:
+                    from .transcription_config import transcription_enabled
+
+                    if not transcription_enabled(connection):
+                        accept_lyrics(track_id, title, missing)
+                        continue
+                    if remote is None:
+                        prepare_audio(
+                            client.audio_bytes(external_id), vocals=True, check=get_check()
+                        )
+                    else:
+                        # Vocals are separated on Modal; only the source audio goes up.
+                        digests[track_id] = remote.upload_audio(client.audio_bytes(external_id))
+                    ready.append(candidate)
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    summary["failed"] += 1
+                    logging.getLogger(__name__).exception(
+                        "Vocal preparation failed for %s", track_id
                     )
-                    activity_row = cursor.fetchone()
-                arguments = dict(
-                    language=str(missing.get("transcription_language") or "") or None,
-                    check=lambda: report({"phase": "transcription"}),
-                    progress=lambda detail: report(
-                        {"phase": "transcription", "message": f"{title}: {detail}"}
-                    ),
-                    diagnostic_sink=diagnostic_writer(track_id),
-                    vocal_activity=activity_row[0] if activity_row else None,
+                report(
+                    {
+                        "phase": "preprocess",
+                        "completed": index + 1,
+                        "total": len(transcriptions),
+                        "unit": "tracks",
+                        "summary": summary,
+                    }
                 )
-                remote = current_remote()
-                if remote is None:
-                    lyrics = SongTranscriber(*config).transcribe(
-                        client.audio_bytes(external_id), **arguments
+        if remote is not None and ready:
+            separated = remote.prepare_vocals([digests[item[0]] for item in ready], vocals=True)
+            kept = []
+            for candidate, outcome in zip(list(ready), separated):
+                if isinstance(outcome, BaseException):
+                    summary["failed"] += 1
+                    logging.getLogger(__name__).error(
+                        "Vocal separation on Modal failed for %s", candidate[0]
                     )
                 else:
-                    lyrics = remote.transcribe(client.audio_bytes(external_id), **arguments)
-                accept_lyrics(track_id, title, lyrics)
-            except Exception:
-                connection.rollback()
-                summary["failed"] += 1
-                logging.getLogger(__name__).exception(
-                    "Lyrics transcription failed for %s", track_id
+                    kept.append(candidate)
+            ready = kept
+
+        transcribers: dict[tuple, SongTranscriber] = {}
+        repairs = []
+        try:
+            for index, (track_id, external_id, title, config, missing) in enumerate(ready):
+                try:
+                    from .transcription_config import transcription_enabled
+
+                    if not transcription_enabled(connection):
+                        accept_lyrics(track_id, title, missing)
+                        continue
+                    transcriber = transcribers.get(tuple(config))
+                    if transcriber is None:
+                        transcriber = transcribers[tuple(config)] = SongTranscriber(*config)
+                        if remote is None:
+                            # MOSS loads once for every song of this phase.
+                            transcriber.open()
+                    report(
+                        {
+                            "phase": "transcription",
+                            "message": f"Transcribing lyrics for {title}",
+                            "completed": index,
+                            "total": len(ready),
+                            "unit": "tracks",
+                        }
+                    )
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            """SELECT a.activity FROM track_vocal_activity a
+                            JOIN current_embeddings e ON e.track_id=a.track_id AND e.run_id=a.run_id
+                            WHERE a.track_id=%s AND e.embedding_type='voice-gender'
+                            ORDER BY a.created_at DESC LIMIT 1""",
+                            (track_id,),
+                        )
+                        activity_row = cursor.fetchone()
+                    arguments = dict(
+                        language=str(missing.get("transcription_language") or "") or None,
+                        check=lambda: report({"phase": "transcription"}),
+                        progress=lambda detail, title=title: report(
+                            {"phase": "transcription", "message": f"{title}: {detail}"}
+                        ),
+                        diagnostic_sink=diagnostic_writer(track_id),
+                        vocal_activity=activity_row[0] if activity_row else None,
+                    )
+                    if remote is None:
+                        draft = transcriber.generate(client.audio_bytes(external_id), **arguments)
+                    else:
+                        draft = remote.transcribe_generate(
+                            client.audio_bytes(external_id), **arguments
+                        )
+                    if needs_repair(draft):
+                        # Saved after the timing repair phase.
+                        repairs.append((track_id, title, transcriber, draft))
+                    else:
+                        accept_lyrics(track_id, title, transcriber.finish(draft))
+                except Exception:
+                    connection.rollback()
+                    summary["failed"] += 1
+                    logging.getLogger(__name__).exception(
+                        "Lyrics transcription failed for %s", track_id
+                    )
+                report(
+                    {
+                        "phase": "transcription",
+                        "message": f"Processed lyrics for {title}",
+                        "completed": index + 1,
+                        "total": len(ready),
+                        "unit": "tracks",
+                        "summary": summary,
+                    }
                 )
-            report(
-                {
-                    "phase": "transcription",
-                    "message": f"Processed lyrics for {title}",
-                    "completed": index + 1,
-                    "total": len(ready),
-                    "unit": "tracks",
-                    "summary": summary,
-                }
+        finally:
+            for transcriber in transcribers.values():
+                transcriber.close()
+
+        if repairs:
+            # Timing repair phase: the karaoke aligner, loaded once, for drafts that need it.
+            finished = (
+                iter(remote.transcribe_finish([item[3] for item in repairs]))
+                if remote is not None
+                else None
             )
+            try:
+                for index, (track_id, title, transcriber, draft) in enumerate(repairs):
+                    report(
+                        {
+                            "phase": "transcription",
+                            "message": f"Repairing timing for {title}",
+                            "completed": index,
+                            "total": len(repairs),
+                            "unit": "tracks",
+                        }
+                    )
+                    try:
+                        lyrics = transcriber.finish(draft) if finished is None else next(finished)
+                        if isinstance(lyrics, BaseException):
+                            raise lyrics
+                        accept_lyrics(track_id, title, lyrics)
+                    except Exception:
+                        connection.rollback()
+                        summary["failed"] += 1
+                        logging.getLogger(__name__).exception(
+                            "Lyrics timing repair failed for %s", track_id
+                        )
+            finally:
+                if finished is None:
+                    from .karaoke_pipeline import _stop_fa_kara_worker
+
+                    _stop_fa_kara_worker()
 
         if not embeddable:
             return summary

@@ -164,6 +164,8 @@ class Analysis:
             from echora_analysis.karaoke_pipeline import _stop_fa_kara_worker
 
             _stop_fa_kara_worker()
+        elif kind in {"separator", "moss"}:
+            model.close()
         else:
             from echora_analysis.models import release_model
 
@@ -196,37 +198,65 @@ class Analysis:
         )
         return embed_track(self._audio(digest), loaded)
 
+    def _separator(self):
+        """The resident Roformer, so a run of separations loads it once."""
+        from echora_analysis.roformer import Separator
+
+        return self._resident("separator", Separator)
+
     @modal.method()
-    def melody(self, digest: str, settings: dict[str, object]):
-        """Melody contours for one track (Roformer separation, then Melodia)."""
-        from echora_analysis.hum_search import track_contours
+    def prepare_vocals(
+        self, digest: str, artifacts: dict[str, bool], settings: dict[str, object]
+    ) -> None:
+        """One track of a separation phase: prepare what the asking stage reads into the cache."""
+        from echora_analysis.preprocessing import prepare_audio
+        from echora_analysis.roformer import using
 
         self._adopt(settings)
-        self._release()
-        return track_contours(self._audio(digest))
+        with using(self._separator()):
+            prepare_audio(self._audio(digest), **artifacts)
 
     @modal.method()
-    def transcribe(
-        self, digest: str, language: str | None, vocal_activity, settings: dict[str, object]
-    ):
-        """Transcribe one track, streaming progress and window diagnostics before the result."""
-        import queue
-        import threading
+    def melody(self, digest: str, settings: dict[str, object]):
+        """Melody contours for one track (cached Roformer stems, then Melodia)."""
+        from echora_analysis.hum_search import track_contours
+        from echora_analysis.roformer import using
 
+        self._adopt(settings)
+        with using(self._separator()):
+            return track_contours(self._audio(digest))
+
+    def _transcriber(self):
         from echora_analysis.song_transcription import SongTranscriber
         from echora_analysis.transcription_config import transcription_model
 
-        self._adopt(settings)
-        self._release()
         config = transcription_model()
         if config is None:
             raise RuntimeError("AI lyric generation has no MOSS model configured")
+        return SongTranscriber(*config)
+
+    @modal.method()
+    def transcribe_generate(
+        self, digest: str, language: str | None, vocal_activity, settings: dict[str, object]
+    ):
+        """MOSS generation for one track with the resident MOSS; streams progress, then the draft."""
+        import queue
+        import threading
+
+        self._adopt(settings)
+
+        def load():
+            transcriber = self._transcriber()
+            transcriber.open()
+            return transcriber
+
+        transcriber = self._resident("moss", load)
         events: queue.Queue = queue.Queue()
         outcome: dict[str, object] = {}
 
         def run() -> None:
             try:
-                outcome["result"] = SongTranscriber(*config).transcribe(
+                outcome["draft"] = transcriber.generate(
                     self._audio(digest),
                     language=language,
                     progress=lambda detail: events.put({"progress": detail}),
@@ -245,7 +275,14 @@ class Analysis:
         thread.join()
         if "error" in outcome:
             raise outcome["error"]
-        yield {"result": outcome["result"]}
+        yield {"draft": outcome["draft"]}
+
+    @modal.method()
+    def transcribe_finish(self, draft: dict, settings: dict[str, object]):
+        """Timing repair for one draft, with the resident karaoke aligner."""
+        self._adopt(settings)
+        self._resident("fa_kara", lambda: None)
+        return self._transcriber().finish(draft)
 
     @modal.method()
     def embed_lyrics(self, text: str, settings: dict[str, object]):

@@ -53,7 +53,7 @@ def _connect():
 def plan_tracks(cursor, user_id, url: str, external_ids: list[str]) -> list[dict]:
     """One entry per selected track, including the best available lyrics."""
     cursor.execute(
-        """SELECT t.id AS track_id, t.title, t.album,
+        """SELECT t.id AS track_id, ts.external_id, t.title, t.album,
                   coalesce(ts.source_data->>'displayAlbumArtist', t.artist) AS artist,
                   ts.source_data->>'coverArt' AS cover_art_id, lyric.text AS lyrics
            FROM track_sources ts
@@ -259,8 +259,12 @@ def render_batch(
     mode: str = "missing",
     progress: Callable[[dict], None],
     check: Callable[[], None],
+    prompts: dict | None = None,
 ) -> dict | None:
     """Render missing loops for a sync or import batch's tracks.
+
+    `prompts` are those prepare_prompts wrote at the start of the batch, keyed by
+    (external ID, cover SHA-256); covers without one get their prompt written here.
 
     None when motion artwork is disabled or not generated in syncs at the batch's location (this
     server or Modal). `mode="all"` also replaces loops that already exist for the current settings.
@@ -358,8 +362,18 @@ def render_batch(
         by_sha = {cover["sha256"]: cover for cover in ready}
         try:
             if ready and recipe.prompt_mode == "external":
-                # External AI is reached from this server in both locations.
-                _write_external_prompts(recipe, ready, progress, check, failed)
+                # Prompts written at the start of the batch, before any GPU stage.
+                for cover in ready:
+                    # Keyed by recipe too: a prompt written for other settings is not reused.
+                    prepared = (prompts or {}).get(
+                        (cover["external_id"], cover["cover_sha256"], recipe.hash())
+                    )
+                    if prepared:
+                        cover.update(prepared)
+                unwritten = [cover for cover in ready if not cover.get("prompt")]
+                if unwritten:
+                    # External AI is reached from this server in both locations.
+                    _write_external_prompts(recipe, unwritten, progress, check, failed)
             if ready:
                 if on_modal:
                     remote = current_remote()
@@ -385,6 +399,108 @@ def render_batch(
             logger.warning("Motion artwork skipped: %s", error)
             summary["unavailable"] = str(error)
     return summary
+
+
+def prepare_prompts(
+    credentials: tuple[str, str, str],
+    external_ids: list[str],
+    *,
+    progress: Callable[[dict], None],
+    check: Callable[[], None],
+) -> dict | None:
+    """Write External AI prompts at the start of a batch, before any GPU stage.
+
+    So no GPU, here or on Modal, idles while External AI writes. Works before
+    Echora knows the songs: cover, title, artist, album and lyrics come from
+    Navidrome. Songs Echora knows and that already have a loop for the current
+    recipe are skipped. A brand-new song is prompted with the lyrics Navidrome has
+    now; one that is transcribed later in the batch is prompted without lyrics.
+    Returns prompts keyed by (external ID, cover SHA-256, recipe hash) for render_batch, or None
+    when motion artwork does not run here or writes no External AI prompts.
+    """
+    from .navidrome import NavidromeClient
+    from .remote_compute import location
+
+    with _connect() as connection, connection.cursor() as cursor:
+        settings = load_settings(cursor)
+        on_modal = location() == "modal"
+        if not (
+            settings.enabled
+            and (settings.generate_on_modal if on_modal else settings.generate_during_sync)
+        ):
+            return None
+        recipe = settings.recipe()
+        if recipe.prompt_mode != "external":
+            return None
+        cursor.execute(
+            """SELECT ts.external_id, ts.track_id,
+                      (SELECT text FROM lyrics WHERE track_id=ts.track_id
+                         AND nullif(btrim(text), '') IS NOT NULL ORDER BY created_at DESC LIMIT 1) AS lyrics
+               FROM track_sources ts JOIN libraries lib ON lib.id = ts.library_id
+               WHERE lib.root_path = %s AND ts.source_type = 'subsonic' AND ts.external_id = ANY(%s)""",
+            (credentials[0].rstrip("/"), list(external_ids)),
+        )
+        known = {row["external_id"]: row for row in cursor.fetchall()}
+    covers: list[dict] = []
+    cover_cache: dict[str, tuple[bytes, str]] = {}
+    with NavidromeClient(*credentials) as navidrome:
+        for index, song in enumerate(navidrome.tracks(list(external_ids))):
+            check()
+            progress(
+                {
+                    "phase": "motion-artwork",
+                    "message": "Checking track artwork",
+                    "completed": index,
+                    "total": len(external_ids),
+                    "unit": "tracks",
+                }
+            )
+            cover_id = song.raw.get("coverArt")
+            if not cover_id:
+                continue
+            try:
+                if cover_id not in cover_cache:
+                    cover_cache[cover_id] = navidrome.cover_art(cover_id, COVER_FETCH_SIZE)
+                data, content_type = cover_cache[cover_id]
+            except Exception:
+                continue
+            cover_sha = hashlib.sha256(data).hexdigest()
+            row = known.get(song.id)
+            if row is not None:
+                asset_key = hashlib.sha256(f"{cover_sha}:{row['track_id']}".encode()).hexdigest()
+                if _complete(asset_key, recipe):
+                    continue
+            lyrics = row["lyrics"] if row is not None else None
+            if not lyrics:
+                try:
+                    lyrics = navidrome.lyrics(song.id).get("text")
+                except Exception:
+                    lyrics = None
+            covers.append(
+                {
+                    "sha256": f"{song.id}:{cover_sha}",
+                    "external_id": song.id,
+                    "cover_sha256": cover_sha,
+                    "data": data,
+                    "content_type": content_type,
+                    "title": song.title,
+                    "artist": song.raw.get("displayAlbumArtist") or song.artist,
+                    "album": song.album,
+                    "lyrics": lyrics,
+                }
+            )
+    if not covers:
+        return {}
+    _write_external_prompts(
+        recipe, covers, progress, check, lambda cover, error: cover.update(failed=True)
+    )
+    return {
+        (cover["external_id"], cover["cover_sha256"], recipe.hash()): {
+            key: cover[key] for key in ("prompt", "mid_anchor") if key in cover
+        }
+        for cover in covers
+        if cover.get("prompt") and not cover.get("failed")
+    }
 
 
 def _store(cover: dict, recipe: Recipe, event: dict) -> None:

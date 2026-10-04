@@ -1,6 +1,7 @@
 """Dependency-free orchestration regressions; execute real function bodies with fake IO."""
 
 import ast
+from contextlib import nullcontext
 import functools
 import hashlib
 from echora_analysis.settings import Settings
@@ -90,6 +91,10 @@ class LibraryScopingTests(unittest.TestCase):
             functools=functools,
             hashlib=hashlib,
             current_remote=lambda: None,
+            separation_phase=nullcontext,
+            SongTranscriber=MagicMock(),
+            needs_repair=lambda draft: False,
+            diagnostic_writer=MagicMock(),
         )
         for name in (
             "resolve_library_id",

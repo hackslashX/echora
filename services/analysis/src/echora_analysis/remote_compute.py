@@ -377,6 +377,24 @@ class ModalSession:
     def melody_one(self, audio: bytes):
         return self.analysis.melody.remote(self.upload_audio(audio), settings=self.settings)
 
+    def prepare_vocals(self, digests: list[str], **artifacts: bool) -> Iterator[object]:
+        """A separation phase on Modal: one Roformer separates every listed track.
+
+        `artifacts` are prepare_audio's flags (vocals, reference, melody): exactly what
+        the stage that asked will read, so its own calls then hit the container's cache.
+        """
+        if not digests:
+            return iter(())
+        return _complete(
+            self.analysis.prepare_vocals.map(
+                digests,
+                kwargs={"artifacts": artifacts, "settings": self.settings},
+                order_outputs=True,
+                return_exceptions=True,
+            ),
+            len(digests),
+        )
+
     def voice(self, digests: list[str]) -> Iterator[object]:
         """(activations, vocal activity) for uploaded tracks."""
         return self._map(self.analysis.voice, digests)
@@ -395,7 +413,7 @@ class ModalSession:
         """BGE-M3 lyrics embeddings."""
         return self._map(self.analysis.embed_lyrics, texts)
 
-    def transcribe(
+    def transcribe_generate(
         self,
         audio: bytes,
         *,
@@ -405,10 +423,14 @@ class ModalSession:
         diagnostic_sink: Callable[[dict], None],
         check: Callable[[], None],
     ) -> dict[str, object]:
-        """Transcribe one track; relays remote progress and diagnostics as they happen."""
+        """MOSS generation for one track (MOSS stays loaded on Modal between tracks).
+
+        Relays remote progress and diagnostics as they happen; returns the draft that
+        SongTranscriber.finish completes.
+        """
         digest = self.upload_audio(audio)
-        result = None
-        for event in self.analysis.transcribe.remote_gen(
+        draft = None
+        for event in self.analysis.transcribe_generate.remote_gen(
             digest, language, vocal_activity, self.settings
         ):
             check()
@@ -416,11 +438,15 @@ class ModalSession:
                 progress(event["progress"])
             elif "diagnostic" in event:
                 diagnostic_sink(event["diagnostic"])
-            elif "result" in event:
-                result = event["result"]
-        if result is None:
+            elif "draft" in event:
+                draft = event["draft"]
+        if draft is None:
             raise RuntimeError("Modal transcription ended without a result")
-        return result
+        return draft
+
+    def transcribe_finish(self, drafts: list[dict]) -> Iterator[object]:
+        """The timing repair phase on Modal: drafts finished with one loaded aligner."""
+        return self._map(self.analysis.transcribe_finish, drafts)
 
     def motion_artwork(self, settings, recipe, covers: list[dict]) -> Iterator[dict]:
         """Render covers' loops on Modal; yields render_loops events with local files.

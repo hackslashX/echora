@@ -48,7 +48,7 @@ Modal cannot reach the database, Navidrome or lyrics providers, so:
 2. Before batching, the job prepares Modal: under a database lock, it compares the deployment with this worker and fixes whatever is stale (below).
 3. Each batch checks the deployment again (one small call, about 2 seconds) before uploading anything, so a batch never runs on stale code or models.
 4. The worker uploads each track's audio once per batch to the `echora-audio` Volume, named by its SHA-256.
-5. Each stage keeps its own order, planning, failure accounting and progress. Where it would run a model, it sends all of its tracks in one call; results stream back in order and are stored as they arrive. Transcription streams its progress and window diagnostics too.
+5. Each stage keeps its own order, planning, failure accounting and progress, and runs in the same model phases as locally ([batch-phases.md](batch-phases.md)). Where it would run a model, it sends all of its tracks in one call; results stream back in order and are stored as they arrive. Transcription streams its progress and window diagnostics too.
 6. When the batch ends, its audio is deleted from Modal.
 
 A track that fails on Modal counts as one failed track, like a local failure, and is retried by the existing batch retry policy. If Modal cannot be prepared, the batch fails with the reason, and the External processing page shows it.

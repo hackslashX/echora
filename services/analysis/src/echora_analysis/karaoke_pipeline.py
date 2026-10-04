@@ -25,6 +25,7 @@ from psycopg.types.json import Jsonb
 
 from .preprocessing import get_check, prepare_audio, vocal_audio_bytes, vocal_reference_waveform
 from .remote_compute import current as current_remote
+from .roformer import separation_phase
 from .roformer import SEPARATION_REVISION
 from .navidrome import NavidromeClient
 from .processing_plan import plan_karaoke, resolve_library_id
@@ -754,39 +755,64 @@ def _backfill_karaoke(
         remote = current_remote()
         prepared_sources = set()
         digests: dict[object, str] = {}
-        for index, (track_id, external_id, title, *_) in enumerate(tracks):
-            report(
-                {
-                    "phase": "preprocess",
-                    "message": f"Preparing karaoke audio for {title}",
-                    "completed": index,
-                    "total": len(tracks),
-                    "unit": "tracks",
-                }
+        # Separation phase: one Roformer for every selected song, before the aligner loads.
+        with separation_phase():
+            for index, (track_id, external_id, title, *_) in enumerate(tracks):
+                report(
+                    {
+                        "phase": "preprocess",
+                        "message": f"Preparing karaoke audio for {title}",
+                        "completed": index,
+                        "total": len(tracks),
+                        "unit": "tracks",
+                    }
+                )
+                get_check()()
+                try:
+                    source = client.audio_bytes(external_id)
+                    if remote is None:
+                        prepare_audio(source, vocals=True, reference=True, check=get_check())
+                    else:
+                        # Vocals are separated on Modal; only the source audio goes up.
+                        digests[track_id] = remote.upload_audio(source)
+                    prepared_sources.add(track_id)
+                    del source
+                except Exception:
+                    summary["failed"] += 1
+                    logger.exception("Karaoke preprocessing failed for %s", track_id)
+                report(
+                    {
+                        "phase": "preprocess",
+                        "message": f"Preparing karaoke audio for {title}",
+                        "completed": index + 1,
+                        "total": len(tracks),
+                        "unit": "tracks",
+                        "summary": summary,
+                    }
+                )
+        if remote is not None and prepared_sources:
+            # Like local preparation: separate the vocals of exactly the songs selected for
+            # alignment first, so the aligner then stays loaded on Modal instead of being
+            # stopped and reloaded around each song's separation.
+            separating = [row for row in tracks if row[0] in prepared_sources]
+            outcomes = remote.prepare_vocals(
+                [digests[row[0]] for row in separating], vocals=True, reference=True
             )
-            get_check()()
-            try:
-                source = client.audio_bytes(external_id)
-                if remote is None:
-                    prepare_audio(source, vocals=True, reference=True, check=get_check())
-                else:
-                    # Vocals are separated on Modal; only the source audio goes up.
-                    digests[track_id] = remote.upload_audio(source)
-                prepared_sources.add(track_id)
-                del source
-            except Exception:
-                summary["failed"] += 1
-                logger.exception("Karaoke preprocessing failed for %s", track_id)
-            report(
-                {
-                    "phase": "preprocess",
-                    "message": f"Preparing karaoke audio for {title}",
-                    "completed": index + 1,
-                    "total": len(tracks),
-                    "unit": "tracks",
-                    "summary": summary,
-                }
-            )
+            for index, (row, outcome) in enumerate(zip(separating, outcomes)):
+                if isinstance(outcome, BaseException):
+                    summary["failed"] += 1
+                    prepared_sources.discard(row[0])
+                    logger.error("Vocal separation on Modal failed for %s", row[0])
+                report(
+                    {
+                        "phase": "preprocess",
+                        "message": f"Separating vocals for {row[2]}",
+                        "completed": index + 1,
+                        "total": len(separating),
+                        "unit": "tracks",
+                        "summary": summary,
+                    }
+                )
         if prepared_sources:
             report(
                 {
