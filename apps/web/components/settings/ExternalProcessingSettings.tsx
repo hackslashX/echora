@@ -1,7 +1,7 @@
 "use client";
 
 import { toast } from "sonner";
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Notice } from "../ui/notice";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -39,6 +39,13 @@ type Configuration = {
 };
 
 const endpoint = "/analysis/settings/external-processing";
+// The fields an admin edits on this page; everything else is status from the server.
+const editable = ["enabled", "token_id", "gpu", "default_compute", "allow_users"] as const;
+type Editable = Pick<Configuration, (typeof editable)[number]>;
+const editsOf = (value: Configuration): Editable =>
+  Object.fromEntries(editable.map((key) => [key, value[key]])) as Editable;
+const sameEdits = (a: Configuration, b: Configuration) =>
+  editable.every((key) => a[key] === b[key]);
 const statusText: Record<Configuration["status"], string> = {
   unprepared: "Not prepared",
   preparing: "Preparing",
@@ -83,6 +90,9 @@ function formatTime(value: string | null) {
 
 export default function ExternalProcessingSettings() {
   const [value, setValue] = useState<Configuration | null>(null);
+  // The configuration as last saved; Prepare acts on this, not on unsaved edits.
+  const [saved, setSaved] = useState<Configuration | null>(null);
+  const savedRef = useRef<Configuration | null>(null);
   const [secret, setSecret] = useState("");
   const [clearSecret, setClearSecret] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -94,7 +104,16 @@ export default function ExternalProcessingSettings() {
   const refresh = useCallback(
     (signal?: AbortSignal) =>
       request<Configuration>("", { signal }).then((next) => {
-        if (!signal?.aborted) setValue(next);
+        if (signal?.aborted) return next;
+        // Refreshes (also every 2 s while preparing) update status but keep unsaved edits.
+        const previous = savedRef.current;
+        savedRef.current = next;
+        setSaved(next);
+        setValue((current) =>
+          current && previous && !sameEdits(current, previous)
+            ? { ...next, ...editsOf(current) }
+            : next,
+        );
         return next;
       }),
     [],
@@ -151,6 +170,8 @@ export default function ExternalProcessingSettings() {
         }),
       });
       setValue(next);
+      savedRef.current = next;
+      setSaved(next);
       setSecret("");
       setClearSecret(false);
       toast.success("External processing saved", {
@@ -187,6 +208,7 @@ export default function ExternalProcessingSettings() {
   }
 
   const setup = value?.setup;
+  const unsaved = Boolean(value && saved && (!sameEdits(value, saved) || secret || clearSecret));
   const progress =
     setup && setupActive && setup.total
       ? Math.round(((setup.completed ?? 0) / setup.total) * 100)
@@ -365,13 +387,17 @@ export default function ExternalProcessingSettings() {
               )}
               <SettingRow
                 label="Prepare Modal"
-                description="Deploy Echora's analysis and download its models (about 20 GB, plus 44 GB when motion artwork runs on Modal). The first Modal sync does this anyway; preparing ahead makes that sync start faster."
+                description={
+                  unsaved
+                    ? "Save your changes first: preparing uses the saved settings."
+                    : "Deploy Echora's analysis and download its models (about 20 GB, plus 44 GB when motion artwork runs on Modal). The first Modal sync does this anyway; preparing ahead makes that sync start faster."
+                }
               >
                 <Button
                   type="button"
                   variant="outline"
                   loading={starting}
-                  disabled={!value.enabled || !value.has_secret || setupActive}
+                  disabled={unsaved || !saved?.enabled || !saved?.has_secret || setupActive}
                   onClick={prepare}
                 >
                   {setupActive
