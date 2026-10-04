@@ -417,30 +417,34 @@ export default function FullscreenPlayer() {
         </Tabs>
       )}
       {hasLyrics && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={`Lyrics text size: ${lyricsTextSize}`}
-              title="Lyrics text size"
-            >
-              <ALargeSmall />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-36">
-            <DropdownMenuRadioGroup
-              value={lyricsTextSize}
-              onValueChange={(value) => chooseLyricsTextSize(value as LyricsTextSize)}
-            >
-              {(["small", "normal", "large"] as LyricsTextSize[]).map((size) => (
-                <DropdownMenuRadioItem key={size} value={size}>
-                  {`${size[0].toUpperCase()}${size.slice(1)}`}
-                </DropdownMenuRadioItem>
-              ))}
-            </DropdownMenuRadioGroup>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        // Framed like the Karaoke / Lines group beside it.
+        <div className={styles.menuFrame}>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className={styles.menuTrigger}
+                aria-label={`Lyrics text size: ${lyricsTextSize}`}
+                title="Lyrics text size"
+              >
+                <ALargeSmall />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-36">
+              <DropdownMenuRadioGroup
+                value={lyricsTextSize}
+                onValueChange={(value) => chooseLyricsTextSize(value as LyricsTextSize)}
+              >
+                {(["small", "normal", "large"] as LyricsTextSize[]).map((size) => (
+                  <DropdownMenuRadioItem key={size} value={size}>
+                    {`${size[0].toUpperCase()}${size.slice(1)}`}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       )}
       {translation && (
         <div className={styles.group}>
