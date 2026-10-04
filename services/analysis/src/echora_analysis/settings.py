@@ -43,7 +43,9 @@ class Settings(BaseSettings):
     moss_revision: str = Field("")
     hum_diagnostic_dir: str = Field("/models/torch/hum-diagnostics")
     fa_kara_model_id: str = Field("hcX02/echora-mms-300m-multilingual-lyrics-forced-aligner")
-    fa_kara_revision: str = Field("b46485a5d814dc26e3511cece3ccc98ebba2e9d0")
+    fa_kara_revision: str = Field("1f241323a4f5d961160ae7c7c88e5c7d27f32f59")
+    # Local checkpoint directory; overrides the model ID snapshot when set.
+    fa_kara_model_path: str | None = Field(None)
     fa_kara_audio_speed: float = Field(1.0, ge=0.5, le=1.5)
     fa_kara_aligner: str = Field("yohane")
     fa_kara_refine_all_lines: bool = Field(False)

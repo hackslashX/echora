@@ -171,6 +171,8 @@
 @layer base { a, button, [role=tab] { transition-property: color, background-color, border-color, opacity, box-shadow; transition-duration: 160ms; transition-timing-function: ease-out; } }
 @media (max-width: 1100px) { :root { --sidebar-width: 208px; --gutter: 24px; } }
 @media (max-width: 767px) { :root { --player-height: 72px; --gutter: 16px; } }
+/* The phone full-screen player has its own controls, so the player bar steps aside. */
+@media (max-width: 767px) { body[data-player-fullscreen] [data-player-bar] { display: none; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; } }
 
 /* Language-specific faces where one script serves several languages. */

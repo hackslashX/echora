@@ -2,6 +2,8 @@
 
 import ast
 from contextlib import nullcontext
+import functools
+import hashlib
 from echora_analysis.settings import Settings
 from pathlib import Path
 from types import SimpleNamespace
@@ -86,6 +88,8 @@ class LibraryScopingTests(unittest.TestCase):
             torch=SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
             prepare_audio=MagicMock(),
             get_check=lambda: lambda: None,
+            functools=functools,
+            hashlib=hashlib,
             current_remote=lambda: None,
             separation_phase=nullcontext,
             SongTranscriber=MagicMock(),

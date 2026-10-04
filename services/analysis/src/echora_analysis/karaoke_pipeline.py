@@ -3,6 +3,8 @@ from __future__ import annotations
 from .settings import get_settings
 
 from collections.abc import Callable
+import functools
+import hashlib
 import json
 import logging
 import os
@@ -33,13 +35,41 @@ logger = logging.getLogger(__name__)
 FA_KARA_REVISION = "168ca5f01cecaa1290e31c0ce8dc44af8c7451bb"
 KARAOKE_PIPELINE_REVISION = "v3-matched-reference-grid"
 DEFAULT_MODEL_ID = "hcX02/echora-mms-300m-multilingual-lyrics-forced-aligner"
-DEFAULT_MODEL_REVISION = "b46485a5d814dc26e3511cece3ccc98ebba2e9d0"
+DEFAULT_MODEL_REVISION = "1f241323a4f5d961160ae7c7c88e5c7d27f32f59"
 _DIALOGUE = re.compile(r"^Dialogue: [^,]*,([^,]+),([^,]+),(?:[^,]*,){6}(.*)$")
 _KARAOKE_TAG = re.compile(r"\{\\k(\d+)\}")
 _ASS_TAG = re.compile(r"\{[^}]*\}")
 _KARAOKE_LOCK = threading.Lock()
 _FA_KARA_WORKER: subprocess.Popen[str] | None = None
 _FA_KARA_WORKER_KEY: tuple[str, str] | None = None
+
+
+@functools.lru_cache(maxsize=4)
+def _checkpoint_digest(weights: str, size: int, modified_ns: int) -> str:
+    """Content digest of a local checkpoint's weights; cached per file version."""
+    digest = hashlib.sha256()
+    with open(weights, "rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()[:16]
+
+
+def current_model_revision() -> str:
+    """The aligner identity that planning, alignment and storage share.
+
+    The pinned revision, or for FA_KARA_MODEL_PATH the checkpoint's own content,
+    so replacing a local checkpoint makes existing alignments stale even when
+    FA_KARA_REVISION is unchanged.
+    """
+    path = get_settings().fa_kara_model_path
+    if not path:
+        return get_settings().fa_kara_revision
+    candidates = [Path(path) / name for name in ("model.safetensors", "pytorch_model.bin")]
+    weights = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if weights is None:
+        raise RuntimeError(f"FA-Kara checkpoint has no weights file: {path}")
+    stat = weights.stat()
+    return f"local-{_checkpoint_digest(str(weights), stat.st_size, stat.st_mtime_ns)}"
 
 
 def _stored_model_revision(model_revision: str) -> str:
@@ -539,14 +569,18 @@ def _run_fa_kara(
 ) -> dict[str, object]:
     vendor = Path(__file__).resolve().parents[2] / "vendor" / "fa_kara"
     model_id = get_settings().fa_kara_model_id
-    model_revision = get_settings().fa_kara_revision
+    model_revision = current_model_revision()
     snapshot = (
         Path(os.environ.get("HF_HOME", "/models/huggingface"))
         / "hub"
         / f"models--{model_id.replace('/', '--')}"
         / "snapshots"
-        / model_revision
+        / get_settings().fa_kara_revision
     )
+    if get_settings().fa_kara_model_path:
+        # A local checkpoint; current_model_revision identifies it by its weights.
+        snapshot = Path(get_settings().fa_kara_model_path)
+        model_id = str(snapshot)
     if not snapshot.is_dir():
         raise RuntimeError(f"FA-Kara model snapshot is missing: {model_id}@{model_revision}")
     with tempfile.TemporaryDirectory(prefix="echora-fa-kara-") as directory:
@@ -687,7 +721,7 @@ def _backfill_karaoke(
         NavidromeClient(url, username, password) as client,
     ):
         library_id = resolve_library_id(connection, url)
-        model_revision = _stored_model_revision(get_settings().fa_kara_revision)
+        model_revision = _stored_model_revision(current_model_revision())
         planned = plan_karaoke(
             connection,
             KARAOKE_PIPELINE_REVISION,
@@ -836,6 +870,7 @@ def _backfill_karaoke(
                         "outliers": "disabled",
                     },
                     "source_line_start_stabilization": bound_to_source,
+                    "korean_labels": "pronunciation_v1",
                     "pathological_lead_in_guard": {
                         "minimum_first_syllable_ms": 1200,
                         "minimum_source_delay_ms": 1000,
