@@ -11,10 +11,7 @@ export default function AppFooter({
   aside?: ReactNode;
 }) {
   return (
-    <footer
-      data-player-bar
-      className="relative z-30 flex h-[var(--player-height)] shrink-0 items-center gap-4 border-t border-border bg-nav px-[var(--gutter)]"
-    >
+    <footer className="relative z-30 flex h-[var(--player-height)] shrink-0 items-center gap-4 border-t border-border bg-nav px-[var(--gutter)]">
       <div className="min-w-0 flex-1">{children}</div>
       <div className="shrink-0 text-xs tabular-nums text-muted-foreground empty:hidden">
         {marker}
