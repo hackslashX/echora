@@ -1,8 +1,6 @@
 "use client";
 
 import {
-  AArrowDown,
-  AArrowUp,
   ChevronDown,
   Clapperboard,
   Image as ImageIcon,
@@ -14,7 +12,6 @@ import {
   Play,
   SkipBack,
   SkipForward,
-  Type,
 } from "lucide-react";
 import { sizedPlayerCoverArtUrl } from "../media/coverArt";
 import LoadingImage from "../media/LoadingImage";
@@ -418,7 +415,6 @@ export default function FullscreenPlayer() {
         >
           <TabsList aria-label="Lyrics text size" className={styles.segmented}>
             {(["small", "normal", "large"] as LyricsTextSize[]).map((size) => {
-              const Icon = size === "small" ? AArrowDown : size === "large" ? AArrowUp : Type;
               return (
                 <TabsTrigger
                   value={size}
@@ -426,7 +422,10 @@ export default function FullscreenPlayer() {
                   aria-label={`${size} lyrics text`}
                   title={`${size[0].toUpperCase()}${size.slice(1)} lyrics`}
                 >
-                  <Icon />
+                  {/* The letter at three sizes reads as text size at a glance. */}
+                  <span className={styles.sizeGlyph} data-size={size} aria-hidden="true">
+                    A
+                  </span>
                 </TabsTrigger>
               );
             })}
