@@ -105,7 +105,7 @@ def test_prompts_are_encoded_ahead_so_rendering_skips_the_text_encoder():
             build_graph(Recipe(), "cover.jpg", 7, "prefix", **arguments)
 
 
-def test_group_anchor_pins_the_turnaround_frame_partially():
+def test_turnaround_anchor_setting_pins_the_last_frame_partially():
     graph = build_graph(
         Recipe(mid_anchor_strength=0.5, frames=97), "cover.jpg", 1, "prefix", "text"
     )
@@ -756,7 +756,9 @@ def test_external_writer_rewrites_zooms_and_rejects_bad_answers():
         write_prompt(ExternalAISettings(), None, b"c", "image/jpeg")
 
 
-def test_external_prompts_skip_the_prompt_comfyui_and_pin_group_shots(database, batch, monkeypatch):
+def test_external_prompts_skip_the_prompt_comfyui_and_never_pin_on_their_own(
+    database, batch, monkeypatch
+):
     _enable(database, prompt_mode="external")
     monkeypatch.setattr(
         "echora_analysis.translation_storage.load_settings", lambda: (_external_ai(), None)
@@ -778,8 +780,8 @@ def test_external_prompts_skip_the_prompt_comfyui_and_pin_group_shots(database, 
     anchors = sorted(
         graph.get("12_end_frame", {}).get("inputs", {}).get("strength", 0) for graph in videos
     )
-    # The three songs sharing the four-person cover are pinned mid-loop; album C's song is not.
-    assert anchors == [0, 0.5, 0.5, 0.5]
+    # Even the four-person cover gets no turnaround pin: only the recipe setting adds one.
+    assert anchors == [0, 0, 0, 0]
 
 
 class FakeModalSession:

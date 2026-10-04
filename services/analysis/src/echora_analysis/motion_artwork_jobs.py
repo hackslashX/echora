@@ -27,8 +27,6 @@ from .comfyui import ComfyUI, ComfyUIError, ComfyUIUnavailable, launch, output_i
 from .motion_artwork import MotionArtworkSettings, load_settings
 from .motion_artwork_render import (
     FPS,
-    GROUP_ANCHOR_STRENGTH,
-    GROUP_SIZE,
     NEGATIVE,
     Recipe,
     build_encode_graph,
@@ -215,7 +213,6 @@ def _render(comfy: ComfyUI, recipe: Recipe, cover: dict, work: Path, wait: dict)
         f"{sha[:16]}-{recipe.hash()[:8]}",
         prompt=None if cover.get("encodings") else cover["prompt"],
         encodings=cover.get("encodings"),
-        mid_anchor=cover.get("mid_anchor"),
     )
     videos = _video_items(comfy.wait(comfy.queue(graph), **wait))
     if not videos:
@@ -496,7 +493,7 @@ def prepare_prompts(
     )
     return {
         (cover["external_id"], cover["cover_sha256"], recipe.hash()): {
-            key: cover[key] for key in ("prompt", "mid_anchor") if key in cover
+            key: cover[key] for key in ("prompt",) if key in cover
         }
         for cover in covers
         if cover.get("prompt") and not cover.get("failed")
@@ -684,7 +681,7 @@ def _write_external_prompts(
             }
         )
         try:
-            cover["prompt"], people = write_prompt(
+            cover["prompt"], _ = write_prompt(
                 external_ai,
                 key,
                 cover["data"],
@@ -698,9 +695,6 @@ def _write_external_prompts(
         except WriterError as error:
             failed(cover, error)
             continue
-        if people >= GROUP_SIZE and recipe.mid_anchor_strength < GROUP_ANCHOR_STRENGTH:
-            # Several faces drift and warp when they move; pin the cover mid-loop for group shots.
-            cover["mid_anchor"] = GROUP_ANCHOR_STRENGTH
 
 
 def _render_covers(

@@ -4,7 +4,7 @@ Echora can render a short, song-guided looping video for each track and play it 
 
 Rendering uses [LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5) through ComfyUI. The cover is the first frame and the model animates freely from there for 5 seconds. The saved loop plays that clip forward and then straight back to the cover, so each loop lasts 10 seconds and wraps seamlessly. Prompts therefore describe one forward movement that also looks natural reversed. The prompt describing each loop comes from one of three sources:
 
-- **External AI** (recommended): the model configured under Settings → External AI receives the cover, song title, artist, album and full available lyrics, then writes a lively description. It must accept images. Lyrics guide the theme but are treated as data, not instructions. When it reports three or more visible people, the cover is also partially pinned at the turnaround frame so faces stay stable.
+- **External AI** (recommended): the model configured under Settings → External AI receives the cover, song title, artist, album and full available lyrics, then writes a lively description. It must accept images. Lyrics guide the theme but are treated as data, not instructions.
 - **Built-in Gemma**: Gemma 4 E2B runs locally inside ComfyUI. It needs no provider, but its prompts are much plainer.
 - **Same prompt for every track**, with `{title}`, `{artist}`, `{album}` and `{lyrics}` placeholders.
 
@@ -71,7 +71,7 @@ A track that fails to render is recorded and retried on the next run.
 | Resolution | 1536 × 1536 | 512, 768, 1024 or 1536. Rendered natively, not upscaled. |
 | Loop length | 5 seconds | Or 4 seconds, at 24 fps. |
 | Seed | 42 | Blank picks a new seed per album. |
-| Hold to the cover at the turnaround | Off | A partial cover keyframe on the last rendered frame, where playback reverses. Keeps faces in group shots steady, with less movement. |
+| Hold to the cover at the turnaround | Off | A partial cover keyframe on the last rendered frame, where playback reverses. Keeps the loop closer to the cover, with less movement. |
 | Prompt source | Built-in Gemma | External AI, built-in Gemma, or one fixed prompt for every cover. |
 | Instructions | Built-in | What Gemma is asked to aim for. The default asks for a still camera or one gentle pan, slide or rise that returns (never a zoom), motion across the whole scene, and hidden faces to stay hidden. Illustrations, logos, lettering and borders may animate while remaining legible and returning to the original cover. A prompt that still describes a zoom is written again with the next seed, up to three times. |
 

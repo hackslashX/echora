@@ -45,9 +45,6 @@ FPS = 24
 LOOP = "ping-pong"
 # Bump when the External AI writer's system prompt changes, so covers get new loops.
 WRITER_REVISION = "song-guided-4-static"
-# Cover pin strength used automatically for covers with three or more visible people.
-GROUP_ANCHOR_STRENGTH = 0.5
-GROUP_SIZE = 3
 DISTILLED_SIGMAS = "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
 # cfg=1 ignores the negative branch, but the conditioning nodes still require one.
 NEGATIVE = "static, blurry, low quality, jpeg artifacts, deformed, distorted face, warped text"
@@ -218,15 +215,11 @@ def build_graph(
     prefix: str,
     prompt: str | None = None,
     encodings: tuple[str, str] | None = None,
-    mid_anchor: float | None = None,
 ) -> dict:
-    """The video graph for one cover, from prompt text or from saved (positive, negative) encodings.
-
-    `mid_anchor` overrides the recipe's mid-loop cover pin for this cover (used for group shots).
-    """
+    """The video graph for one cover, from prompt text or from saved (positive, negative) encodings."""
     if (prompt is None) == (encodings is None):
         raise ValueError("Give either a prompt or saved encodings")
-    anchor = recipe.mid_anchor_strength if mid_anchor is None else mid_anchor
+    anchor = recipe.mid_anchor_strength
     graph: dict[str, dict] = {
         "1_cover": {"class_type": "LoadImage", "inputs": {"image": image_name}},
         "2_model": {
@@ -290,8 +283,8 @@ def build_graph(
         }
     positive, negative, latent = ["7_conditioning", 0], ["7_conditioning", 1], ["10_first_frame", 0]
     if anchor > 0:
-        # A partial cover keyframe on the last frame, where the ping-pong turns around, keeps crowded
-        # covers (group shots) from drifting far from the cover.
+        # The recipe's optional partial cover keyframe on the last frame, where the ping-pong turns
+        # around, keeps the loop from drifting far from the cover.
         graph["12_end_frame"] = {
             "class_type": "LTXVAddGuide",
             "inputs": {

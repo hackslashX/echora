@@ -48,7 +48,6 @@ COVER_FIELDS = (
     "lyrics",
     "seed",
     "prompt",
-    "mid_anchor",
     "failed",
 )
 
