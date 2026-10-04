@@ -1,6 +1,7 @@
 """Transcription phases: timing repair runs after generation, on the audio the draft kept."""
 
 import io
+from types import SimpleNamespace
 
 import numpy as np
 import soundfile as sf
@@ -75,3 +76,31 @@ def test_drafts_without_compressed_windows_need_no_aligner():
     draft["repairs"] = {}
     assert not needs_repair(draft)
     assert SongTranscriber("model", "a" * 40).finish(draft)["text"] == "line 0"
+
+
+def test_a_stem_cache_miss_moves_moss_off_the_gpu_while_separating(monkeypatch):
+    import torch
+
+    from echora_analysis import song_transcription, transcription_budget
+
+    moves = []
+    model = SimpleNamespace(to=lambda device: moves.append(device))
+    processor = SimpleNamespace(
+        feature_extractor=SimpleNamespace(sampling_rate=100), apply_chat_template=lambda *a, **k: ""
+    )
+
+    def vocal_waveform(audio, sample_rate, check, before_separate=None):
+        # The stem is not cached, so separation is about to run.
+        before_separate()
+        moves.append("separated")
+        return np.zeros(sample_rate * 10, dtype=np.float32)
+
+    monkeypatch.setattr(song_transcription, "vocal_waveform", vocal_waveform)
+    monkeypatch.setattr(transcription_budget, "generate_song", lambda *a, **k: ([], [], {}))
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    transcriber = SongTranscriber("model", "a" * 40)
+    transcriber._processor, transcriber._model = processor, model
+    transcriber._device, transcriber._dtype = "cuda", torch.bfloat16
+    transcriber.generate(b"audio")
+    # MOSS leaves the GPU before Roformer separates and returns afterwards.
+    assert moves == ["cpu", "separated", "cuda"]

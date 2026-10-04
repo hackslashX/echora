@@ -874,3 +874,30 @@ def test_external_prompts_are_written_before_the_batch_and_used_by_render(
         }
     # Songs that now have a loop need no prompt in a later batch.
     assert prepare() == {} and written == []
+
+
+def test_a_prompt_prepared_for_other_settings_is_written_again(database, batch, monkeypatch):
+    _enable(database, prompt_mode="external")
+    monkeypatch.setattr(
+        "echora_analysis.translation_storage.load_settings", lambda: (_external_ai(), None)
+    )
+    written = []
+
+    def write_prompt(settings, key, data, content_type, instructions, **song):
+        written.append(song["title"])
+        return CAPTION, 1
+
+    monkeypatch.setattr("echora_analysis.motion_artwork_writer.write_prompt", write_prompt)
+    prompts = motion_artwork_jobs.prepare_prompts(
+        ("http://navidrome", "u", "p"),
+        batch["external_ids"],
+        progress=lambda _: None,
+        check=lambda: None,
+    )
+    assert len(written) == 4
+    written.clear()
+    # The recipe changes between preparing and rendering.
+    with database() as db:
+        db.execute("UPDATE motion_artwork_settings SET resolution=768")
+    assert batch["run"](prompts=prompts)["rendered"] == 4
+    assert len(written) == 4

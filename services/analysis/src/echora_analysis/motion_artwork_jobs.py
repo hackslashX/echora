@@ -364,7 +364,10 @@ def render_batch(
             if ready and recipe.prompt_mode == "external":
                 # Prompts written at the start of the batch, before any GPU stage.
                 for cover in ready:
-                    prepared = (prompts or {}).get((cover["external_id"], cover["cover_sha256"]))
+                    # Keyed by recipe too: a prompt written for other settings is not reused.
+                    prepared = (prompts or {}).get(
+                        (cover["external_id"], cover["cover_sha256"], recipe.hash())
+                    )
                     if prepared:
                         cover.update(prepared)
                 unwritten = [cover for cover in ready if not cover.get("prompt")]
@@ -412,7 +415,7 @@ def prepare_prompts(
     Navidrome. Songs Echora knows and that already have a loop for the current
     recipe are skipped. A brand-new song is prompted with the lyrics Navidrome has
     now; one that is transcribed later in the batch is prompted without lyrics.
-    Returns prompts keyed by (external ID, cover SHA-256) for render_batch, or None
+    Returns prompts keyed by (external ID, cover SHA-256, recipe hash) for render_batch, or None
     when motion artwork does not run here or writes no External AI prompts.
     """
     from .navidrome import NavidromeClient
@@ -492,7 +495,7 @@ def prepare_prompts(
         recipe, covers, progress, check, lambda cover, error: cover.update(failed=True)
     )
     return {
-        (cover["external_id"], cover["cover_sha256"]): {
+        (cover["external_id"], cover["cover_sha256"], recipe.hash()): {
             key: cover[key] for key in ("prompt", "mid_anchor") if key in cover
         }
         for cover in covers

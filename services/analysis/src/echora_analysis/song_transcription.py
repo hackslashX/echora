@@ -174,7 +174,20 @@ class SongTranscriber:
         processor, model, device, dtype = self._processor, self._model, self._device, self._dtype
         check()
         sr = int(processor.feature_extractor.sampling_rate)
-        vocals = vocal_waveform(audio_bytes, sample_rate=sr, check=check)
+        # The separation phase normally cached these vocals. On a miss (a pruned or
+        # uncacheable stem), MOSS leaves the GPU while Roformer separates, so two
+        # large models never share it.
+        offloaded = []
+
+        def make_room():
+            if device == "cuda" and not offloaded:
+                model.to("cpu")
+                torch.cuda.empty_cache()
+                offloaded.append(True)
+
+        vocals = vocal_waveform(audio_bytes, sample_rate=sr, check=check, before_separate=make_room)
+        if offloaded:
+            model.to(device)
         duration = len(vocals) / sr
         ranges = list(windows(duration))
         diagnostics = []
