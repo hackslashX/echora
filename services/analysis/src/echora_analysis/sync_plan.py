@@ -107,13 +107,14 @@ def select_sync_tracks(
         KARAOKE_PIPELINE_REVISION,
         DEFAULT_MODEL_REVISION,
         _stored_model_revision,
+        current_model_revision,
     )
 
     karaoke = plan_karaoke(
         connection,
         KARAOKE_PIPELINE_REVISION,
         ids,
-        _stored_model_revision(get_settings().fa_kara_revision),
+        _stored_model_revision(current_model_revision()),
         library_id=library_id,
     )
     selected.update(karaoke.karaoke_external_ids)

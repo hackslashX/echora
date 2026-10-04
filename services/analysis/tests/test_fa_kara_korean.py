@@ -53,3 +53,16 @@ def test_korean_mixed_english_keeps_both_display_scripts():
 
     assert "".join(item["orig"] for item in spoken) == "너를love해"
     assert all(item["pron"].isascii() for item in spoken)
+
+
+def test_inference_labels_hangul_by_pronunciation_like_training():
+    import main as vendor
+
+    records, _ = vendor.normalize_source_lines(["같이 먹어요"], "auto", 0, 1)
+    assert [item["pron"] for item in records if item.get("pron")] == [
+        "ga",
+        "chi",
+        "meo",
+        "geo",
+        "yo",
+    ]
