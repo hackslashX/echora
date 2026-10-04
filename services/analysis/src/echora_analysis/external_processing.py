@@ -244,7 +244,9 @@ class RedactedRoute(APIRoute):
         return redacted
 
 
-def _public(row: dict[str, object], setup: dict[str, object] | None) -> dict[str, object]:
+def _public(
+    row: dict[str, object], setup: dict[str, object] | None, has_hf_token: bool
+) -> dict[str, object]:
     checked = row.get("checked_at")
     return {
         "enabled": row["enabled"],
@@ -252,7 +254,7 @@ def _public(row: dict[str, object], setup: dict[str, object] | None) -> dict[str
         "token_id": row["token_id"],
         "has_secret": bool(row["token_secret_encrypted"]),
         "gpu": row["gpu"],
-        "has_hf_token": _has_hf_token(),
+        "has_hf_token": has_hf_token,
         "default_compute": row["default_compute"],
         "allow_users": row["allow_users"],
         "workspace": row["workspace"],
@@ -265,10 +267,12 @@ def _public(row: dict[str, object], setup: dict[str, object] | None) -> dict[str
     }
 
 
-def _has_hf_token() -> bool:
-    from .huggingface_token import token_or_none
-
-    return token_or_none() is not None
+def _has_hf_token(db) -> bool:
+    """Whether a Hugging Face token is stored; presence only, the token is not decrypted."""
+    row = db.execute(
+        "SELECT hf_token_encrypted IS NOT NULL AS stored FROM analysis_settings WHERE singleton"
+    ).fetchone()
+    return bool(row and row["stored"])
 
 
 def _setup_job(db) -> dict[str, object] | None:
@@ -301,7 +305,7 @@ def router(require_user):
     @api.get("")
     def read_settings(user=Depends(admin)):
         with _connect() as db:
-            return _public(load(db), _setup_job(db))
+            return _public(load(db), _setup_job(db), _has_hf_token(db))
 
     @api.put("")
     def write_settings(body: SettingsUpdate, user=Depends(admin)):
@@ -354,7 +358,7 @@ def router(require_user):
                 )
             _record(db, **values)
             db.commit()
-            return _public(load(db), _setup_job(db))
+            return _public(load(db), _setup_job(db), _has_hf_token(db))
 
     @api.post("/prepare", status_code=202)
     def start_setup(user=Depends(admin)):

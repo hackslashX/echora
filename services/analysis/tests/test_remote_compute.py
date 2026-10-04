@@ -790,3 +790,17 @@ def test_deploys_replace_old_containers(monkeypatch):
         "-m",
         "echora_analysis.modal_app",
     ]
+
+
+def test_settings_report_a_stored_hugging_face_token_without_decrypting_it(monkeypatch):
+    from echora_analysis import huggingface_token
+
+    monkeypatch.setattr(
+        huggingface_token, "token_or_none", Mock(side_effect=AssertionError("decrypted"))
+    )
+    db = MagicMock()
+    db.execute.return_value.fetchone.return_value = {"stored": True}
+    assert external_processing._has_hf_token(db) is True
+    assert "IS NOT NULL" in db.execute.call_args.args[0]
+    db.execute.return_value.fetchone.return_value = None
+    assert external_processing._has_hf_token(db) is False
