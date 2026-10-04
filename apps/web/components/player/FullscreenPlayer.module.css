@@ -25,10 +25,11 @@
 .segmented [data-slot=tabs-trigger] { color: rgb(255 255 255 / .65); padding-inline: 10px; }
 .segmented [data-slot=tabs-trigger]:hover { color: #fff; }
 .segmented [data-slot=tabs-trigger][data-state=active] { background: rgb(255 255 255 / .16); color: #fff; }
-/* The text size menu sits in the same frame as the segmented groups beside it. */
-.menuFrame { display: inline-flex; align-items: center; height: 36px; padding: 2px; border: 1px solid rgb(255 255 255 / .14); background: rgb(0 0 0 / .35); }
-.player .menuTrigger[data-slot=button] { height: 30px; width: 34px; color: rgb(255 255 255 / .65); }
-.player .menuTrigger[data-slot=button]:hover, .player .menuTrigger[data-slot=button][data-state=open] { background: rgb(255 255 255 / .16); color: #fff; }
+/* The text size menu is one segment in the same frame; it lights up like an active one while open. */
+.menuTrigger { display: inline-flex; align-items: center; justify-content: center; height: 100%; padding: 0 10px; border: 0; background: transparent; outline: none; cursor: pointer; }
+.menuTrigger svg { width: 16px; height: 16px; }
+.menuTrigger:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 60%, transparent); }
+.segmented [data-slot=tabs-trigger][data-state=open] { background: rgb(255 255 255 / .16); color: #fff; }
 .translationSelect[data-slot=select-trigger] { background: rgb(0 0 0 / .35); border-color: rgb(255 255 255 / .14); }
 
 /* Stage: track on the left, a framed Lyrics / Up next panel on the right. */

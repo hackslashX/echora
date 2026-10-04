@@ -42,7 +42,7 @@ import {
   type PlaybackPreferences,
 } from "./playbackPreferences";
 import { Button } from "../ui/button";
-import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
+import { Tabs, TabsList, TabsTrigger, tabsListVariants } from "../ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
 import {
@@ -417,19 +417,23 @@ export default function FullscreenPlayer() {
         </Tabs>
       )}
       {hasLyrics && (
-        // Framed like the Karaoke / Lines group beside it.
-        <div className={styles.menuFrame}>
+        // Built from the same frame and trigger styles as the Karaoke / Lines group beside it.
+        <div
+          data-slot="tabs-list"
+          data-variant="segmented"
+          className={`${tabsListVariants({ variant: "segmented" })} ${styles.segmented}`}
+        >
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
+              <button
+                type="button"
+                data-slot="tabs-trigger"
                 className={styles.menuTrigger}
                 aria-label={`Lyrics text size: ${lyricsTextSize}`}
                 title="Lyrics text size"
               >
                 <ALargeSmall />
-              </Button>
+              </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-36">
               <DropdownMenuRadioGroup
