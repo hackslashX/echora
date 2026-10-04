@@ -256,8 +256,10 @@ def test_translation_maps_source_ids_after_karaoke_removes_blank_stanzas(format)
     row["karaoke_lines"].append({"text": "Hello & world", "start_ms": 9000, "end_ms": 10000})
     translated["source_checksum"] = lyrics.source_checksum(lyrics.original_lines(row))
     translated["lines"] = [
-        {"id": 0, "text": "Hola & mundo"}, {"id": 1, "text": ""},
-        {"id": 2, "text": "Hola"}, {"id": 3, "text": ""},
+        {"id": 0, "text": "Hola & mundo"},
+        {"id": 1, "text": ""},
+        {"id": 2, "text": "Hola"},
+        {"id": 3, "text": ""},
         {"id": 4, "text": "Hola de nuevo"},
     ]
     result = lyrics.lyrics_response(row, [translated], auth.RankingProfile(lyrics_format=format))
@@ -265,14 +267,18 @@ def test_translation_maps_source_ids_after_karaoke_removes_blank_stanzas(format)
         root = ET.fromstring(result["lyrics"][0]["text"])
         track = root.find(f".//{{{lyrics.TTM}}}translation")
         assert [(line.attrib["for"], line.text) for line in track] == [
-            ("line-0", "Hola & mundo"), ("line-1", "Hola"), ("line-2", "Hola de nuevo")]
+            ("line-0", "Hola & mundo"),
+            ("line-1", "Hola"),
+            ("line-2", "Hola de nuevo"),
+        ]
         paragraphs = root.findall(f".//{{{lyrics.TT}}}p")
         assert paragraphs[1].attrib["begin"] == "00:00:05.000"
         assert paragraphs[2].attrib["begin"] == "00:00:09.000"
         assert len(paragraphs[0].findall(f"{{{lyrics.TT}}}span")) == 2
     else:
         assert result["lyrics"][1]["text"] == (
-            "[00:01.000]Hola & mundo\n[00:05.000]Hola\n[00:09.000]Hola de nuevo")
+            "[00:01.000]Hola & mundo\n[00:05.000]Hola\n[00:09.000]Hola de nuevo"
+        )
 
 
 def test_blank_stanza_mapping_still_rejects_stale_translation():
@@ -296,8 +302,10 @@ def test_identical_translation_line_is_omitted_without_shifting_remaining_timing
         assert track[0].attrib["for"] == "line-1"
         assert track[0].text == "Hola"
         assert len(root.findall(f".//{{{lyrics.TT}}}p")) == 2
-        fixture = (Path(__file__).resolve().parents[3]
-                   / "plugins/navidrome/contract-tests/testdata/lyrics-filtered.ttml")
+        fixture = (
+            Path(__file__).resolve().parents[3]
+            / "plugins/navidrome/contract-tests/testdata/lyrics-filtered.ttml"
+        )
         assert result["lyrics"][0]["text"] == fixture.read_text(encoding="utf-8")
     else:
         assert result["lyrics"][1]["text"] == "[00:05.000]Hola"
@@ -307,7 +315,9 @@ def test_identical_translation_line_is_omitted_without_shifting_remaining_timing
 @pytest.mark.parametrize("format", ["ttml", "lrc"])
 def test_entire_identical_translation_track_is_omitted(format):
     row, translated = lyric_example()
-    translated["lines"] = [{"id": i, "text": text} for i, text in enumerate(lyrics.original_lines(row))]
+    translated["lines"] = [
+        {"id": i, "text": text} for i, text in enumerate(lyrics.original_lines(row))
+    ]
     result = lyrics.lyrics_response(row, [translated], auth.RankingProfile(lyrics_format=format))
     assert len(result["lyrics"]) == 1
     if format == "ttml":
@@ -783,6 +793,7 @@ def test_import_archives_provider_before_preserving_manual_lyrics_without_model_
         "finish_attempt": Mock(),
         "release_model": Mock(),
         "_store_embeddings": embedding_write,
+        "current_remote": lambda: None,
     }
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), globals_)
     result = globals_["backfill_lyrics"]("http://navidrome", "user", "password")

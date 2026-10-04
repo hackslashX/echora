@@ -24,6 +24,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from .preprocessing import get_check, prepare_audio, vocal_audio_bytes, vocal_reference_waveform
+from .remote_compute import current as current_remote
 from .roformer import SEPARATION_REVISION
 from .navidrome import NavidromeClient
 from .processing_plan import plan_karaoke, resolve_library_id
@@ -750,7 +751,9 @@ def _backfill_karaoke(
             tracks = cursor.fetchall()
         summary["total"] = len(tracks)
         _stop_fa_kara_worker()
+        remote = current_remote()
         prepared_sources = set()
+        digests: dict[object, str] = {}
         for index, (track_id, external_id, title, *_) in enumerate(tracks):
             report(
                 {
@@ -764,7 +767,11 @@ def _backfill_karaoke(
             get_check()()
             try:
                 source = client.audio_bytes(external_id)
-                prepare_audio(source, vocals=True, reference=True, check=get_check())
+                if remote is None:
+                    prepare_audio(source, vocals=True, reference=True, check=get_check())
+                else:
+                    # Vocals are separated on Modal; only the source audio goes up.
+                    digests[track_id] = remote.upload_audio(source)
                 prepared_sources.add(track_id)
                 del source
             except Exception:
@@ -790,15 +797,32 @@ def _backfill_karaoke(
                     "unit": "models",
                 }
             )
+        aligned = None
+        if remote is not None:
+            # Every prepared track aligns in one Modal call; results stream back in order.
+            batch = [row for row in tracks if row[0] in prepared_sources]
+            aligned = iter(
+                remote.karaoke(
+                    [digests[row[0]] for row in batch],
+                    [row[3] for row in batch],
+                    [row[4] for row in batch],
+                    [row[5] or [] for row in batch],
+                )
+            )
         for index, (track_id, external_id, title, text, language, source_lines) in enumerate(
             tracks
         ):
             if track_id not in prepared_sources:
                 continue
             try:
-                result = _run_fa_kara(
-                    client.audio_bytes(external_id), text, language, source_lines or []
-                )
+                if aligned is None:
+                    result = _run_fa_kara(
+                        client.audio_bytes(external_id), text, language, source_lines or []
+                    )
+                else:
+                    result = next(aligned)
+                    if isinstance(result, BaseException):
+                        raise result
                 result["lines"] = guard_pathological_lead_ins(
                     result["lines"], source_lines or [], result["diagnostics"]
                 )
@@ -812,7 +836,6 @@ def _backfill_karaoke(
                     "separator_revision": result["diagnostics"]["separator_revision"],
                     "model": result["model"],
                     "pipeline_revision": KARAOKE_PIPELINE_REVISION,
-                    "korean_labels": "pronunciation_v1",
                     "inference_passes": result["diagnostics"].get("inference_passes"),
                     "source_time_prior": {
                         "kind": "robust_affine_calibration_then_huber",
@@ -821,6 +844,7 @@ def _backfill_karaoke(
                         "outliers": "disabled",
                     },
                     "source_line_start_stabilization": bound_to_source,
+                    "korean_labels": "pronunciation_v1",
                     "pathological_lead_in_guard": {
                         "minimum_first_syllable_ms": 1200,
                         "minimum_source_delay_ms": 1000,

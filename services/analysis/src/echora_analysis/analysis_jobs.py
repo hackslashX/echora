@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from .settings import get_settings, require_database_url
 
+from contextlib import ExitStack
 from dataclasses import asdict
 import uuid
 
@@ -19,6 +20,7 @@ import psycopg
 
 from .navidrome import NavidromeClient, batch_audio_cache
 from .preprocessing import preprocessing_session
+from . import remote_compute
 
 OPERATIONS = frozenset(
     {
@@ -172,6 +174,10 @@ def execute(job: dict, context) -> dict | None:
         from .recording_search import execute as search_recording
 
         return search_recording(job, context)
+    if job["kind"] == "modal_setup":
+        from .external_processing import execute_setup
+
+        return execute_setup(job, context)
     kind = job["kind"]
     payload = dict(job.get("payload") or {})
     if "connection_id" not in payload and job.get("connection_id"):
@@ -193,7 +199,23 @@ def execute(job: dict, context) -> dict | None:
         credentials = main._load_connection(payload["connection_id"], user_id)
         if credentials is None:
             raise ValueError("Connection unavailable")
-    with batch_audio_cache(context.check), preprocessing_session(context.check):
+    # Where this job computes. Batches carry their sync's choice; a parent job uses
+    # the sync's choice or, for other jobs, the instance default. Feature switches
+    # and sync planning depend on it, so it is set before any planning.
+    compute = "local"
+    if operation not in {"audio_profiles", "semantic_fusion_build"}:
+        if kind == "analysis_batch":
+            compute = payload.get("compute") or "local"
+        else:
+            from .external_processing import compute_for
+
+            compute = payload.get("compute") or compute_for(user_id, None)
+    with (
+        batch_audio_cache(context.check),
+        preprocessing_session(context.check),
+        ExitStack() as stack,
+    ):
+        stack.enter_context(remote_compute.computing_on(compute))
         if operation == "semantic_fusion_build":
             from .semantic_fusion import build_semantic_fusion
 
@@ -281,6 +303,13 @@ def execute(job: dict, context) -> dict | None:
                 base["refresh_lyrics"] = payload.get("mode", "all") == "all"
             if credentials:
                 base["connection_id"] = payload["connection_id"]
+            if operation not in {"audio_profiles", "semantic_fusion_build"}:
+                if compute == "modal":
+                    from .external_processing import prepare
+
+                    # Deploy and download once, before batches queue, with progress.
+                    prepare(report, context.check).close()
+                base["compute"] = compute
             if operation == "hum_corpus":
                 base["corpus_id"] = payload["corpus_id"]
             batches = [{**base, "track_ids": ids[i : i + size]} for i in range(0, len(ids), size)]
@@ -297,6 +326,13 @@ def execute(job: dict, context) -> dict | None:
         if operation == "audio_profiles":
             allowed = {str(v) for v in main._user_audio_track_ids(user_id)}
             return _profiles([v for v in ids if str(v) in allowed], report)
+        # Model computation runs on Modal for this batch when the job chose it.
+        # Each batch re-checks the deployment, so none runs stale code or models.
+        from .external_processing import open_session
+
+        stack.enter_context(
+            remote_compute.session(compute, factory=lambda: open_session(report, context.check))
+        )
         summary = {}
         if operation in {"navidrome_sync", "import"}:
             from .ingest import ingest_navidrome

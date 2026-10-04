@@ -20,6 +20,7 @@ from psycopg.types.json import Jsonb
 
 from .audio import decode_audio
 from .navidrome import NavidromeClient
+from .remote_compute import current as current_remote
 from .processing_plan import resolve_library_id, _id_filter
 from .representations import voice_config, configure_representations
 
@@ -62,7 +63,9 @@ def _aggregate_outputs(gender: np.ndarray, voice: np.ndarray) -> dict[str, float
     gender = np.asarray(gender, dtype=np.float32)
     voice = np.asarray(voice, dtype=np.float32)
     if gender.shape != voice.shape or gender.ndim != 2 or gender.shape[1] != 2:
-        raise ValueError(f"Unexpected classifier output shapes: gender={gender.shape}, voice={voice.shape}")
+        raise ValueError(
+            f"Unexpected classifier output shapes: gender={gender.shape}, voice={voice.shape}"
+        )
     instrumental = np.clip(voice[:, 0], 0.0, 1.0)
     vocal = np.clip(voice[:, 1], 0.0, 1.0)
     values = {
@@ -105,7 +108,7 @@ class VoiceGenderModel:
         limit = waveform.size - 512 + 1
         frames = []
         for start in range(0, max(limit, 0), hop):
-            frames.append(self._input(waveform[start:start + 512]))
+            frames.append(self._input(waveform[start : start + 512]))
         if len(frames) < _PATCH_FRAMES:
             raise ValueError("Audio is too short for voice classification")
         usable = (len(frames) // _PATCH_FRAMES) * _PATCH_FRAMES
@@ -116,11 +119,15 @@ class VoiceGenderModel:
         values, _ = self.classify_with_activity(waveform)
         return values
 
-    def classify_with_activity(self, waveform: np.ndarray) -> tuple[dict[str, float], dict[str, object]]:
+    def classify_with_activity(
+        self, waveform: np.ndarray
+    ) -> tuple[dict[str, float], dict[str, object]]:
         if waveform.size == 0:
             raise ValueError("Decoded audio is empty")
         patches = self._mel_patches(waveform)
-        embeddings = self._embedder.run(["embeddings"], {self._embedder.get_inputs()[0].name: patches})[0]
+        embeddings = self._embedder.run(
+            ["embeddings"], {self._embedder.get_inputs()[0].name: patches}
+        )[0]
         gender = np.asarray(
             self._gender.run(None, {self._gender.get_inputs()[0].name: embeddings})[0],
             dtype=np.float32,
@@ -135,14 +142,21 @@ class VoiceGenderModel:
         values = _aggregate_outputs(gender, voice)
         duration = waveform.size / 16_000
         windows = [
-            {"start_seconds": index * _PATCH_FRAMES * 256 / 16_000,
-             "end_seconds": min(duration, (index * _PATCH_FRAMES * 256 + 127 * 256 + 512) / 16_000),
-             "vocal_activation": float(np.clip(row[1], 0, 1))}
+            {
+                "start_seconds": index * _PATCH_FRAMES * 256 / 16_000,
+                "end_seconds": min(
+                    duration, (index * _PATCH_FRAMES * 256 + 127 * 256 + 512) / 16_000
+                ),
+                "vocal_activation": float(np.clip(row[1], 0, 1)),
+            }
             for index, row in enumerate(voice)
         ]
         activity = {
-            "duration_seconds": duration, "windows": windows,
-            "unanalyzed_tail_seconds": max(0.0, duration - windows[-1]["end_seconds"]) if windows else duration,
+            "duration_seconds": duration,
+            "windows": windows,
+            "unanalyzed_tail_seconds": max(0.0, duration - windows[-1]["end_seconds"])
+            if windows
+            else duration,
             "confidence_calibrated": False,
             "method": "discogs-effnet_voice_instrumental",
         }
@@ -163,7 +177,9 @@ def _vector_literal(vector) -> str:
 
 def _create_run(connection: psycopg.Connection) -> uuid.UUID:
     config = voice_config()
-    config_hash = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    config_hash = hashlib.sha256(
+        json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     environment = {"python": platform.python_version(), "torch": torch.__version__, "device": "cpu"}
     with connection.cursor() as cursor:
         cursor.execute(
@@ -177,10 +193,15 @@ def _create_run(connection: psycopg.Connection) -> uuid.UUID:
         return cursor.fetchone()[0]
 
 
-def _store_activation(connection: psycopg.Connection, track_id: uuid.UUID, run_id: uuid.UUID, values: dict[str, float]) -> None:
+def _store_activation(
+    connection: psycopg.Connection, track_id: uuid.UUID, run_id: uuid.UUID, values: dict[str, float]
+) -> None:
     vector = [values[label] for label in VoiceGenderModel.labels]
     with connection.cursor() as cursor:
-        cursor.execute("DELETE FROM embeddings WHERE track_id=%s AND run_id=%s AND embedding_type=%s", (track_id, run_id, VOICE_EMBEDDING_TYPE))
+        cursor.execute(
+            "DELETE FROM embeddings WHERE track_id=%s AND run_id=%s AND embedding_type=%s",
+            (track_id, run_id, VOICE_EMBEDDING_TYPE),
+        )
         cursor.execute(
             """INSERT INTO embeddings
                  (track_id, run_id, embedding_type, dimension, aggregation, embedding)
@@ -189,12 +210,19 @@ def _store_activation(connection: psycopg.Connection, track_id: uuid.UUID, run_i
         )
 
 
+def classify_track(audio: bytes) -> tuple[dict[str, float], dict[str, object]]:
+    """Voice evidence for one track. The same code runs locally and on Modal."""
+    return shared_voice_model().classify_with_activity(decode_audio(audio, sample_rate=16_000))
+
+
 def _fetch_stream(client: NavidromeClient, source_id: str) -> np.ndarray:
     return decode_audio(client.audio_bytes(source_id), sample_rate=16_000)
 
 
 def backfill_voice(
-    url: str, username: str, password: str,
+    url: str,
+    username: str,
+    password: str,
     progress: Callable[[dict[str, object]], None] | None = None,
     limit: int | None = None,
     external_ids: list[str] | None = None,
@@ -207,7 +235,10 @@ def backfill_voice(
     """
     report = progress or (lambda _: None)
     summary = {"total": 0, "classified": 0, "failed": 0}
-    with psycopg.connect(get_settings().database_url) as connection, NavidromeClient(url, username, password) as client:
+    with (
+        psycopg.connect(get_settings().database_url) as connection,
+        NavidromeClient(url, username, password) as client,
+    ):
         library_id = resolve_library_id(connection, url)
         restriction, parameters = _id_filter(external_ids)
         configure_representations(connection)
@@ -229,21 +260,61 @@ def backfill_voice(
             )
             tracks = cursor.fetchall()
         if not tracks:
-            report({"phase": "planning", "message": "Voice classification already current",
-                    "completed": 0, "total": 0, "unit": "tracks"})
+            report(
+                {
+                    "phase": "planning",
+                    "message": "Voice classification already current",
+                    "completed": 0,
+                    "total": 0,
+                    "unit": "tracks",
+                }
+            )
             return summary
         summary["total"] = len(tracks)
-        report({"phase": "models", "message": "Loading voice classifier", "completed": 0, "total": 1, "unit": "models"})
-        model = shared_voice_model()
+        remote = current_remote()
+        classified = None
+        unavailable: dict[object, BaseException] = {}
+        if remote is not None:
+            # Upload once, classify every track in one Modal call; results stream back in order.
+            digests = []
+            for track_id, external_id, _ in tracks:
+                try:
+                    digests.append(remote.upload_audio(client.audio_bytes(str(external_id))))
+                except Exception as error:
+                    unavailable[track_id] = error
+            classified = iter(remote.voice(digests))
+        report(
+            {
+                "phase": "models",
+                "message": "Loading voice classifier",
+                "completed": 0,
+                "total": 1,
+                "unit": "models",
+            }
+        )
+        model = shared_voice_model() if remote is None else None
         try:
             connection.commit()
             for index, (track_id, external_id, title) in enumerate(tracks):
-                report({"phase": "voice", "message": f"Classifying vocals for {title}",
-                        "completed": index, "total": len(tracks), "unit": "tracks",
-                        "track": {"id": str(external_id), "title": title}})
+                report(
+                    {
+                        "phase": "voice",
+                        "message": f"Classifying vocals for {title}",
+                        "completed": index,
+                        "total": len(tracks),
+                        "unit": "tracks",
+                        "track": {"id": str(external_id), "title": title},
+                    }
+                )
                 try:
-                    waveform = _fetch_stream(client, str(external_id))
-                    values, activity = model.classify_with_activity(waveform)
+                    if classified is None:
+                        waveform = _fetch_stream(client, str(external_id))
+                        values, activity = model.classify_with_activity(waveform)
+                    else:
+                        outcome = unavailable.get(track_id) or next(classified)
+                        if isinstance(outcome, BaseException):
+                            raise outcome
+                        values, activity = outcome
                     _store_activation(connection, track_id, run_id, values)
                     with connection.cursor() as cursor:
                         cursor.execute(
@@ -258,11 +329,21 @@ def backfill_voice(
                     connection.rollback()
                     summary["failed"] += 1
                     logger.exception("Voice classification failed for track %s", track_id)
-                report({"phase": "voice", "message": f"Classifying vocals for {title}",
-                        "completed": index + 1, "total": len(tracks), "unit": "tracks",
-                        "summary": summary})
+                report(
+                    {
+                        "phase": "voice",
+                        "message": f"Classifying vocals for {title}",
+                        "completed": index + 1,
+                        "total": len(tracks),
+                        "unit": "tracks",
+                        "summary": summary,
+                    }
+                )
             with connection.cursor() as cursor:
-                cursor.execute("UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id=%s", (run_id,))
+                cursor.execute(
+                    "UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id=%s",
+                    (run_id,),
+                )
             connection.commit()
         finally:
             global _model

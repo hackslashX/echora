@@ -1,6 +1,7 @@
 from .settings import get_settings
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import urllib.request
@@ -52,6 +53,52 @@ def required_models() -> tuple[tuple[str, str, bool], ...]:
         (ROFORMER_MODEL_ID, ROFORMER_REVISION, False),
         *(((*moss, False),) if moss else ()),
     )
+
+
+def model_manifest(motion_artwork: bool | None = None) -> str:
+    """Digest of every pinned model analysis needs; a change means storage must be updated.
+
+    Motion artwork's files count only when its models are wanted (ECHORA_MOTION_ARTWORK_MODELS,
+    or for Modal, its motion artwork switch).
+    """
+    if motion_artwork is None:
+        motion_artwork = get_settings().motion_artwork_models
+    content = {
+        "snapshots": [list(item) for item in required_models()],
+        "essentia": [list(item) for item in ESSENTIA_MODELS],
+    }
+    if motion_artwork:
+        content["motion_artwork"] = [list(item) for item in MOTION_ARTWORK_FILES]
+    return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
+
+
+def analysis_downloads() -> list[tuple[str, object]]:
+    """Ordered download steps for the models analysis needs: (label, callable)."""
+    motion_artwork = get_settings().motion_artwork_models
+    steps: list[tuple[str, object]] = []
+    for model, revision, needs_main_ref in required_models():
+
+        def fetch(model=model, revision=revision, needs_main_ref=needs_main_ref):
+            snapshot = snapshot_download(repo_id=model, revision=revision)
+            if needs_main_ref:
+                _pin_main_ref(snapshot)
+
+        steps.append((f"{model}@{revision[:8]}", fetch))
+    if motion_artwork:
+        # Only the files ComfyUI loads, never whole repositories. LTX-2.5 is gated.
+        for repo, revision, filename in MOTION_ARTWORK_FILES:
+            steps.append(
+                (
+                    f"{repo}/{filename.rsplit('/', 1)[-1]}",
+                    lambda repo=repo, revision=revision, filename=filename: hf_hub_download(
+                        repo_id=repo, filename=filename, revision=revision
+                    ),
+                )
+            )
+    steps.append(("Essentia voice classifiers", _download_essentia))
+    keep = required_models() + motion_artwork_snapshots(motion_artwork)
+    steps.append(("Removing superseded models", lambda: _prune_huggingface_cache(keep)))
+    return steps
 
 
 def _pin_main_ref(snapshot_path: str) -> None:
@@ -129,6 +176,13 @@ def _download_motion_artwork() -> None:
 
 
 def main(*, prune_only: bool = False, motion_artwork: bool = False) -> None:
+    if not prune_only and not os.environ.get("HF_TOKEN") and get_settings().database_url:
+        # The token saved in Settings → Analysis models, for gated models such as LTX-2.5.
+        from .huggingface_token import token_or_none
+
+        token = token_or_none()
+        if token:
+            os.environ["HF_TOKEN"] = token
     motion_artwork = motion_artwork or get_settings().motion_artwork_models
     required = required_models() + motion_artwork_snapshots(motion_artwork)
     if not prune_only:

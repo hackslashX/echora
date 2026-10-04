@@ -18,6 +18,9 @@ COPY services/analysis/src ./src
 COPY services/analysis/vendor ./vendor
 COPY services/analysis/alembic.ini ./alembic.ini
 COPY services/analysis/alembic ./alembic
+# The GPU analysis image of this same build, which Modal runs (docs/modal-compute.md).
+ARG ECHORA_MODAL_IMAGE=""
+ENV ECHORA_MODAL_IMAGE="${ECHORA_MODAL_IMAGE:-ghcr.io/hackslashx/echora-analysis-gpu:latest}"
 ENV PATH="/opt/venv/bin:$PATH" PYTHONPATH="/service/src" TORCH_HOME="/models/torch" LID_MODEL_PATH="/models/lid.176.bin" NLTK_DATA="/usr/local/share/nltk_data"
 RUN mkdir -p /models/huggingface && chown -R echora /models
 EXPOSE 8000

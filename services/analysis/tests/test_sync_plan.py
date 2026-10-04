@@ -141,6 +141,7 @@ def test_parent_batches_selected_work_but_reconciles_full_catalog(monkeypatch, r
         {
             "operation": "navidrome_sync",
             "connection_id": "connection",
+            "compute": "local",
             "track_ids": selected[i : i + 32],
             "verify_audio_hashes": True,
             "refresh_lyrics": False,

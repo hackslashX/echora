@@ -41,6 +41,7 @@ class LibraryScopingTests(unittest.TestCase):
             "processing_plan.py",
             os=SimpleNamespace(environ={}),
             ProcessingPlan=lambda **kw: SimpleNamespace(**kw),
+            feature_enabled=lambda connection, feature, where=None: True,
         )
 
     def test_planners_scope_optional_library_and_ids(self):
@@ -88,6 +89,7 @@ class LibraryScopingTests(unittest.TestCase):
             get_check=lambda: lambda: None,
             functools=functools,
             hashlib=hashlib,
+            current_remote=lambda: None,
         )
         for name in (
             "resolve_library_id",
