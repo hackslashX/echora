@@ -129,6 +129,14 @@ export default function FullscreenPlayer() {
   // Phone layout: the cover (or its motion loop), the lyrics, or the queue fill the middle.
   const [mobileView, setMobileView] = useState<"artwork" | "lyrics" | "queue">("artwork");
   const artworkVisible = !compact || mobileView === "artwork";
+  // On phones the player takes the whole screen and has its own controls: hide the player bar.
+  useEffect(() => {
+    if (!compact) return;
+    document.body.dataset.playerFullscreen = "";
+    return () => {
+      delete document.body.dataset.playerFullscreen;
+    };
+  }, [compact]);
   const [panel, setPanel] = useState<"lyrics" | "queue" | null>(null);
   const [showTranslation, setShowTranslation] = useState(false);
   const [translationLanguage, setTranslationLanguage] = useState("");
