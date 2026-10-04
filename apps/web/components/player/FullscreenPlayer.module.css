@@ -25,11 +25,6 @@
 .segmented [data-slot=tabs-trigger] { color: rgb(255 255 255 / .65); padding-inline: 10px; }
 .segmented [data-slot=tabs-trigger]:hover { color: #fff; }
 .segmented [data-slot=tabs-trigger][data-state=active] { background: rgb(255 255 255 / .16); color: #fff; }
-/* Lyrics text size: the letter A at the three sizes it selects, sharing one baseline. */
-.sizeGlyph { display: grid; place-items: end center; width: 16px; height: 16px; font-family: var(--ui-font); font-weight: 600; line-height: 1; }
-.sizeGlyph[data-size=small] { font-size: 10px; }
-.sizeGlyph[data-size=normal] { font-size: 13px; }
-.sizeGlyph[data-size=large] { font-size: 16px; }
 .translationSelect[data-slot=select-trigger] { background: rgb(0 0 0 / .35); border-color: rgb(255 255 255 / .14); }
 
 /* Stage: track on the left, a framed Lyrics / Up next panel on the right. */

@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  ALargeSmall,
   ChevronDown,
   Clapperboard,
   Image as ImageIcon,
@@ -44,6 +45,13 @@ import { Button } from "../ui/button";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { groupSyllablesByWord, lyricWordIsRtl as isRtlText } from "./lyricWords";
 import KaraokeLine from "./KaraokeLine";
@@ -409,28 +417,30 @@ export default function FullscreenPlayer() {
         </Tabs>
       )}
       {hasLyrics && (
-        <Tabs
-          value={lyricsTextSize}
-          onValueChange={(value) => chooseLyricsTextSize(value as LyricsTextSize)}
-        >
-          <TabsList aria-label="Lyrics text size" className={styles.segmented}>
-            {(["small", "normal", "large"] as LyricsTextSize[]).map((size) => {
-              return (
-                <TabsTrigger
-                  value={size}
-                  key={size}
-                  aria-label={`${size} lyrics text`}
-                  title={`${size[0].toUpperCase()}${size.slice(1)} lyrics`}
-                >
-                  {/* The letter at three sizes reads as text size at a glance. */}
-                  <span className={styles.sizeGlyph} data-size={size} aria-hidden="true">
-                    A
-                  </span>
-                </TabsTrigger>
-              );
-            })}
-          </TabsList>
-        </Tabs>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Lyrics text size: ${lyricsTextSize}`}
+              title="Lyrics text size"
+            >
+              <ALargeSmall />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-36">
+            <DropdownMenuRadioGroup
+              value={lyricsTextSize}
+              onValueChange={(value) => chooseLyricsTextSize(value as LyricsTextSize)}
+            >
+              {(["small", "normal", "large"] as LyricsTextSize[]).map((size) => (
+                <DropdownMenuRadioItem key={size} value={size}>
+                  {`${size[0].toUpperCase()}${size.slice(1)}`}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
       {translation && (
         <div className={styles.group}>
