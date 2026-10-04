@@ -2,3 +2,6 @@
 
 .backdrop:before{content:"";position:absolute;inset:0;z-index:10;pointer-events:none;background:var(--surface-canvas);opacity:calc(1 - var(--backdrop-opacity,1));transition:opacity .15s ease}
 @media(prefers-reduced-motion:reduce){.backdrop:before{transition:none}}
+
+/* Phones: the full-screen player hides the player bar, so the backdrop covers the whole screen. */
+@media (max-width: 767px) { :global(body[data-player-fullscreen].echora-fullscreen-player) .backdrop { clip-path: none; } }
