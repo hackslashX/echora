@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     fa_kara_aligner: str = Field("yohane")
     fa_kara_refine_all_lines: bool = Field(False)
     fa_kara_duration_aware_priors: bool = Field(False)
+    # Base image for analysis on Modal. Release images set it to the GPU image of
+    # their own version, so remote dependencies match the worker's.
+    modal_image: str = Field(
+        "ghcr.io/hackslashx/echora-analysis-gpu:latest", validation_alias="ECHORA_MODAL_IMAGE"
+    )
     preprocess_dir: str = Field("/data/preprocessed", validation_alias="ECHORA_PREPROCESS_DIR")
     preprocess_max_bytes: int = Field(
         21474836480, validation_alias="ECHORA_PREPROCESS_MAX_BYTES", ge=0
@@ -314,6 +319,54 @@ class Settings(BaseSettings):
         if self.navidrome_max_keepalive_connections > self.navidrome_max_connections:
             raise ValueError("Navidrome keepalive connections must not exceed maximum")
         return self
+
+
+# Settings that change model computation. Analysis on Modal receives the worker's
+# values with every call, so remote results match what the worker would compute.
+PROCESSING_FIELDS = (
+    "lyrics_model_id",
+    "lyrics_revision",
+    "muq_model_id",
+    "muq_revision",
+    "mert_model_id",
+    "mert_revision",
+    "moss_model_id",
+    "moss_revision",
+    "fa_kara_model_id",
+    "fa_kara_revision",
+    "fa_kara_audio_speed",
+    "fa_kara_aligner",
+    "fa_kara_refine_all_lines",
+    "fa_kara_duration_aware_priors",
+)
+
+
+# Remote analysis also learns whether motion artwork models belong in its storage, which
+# follows Modal's motion artwork switch rather than this worker's own setting.
+REMOTE_FIELDS = (*PROCESSING_FIELDS, "motion_artwork_models")
+
+
+def processing_settings() -> dict[str, object]:
+    """The worker's model settings, as sent to remote analysis."""
+    values = get_settings().model_dump(include=set(PROCESSING_FIELDS))
+    return {name: values[name] for name in PROCESSING_FIELDS}
+
+
+def adopt_processing_settings(values: dict[str, object]) -> None:
+    """On a remote analysis container: compute with the calling worker's settings."""
+    import os
+
+    unknown = set(values) - set(REMOTE_FIELDS)
+    if unknown:
+        raise ValueError(f"Not processing settings: {sorted(unknown)}")
+    for name, value in values.items():
+        alias = Settings.model_fields[name].validation_alias
+        environment_name = alias if isinstance(alias, str) else name.upper()
+        os.environ[environment_name] = str(value).lower() if isinstance(value, bool) else str(value)
+    get_settings.cache_clear()
+    applied = get_settings().model_dump(include=set(values))
+    if applied != values:
+        raise ValueError("Processing settings did not apply exactly")
 
 
 @lru_cache(maxsize=1)

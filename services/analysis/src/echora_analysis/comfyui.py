@@ -27,6 +27,34 @@ class ComfyUIUnavailable(ComfyUIError):
     """ComfyUI is not installed here, could not start, or cannot be reached."""
 
 
+def model_paths_config() -> str:
+    """ComfyUI model paths for the pinned motion artwork snapshots in the Hugging Face cache.
+
+    Derived from HF_HOME at launch, so the same launcher finds the models wherever the cache
+    lives: /models on the analysis worker, a Modal Volume on Modal.
+    """
+    import os
+
+    from .motion_artwork_render import (
+        GEMMA_REPOSITORY,
+        GEMMA_REVISION,
+        LTX_REPOSITORY,
+        LTX_REVISION,
+    )
+
+    hub = Path(os.environ.get("HF_HOME", "/models/huggingface")) / "hub"
+
+    def snapshot(repository: str, revision: str) -> Path:
+        return hub / f"models--{repository.replace('/', '--')}" / "snapshots" / revision
+
+    return (
+        f"echora_ltx:\n  base_path: {snapshot(LTX_REPOSITORY, LTX_REVISION)}\n"
+        "  diffusion_models: diffusion_models\n  text_encoders: text_encoders\n  vae: vae\n"
+        f"echora_gemma:\n  base_path: {snapshot(GEMMA_REPOSITORY, GEMMA_REVISION)}\n"
+        "  text_encoders: text_encoders\n"
+    )
+
+
 def _free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -46,7 +74,8 @@ def launch(
 
     Inputs, outputs and ComfyUI's own state live in `work_dir` (a throwaway directory when not
     given), so several short-lived ComfyUI processes in one batch share uploaded covers and saved
-    encodings. Models come from echora_model_paths.yaml; embeddings from `output/conditioning`.
+    encodings. Models come from the Hugging Face cache (model_paths_config); embeddings from
+    `output/conditioning`.
     """
     root_dir = Path(comfyui_dir)
     if not (root_dir / "main.py").is_file() or not Path(python).is_file():
@@ -59,6 +88,8 @@ def launch(
         batch_paths.write_text(
             f"echora_batch:\n  base_path: {work / 'output'}\n  embeddings: conditioning\n"
         )
+        model_paths = work / "echora_model_paths.yaml"
+        model_paths.write_text(model_paths_config())
         port = _free_port()
         command = [
             python,
@@ -69,7 +100,7 @@ def launch(
             str(port),
             "--disable-auto-launch",
             "--extra-model-paths-config",
-            str(root_dir / "echora_model_paths.yaml"),
+            str(model_paths),
             str(batch_paths),
             "--reserve-vram",
             "1",
@@ -96,7 +127,19 @@ def launch(
             url = f"http://127.0.0.1:{port}"
             try:
                 _wait_until_ready(process, url, startup_timeout_seconds, check)
-                yield url
+                try:
+                    yield url
+                except httpx.TransportError as error:
+                    # A request failed because ComfyUI itself is gone: say why it stopped.
+                    if process.poll() is None:
+                        try:
+                            process.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            raise error from None
+                    raise ComfyUIUnavailable(
+                        f"ComfyUI stopped while running (exit code {process.returncode}). "
+                        f"Last log lines: {_log_tail(work / 'comfyui.log')}"
+                    ) from error
             finally:
                 process.terminate()
                 try:
@@ -104,6 +147,15 @@ def launch(
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
+
+
+def _log_tail(path: Path, lines: int = 12, limit: int = 1500) -> str:
+    """The end of ComfyUI's log, for errors that would otherwise only say "connection refused"."""
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return "(no log)"
+    return " | ".join(line.strip() for line in text.splitlines()[-lines:] if line.strip())[-limit:]
 
 
 def _wait_until_ready(

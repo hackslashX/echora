@@ -9,13 +9,13 @@ def transcription_model() -> tuple[str, str] | None:
     revision = get_settings().moss_revision.strip()
     if not model and not revision:
         return None
-    if not model or not re.fullmatch(r'[0-9a-f]{40}', revision):
-        raise ValueError('Set both MOSS_MODEL_ID and an immutable 40-character MOSS_REVISION')
+    if not model or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("Set both MOSS_MODEL_ID and an immutable 40-character MOSS_REVISION")
     return model, revision
 
 
-def transcription_enabled(connection):
-    with connection.cursor() as cursor:
-        cursor.execute("SELECT transcription_processing_enabled FROM analysis_settings WHERE singleton=true")
-        row = cursor.fetchone()
-    return bool(row and row[0])
+def transcription_enabled(connection, where: str | None = None):
+    """AI lyric generation is switched on for the running job's location."""
+    from .features import feature_enabled
+
+    return feature_enabled(connection, "transcription", where)

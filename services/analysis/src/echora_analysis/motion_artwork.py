@@ -33,6 +33,7 @@ FIELDS = (
     "mid_anchor_strength",
     "seed",
     "generate_during_sync",
+    "generate_on_modal",
 )
 
 
@@ -50,7 +51,9 @@ class MotionArtworkSettings(BaseModel):
     mid_anchor_strength: float = Field(0.0, ge=0, le=1)
     # None picks a new seed for every album.
     seed: int | None = Field(42, ge=0, le=2**53)
+    # Render missing loops in syncs on this server, and in syncs on Modal (docs/modal-compute.md).
     generate_during_sync: bool = True
+    generate_on_modal: bool = False
 
     @field_validator("comfyui_url")
     @classmethod
@@ -94,6 +97,11 @@ class MotionArtworkSettings(BaseModel):
     def external_url(self) -> str:
         """A running ComfyUI to use instead of starting one, or blank for the embedded one."""
         return self.comfyui_url or get_settings().comfyui_url
+
+
+class LocationUpdate(BaseModel):
+    enabled: bool
+    location: Literal["local", "modal"] = "local"
 
 
 def _connect():
@@ -141,7 +149,14 @@ def sync_selection(connection, library_id, external_ids: list[str]) -> set[str]:
     """Songs an entire-library sync should visit so their album gets a loop."""
     with connection.cursor(row_factory=dict_row) as cursor:
         settings = load_settings(cursor)
-        if not (settings.enabled and settings.generate_during_sync):
+        from .remote_compute import location
+
+        # The sync's location decides: syncs on this server or syncs on Modal.
+        on_modal = location() == "modal"
+        if not (
+            settings.enabled
+            and (settings.generate_on_modal if on_modal else settings.generate_during_sync)
+        ):
             return set()
         return missing_external_ids(cursor, library_id, external_ids, settings.recipe())
 
@@ -272,6 +287,19 @@ def router(require_user):
         with _connect() as connection, connection.cursor() as cursor:
             save_settings(cursor, update)
         return update.model_dump()
+
+    @api.put("/settings/motion-artwork/location")
+    def put_location_route(update: LocationUpdate, _=Depends(admin)) -> dict[str, object]:
+        """Switch generation on or off for syncs on this server or on Modal."""
+        column = "generate_on_modal" if update.location == "modal" else "generate_during_sync"
+        with _connect() as connection, connection.cursor() as cursor:
+            settings = load_settings(cursor).model_copy(update={column: update.enabled})
+            save_settings(cursor, settings)
+        return {
+            "enabled": update.enabled,
+            "location": update.location,
+            "feature_enabled": settings.enabled,
+        }
 
     @api.get("/settings/motion-artwork/status")
     def status_route(user=Depends(admin)) -> dict[str, object]:

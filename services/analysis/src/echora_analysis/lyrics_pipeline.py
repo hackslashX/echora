@@ -22,6 +22,7 @@ from .processing_plan import plan_lyrics, resolve_library_id
 from .representations import configure_representations, embedding_config
 from .analysis_attempts import start_attempt, record_track, finish_attempt
 from .preprocessing import prepare_audio, get_check
+from .remote_compute import RemoteModel, current as current_remote
 
 
 def _vector_literal(vector) -> str:
@@ -30,8 +31,14 @@ def _vector_literal(vector) -> str:
 
 def _create_run(connection: psycopg.Connection, model: LyricsEmbeddingModel) -> uuid.UUID:
     config = embedding_config(model.name, model.revision)
-    config_hash = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    environment = {"python": platform.python_version(), "torch": torch.__version__, "cuda": torch.version.cuda}
+    config_hash = hashlib.sha256(
+        json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    environment = {
+        "python": platform.python_version(),
+        "torch": torch.__version__,
+        "cuda": torch.version.cuda,
+    }
     with connection.cursor() as cursor:
         cursor.execute(
             """INSERT INTO analysis_runs
@@ -39,12 +46,21 @@ def _create_run(connection: psycopg.Connection, model: LyricsEmbeddingModel) -> 
                VALUES ('lyrics_embedding',%s,%s,%s,%s,%s,%s,'float32','running',now())
                ON CONFLICT (kind, model_name, model_revision, config_hash)
                DO UPDATE SET id=analysis_runs.id RETURNING id""",
-            (model.name, model.revision, config_hash, Jsonb(config), Jsonb(environment), str(model.device)),
+            (
+                model.name,
+                model.revision,
+                config_hash,
+                Jsonb(config),
+                Jsonb(environment),
+                str(model.device),
+            ),
         )
         return cursor.fetchone()[0]
 
 
-def _store_lyrics(connection: psycopg.Connection, track_id: uuid.UUID, result: dict[str, object]) -> uuid.UUID | None:
+def _store_lyrics(
+    connection: psycopg.Connection, track_id: uuid.UUID, result: dict[str, object]
+) -> uuid.UUID | None:
     text = result.get("text")
     status = str(result.get("status") or "unavailable")
     source = "transcribed" if result.get("ai_generated") else "embedded" if text else "none"
@@ -62,54 +78,107 @@ def _store_lyrics(connection: psycopg.Connection, track_id: uuid.UUID, result: d
                WHERE (EXCLUDED.source != 'transcribed' AND EXCLUDED.text IS NOT NULL)
                   OR NULLIF(btrim(lyrics.text), '') IS NULL
                RETURNING id""",
-            (track_id, source, text, language, Jsonb({
-                "provider": "moss" if result.get("ai_generated") else "navidrome", "endpoint": result.get("source"),
-                "ai_generated": bool(result.get("ai_generated")),
-                **({"transcription": result["transcription"]} if result.get("transcription") else {}),
-                "synced": result.get("synced"), "lines": result.get("lines") or [],
-                **({"languages": language_distribution} if language_distribution else {}),
-            }), status),
+            (
+                track_id,
+                source,
+                text,
+                language,
+                Jsonb(
+                    {
+                        "provider": "moss" if result.get("ai_generated") else "navidrome",
+                        "endpoint": result.get("source"),
+                        "ai_generated": bool(result.get("ai_generated")),
+                        **(
+                            {"transcription": result["transcription"]}
+                            if result.get("transcription")
+                            else {}
+                        ),
+                        "synced": result.get("synced"),
+                        "lines": result.get("lines") or [],
+                        **({"languages": language_distribution} if language_distribution else {}),
+                    }
+                ),
+                status,
+            ),
         )
         row = cursor.fetchone()
         return row[0] if row else None
 
 
-def _store_embeddings(connection: psycopg.Connection, track_id: uuid.UUID, run_id: uuid.UUID, result) -> None:
+def _store_embeddings(
+    connection: psycopg.Connection, track_id: uuid.UUID, run_id: uuid.UUID, result
+) -> None:
     with connection.cursor() as cursor:
-        cursor.execute("DELETE FROM embeddings WHERE track_id=%s AND run_id=%s AND embedding_type='lyrics'", (track_id, run_id))
+        cursor.execute(
+            "DELETE FROM embeddings WHERE track_id=%s AND run_id=%s AND embedding_type='lyrics'",
+            (track_id, run_id),
+        )
         cursor.execute(
             """INSERT INTO embeddings
                  (track_id, run_id, embedding_type, dimension, aggregation, embedding, inference_ms, peak_vram_bytes)
                VALUES (%s,%s,'lyrics',%s,'normalized_mean',%s::vector,%s,%s)""",
-            (track_id, run_id, len(result.aggregate), _vector_literal(result.aggregate), result.inference_ms, result.peak_vram_bytes),
+            (
+                track_id,
+                run_id,
+                len(result.aggregate),
+                _vector_literal(result.aggregate),
+                result.inference_ms,
+                result.peak_vram_bytes,
+            ),
         )
         for index, (vector, token_range) in enumerate(zip(result.windows, result.token_ranges)):
             cursor.execute(
                 """INSERT INTO embeddings
                      (track_id, run_id, embedding_type, window_index, dimension, aggregation, embedding)
                    VALUES (%s,%s,'lyrics',%s,%s,%s,%s::vector)""",
-                (track_id, run_id, index, len(vector), f"tokens:{token_range[0]}-{token_range[1]}", _vector_literal(vector)),
+                (
+                    track_id,
+                    run_id,
+                    index,
+                    len(vector),
+                    f"tokens:{token_range[0]}-{token_range[1]}",
+                    _vector_literal(vector),
+                ),
             )
 
 
 def backfill_lyrics(
-    url: str, username: str, password: str,
+    url: str,
+    username: str,
+    password: str,
     progress: Callable[[dict[str, object]], None] | None = None,
     external_ids: list[str] | None = None,
     only_missing: bool = False,
     refresh_existing: bool = False,
 ) -> dict[str, int]:
     report = progress or (lambda _: None)
-    summary = {"total": 0, "available": 0, "missing": 0, "unavailable": 0, "embedded": 0, "failed": 0}
-    with psycopg.connect(get_settings().database_url) as connection, NavidromeClient(url, username, password) as client:
+    summary = {
+        "total": 0,
+        "available": 0,
+        "missing": 0,
+        "unavailable": 0,
+        "embedded": 0,
+        "failed": 0,
+    }
+    with (
+        psycopg.connect(get_settings().database_url) as connection,
+        NavidromeClient(url, username, password) as client,
+    ):
         library_id = resolve_library_id(connection, url)
         configure_representations(connection)
         planned = plan_lyrics(connection, external_ids, library_id=library_id).lyrics_external_ids
         if refresh_existing and external_ids is not None:
             planned = frozenset(external_ids)
         if not planned:
-            report({"phase": "planning", "message": "Lyrics analysis already current",
-                    "completed": 0, "total": 0, "unit": "tracks"})
+            report(
+                {
+                    "phase": "planning",
+                    "message": "Lyrics analysis already current",
+                    "completed": 0,
+                    "total": 0,
+                    "unit": "tracks",
+                }
+            )
             return summary
         with connection.cursor() as cursor:
             cursor.execute(
@@ -146,122 +215,250 @@ def backfill_lyrics(
                 # Archive the provider separately; manual edits remain authoritative
                 # when their embedding needs to be rebuilt.
                 with connection.cursor() as cursor:
-                    cursor.execute("SELECT text, provenance, availability_status, source FROM lyrics WHERE track_id=%s", (track_id,))
+                    cursor.execute(
+                        "SELECT text, provenance, availability_status, source FROM lyrics WHERE track_id=%s",
+                        (track_id,),
+                    )
                     stored = cursor.fetchone()
-                if stored and (stored[1] or {}).get('manual_status'):
+                if stored and (stored[1] or {}).get("manual_status"):
                     # A user-set status is final, even though these rows use source='none'.
-                    lyrics = {'text': stored[0], 'status': (stored[1] or {})['manual_status'], **(stored[1] or {})}
-                elif stored and stored[3] == 'manual':
-                    lyrics = {'text': stored[0], 'status': stored[2], **(stored[1] or {})}
-                elif stored and (stored[1] or {}).get('forced_transcription'):
-                    forced_language = str((stored[1] or {}).get('transcription_language') or '')
+                    lyrics = {
+                        "text": stored[0],
+                        "status": (stored[1] or {})["manual_status"],
+                        **(stored[1] or {}),
+                    }
+                elif stored and stored[3] == "manual":
+                    lyrics = {"text": stored[0], "status": stored[2], **(stored[1] or {})}
+                elif stored and (stored[1] or {}).get("forced_transcription"):
+                    forced_language = str((stored[1] or {}).get("transcription_language") or "")
                     from .transcription_config import transcription_model, transcription_enabled
+
                     config = transcription_model() if transcription_enabled(connection) else None
                     if not config:
-                        raise RuntimeError('AI lyric generation is disabled')
-                    transcriptions.append((track_id, external_id, title, config, {'status': 'missing', 'transcription_language': forced_language}))
+                        raise RuntimeError("AI lyric generation is disabled")
+                    transcriptions.append(
+                        (
+                            track_id,
+                            external_id,
+                            title,
+                            config,
+                            {"status": "missing", "transcription_language": forced_language},
+                        )
+                    )
                     stored = None
                     connection.commit()
-                    report({"phase": "lyrics", "message": f"Lyrics need transcription for {title}",
-                            "completed": index + 1, "total": len(tracks), "unit": "tracks"})
+                    report(
+                        {
+                            "phase": "lyrics",
+                            "message": f"Lyrics need transcription for {title}",
+                            "completed": index + 1,
+                            "total": len(tracks),
+                            "unit": "tracks",
+                        }
+                    )
                     continue
                 else:
                     stored = None
                     lyrics = provider_lyrics
                     # A retrieval miss must not erase a previous AI transcript or lyrics
                     # that merely need embedding with a newer embedding model.
-                    if not str(lyrics.get('text') or '').strip():
+                    if not str(lyrics.get("text") or "").strip():
                         with connection.cursor() as cursor:
-                            cursor.execute("SELECT text, provenance, availability_status FROM lyrics WHERE track_id=%s AND (NULLIF(btrim(text),'') IS NOT NULL OR availability_status='instrumental')", (track_id,))
+                            cursor.execute(
+                                "SELECT text, provenance, availability_status FROM lyrics WHERE track_id=%s AND (NULLIF(btrim(text),'') IS NOT NULL OR availability_status='instrumental')",
+                                (track_id,),
+                            )
                             stored = cursor.fetchone()
                         if stored:
-                            lyrics = {'text':stored[0], 'status':stored[2], **(stored[1] or {})}
-                        elif lyrics.get('status') != 'instrumental':
-                            from .transcription_config import transcription_model, transcription_enabled
-                            config = transcription_model() if transcription_enabled(connection) else None
+                            lyrics = {"text": stored[0], "status": stored[2], **(stored[1] or {})}
+                        elif lyrics.get("status") != "instrumental":
+                            from .transcription_config import (
+                                transcription_model,
+                                transcription_enabled,
+                            )
+
+                            config = (
+                                transcription_model() if transcription_enabled(connection) else None
+                            )
                             if config:
-                                transcriptions.append((track_id, external_id, title, config, lyrics))
+                                transcriptions.append(
+                                    (track_id, external_id, title, config, lyrics)
+                                )
                                 connection.commit()
-                                report({"phase": "lyrics", "message": f"Lyrics need transcription for {title}",
-                                        "completed": index + 1, "total": len(tracks), "unit": "tracks"})
+                                report(
+                                    {
+                                        "phase": "lyrics",
+                                        "message": f"Lyrics need transcription for {title}",
+                                        "completed": index + 1,
+                                        "total": len(tracks),
+                                        "unit": "tracks",
+                                    }
+                                )
                                 continue
                 accept_lyrics(track_id, title, lyrics, stored=bool(stored))
             except Exception:
                 connection.rollback()
-                logging.getLogger(__name__).exception('Lyrics retrieval/transcription failed for %s', track_id)
+                logging.getLogger(__name__).exception(
+                    "Lyrics retrieval/transcription failed for %s", track_id
+                )
                 summary["failed"] += 1
-            report({"phase": "lyrics", "message": f"Retrieving lyrics for {title}",
-                    "completed": index + 1, "total": len(tracks), "unit": "tracks",
-                    "summary": summary})
+            report(
+                {
+                    "phase": "lyrics",
+                    "message": f"Retrieving lyrics for {title}",
+                    "completed": index + 1,
+                    "total": len(tracks),
+                    "unit": "tracks",
+                    "summary": summary,
+                }
+            )
 
         # Only genuine fallbacks reach this stage. Never separate songs solely
         # because their supplied lyrics need a new embedding.
         ready = []
         for index, candidate in enumerate(transcriptions):
             track_id, external_id, title, config, missing = candidate
-            report({"phase": "preprocess", "message": f"Preparing vocals for {title}",
-                    "completed": index, "total": len(transcriptions), "unit": "tracks"})
+            report(
+                {
+                    "phase": "preprocess",
+                    "message": f"Preparing vocals for {title}",
+                    "completed": index,
+                    "total": len(transcriptions),
+                    "unit": "tracks",
+                }
+            )
             try:
                 from .transcription_config import transcription_enabled
+
                 if not transcription_enabled(connection):
                     accept_lyrics(track_id, title, missing)
                     continue
-                prepare_audio(client.audio_bytes(external_id), vocals=True, check=get_check())
+                remote = current_remote()
+                if remote is None:
+                    prepare_audio(client.audio_bytes(external_id), vocals=True, check=get_check())
+                else:
+                    # Vocals are separated on Modal; only the source audio goes up.
+                    remote.upload_audio(client.audio_bytes(external_id))
                 ready.append(candidate)
                 connection.commit()
             except Exception:
                 connection.rollback()
                 summary["failed"] += 1
-                logging.getLogger(__name__).exception('Vocal preparation failed for %s', track_id)
-            report({"phase": "preprocess", "completed": index + 1,
-                    "total": len(transcriptions), "unit": "tracks", "summary": summary})
+                logging.getLogger(__name__).exception("Vocal preparation failed for %s", track_id)
+            report(
+                {
+                    "phase": "preprocess",
+                    "completed": index + 1,
+                    "total": len(transcriptions),
+                    "unit": "tracks",
+                    "summary": summary,
+                }
+            )
 
         for index, (track_id, external_id, title, config, missing) in enumerate(ready):
             try:
                 from .transcription_config import transcription_enabled
+
                 if not transcription_enabled(connection):
                     accept_lyrics(track_id, title, missing)
                     continue
                 from .song_transcription import SongTranscriber
                 from .transcription_recovery import diagnostic_writer
-                report({'phase': 'transcription', 'message': f'Transcribing lyrics for {title}',
-                        'completed': index, 'total': len(ready), 'unit': 'tracks'})
+
+                report(
+                    {
+                        "phase": "transcription",
+                        "message": f"Transcribing lyrics for {title}",
+                        "completed": index,
+                        "total": len(ready),
+                        "unit": "tracks",
+                    }
+                )
                 with connection.cursor() as cursor:
-                    cursor.execute("""SELECT a.activity FROM track_vocal_activity a
+                    cursor.execute(
+                        """SELECT a.activity FROM track_vocal_activity a
                         JOIN current_embeddings e ON e.track_id=a.track_id AND e.run_id=a.run_id
                         WHERE a.track_id=%s AND e.embedding_type='voice-gender'
-                        ORDER BY a.created_at DESC LIMIT 1""", (track_id,))
+                        ORDER BY a.created_at DESC LIMIT 1""",
+                        (track_id,),
+                    )
                     activity_row = cursor.fetchone()
-                lyrics = SongTranscriber(*config).transcribe(client.audio_bytes(external_id),
-                    language=str(missing.get('transcription_language') or '') or None,
-                    check=lambda: report({'phase': 'transcription'}),
-                    progress=lambda detail: report({'phase': 'transcription', 'message': f'{title}: {detail}'}),
+                arguments = dict(
+                    language=str(missing.get("transcription_language") or "") or None,
+                    check=lambda: report({"phase": "transcription"}),
+                    progress=lambda detail: report(
+                        {"phase": "transcription", "message": f"{title}: {detail}"}
+                    ),
                     diagnostic_sink=diagnostic_writer(track_id),
-                    vocal_activity=activity_row[0] if activity_row else None)
+                    vocal_activity=activity_row[0] if activity_row else None,
+                )
+                remote = current_remote()
+                if remote is None:
+                    lyrics = SongTranscriber(*config).transcribe(
+                        client.audio_bytes(external_id), **arguments
+                    )
+                else:
+                    lyrics = remote.transcribe(client.audio_bytes(external_id), **arguments)
                 accept_lyrics(track_id, title, lyrics)
             except Exception:
                 connection.rollback()
                 summary["failed"] += 1
-                logging.getLogger(__name__).exception('Lyrics transcription failed for %s', track_id)
-            report({"phase": "transcription", "message": f"Processed lyrics for {title}",
-                    "completed": index + 1, "total": len(ready), "unit": "tracks", "summary": summary})
+                logging.getLogger(__name__).exception(
+                    "Lyrics transcription failed for %s", track_id
+                )
+            report(
+                {
+                    "phase": "transcription",
+                    "message": f"Processed lyrics for {title}",
+                    "completed": index + 1,
+                    "total": len(ready),
+                    "unit": "tracks",
+                    "summary": summary,
+                }
+            )
 
         if not embeddable:
             return summary
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        report({"phase": "models", "message": "Loading BGE-M3 lyrics model",
-                "completed": 0, "total": 1, "unit": "models"})
-        model = LyricsEmbeddingModel(
-            get_settings().lyrics_model_id,
-            get_settings().lyrics_revision, device,
+        report(
+            {
+                "phase": "models",
+                "message": "Loading BGE-M3 lyrics model",
+                "completed": 0,
+                "total": 1,
+                "unit": "models",
+            }
+        )
+        remote = current_remote()
+        model = (
+            RemoteModel(
+                LyricsEmbeddingModel.name,
+                get_settings().lyrics_model_id,
+                get_settings().lyrics_revision,
+            )
+            if remote
+            else LyricsEmbeddingModel(
+                get_settings().lyrics_model_id, get_settings().lyrics_revision, device
+            )
         )
         try:
             run_id = _create_run(connection, model)
             attempt_id = start_attempt(connection, run_id, len(embeddable))
             connection.commit()
+            # On Modal, every text is embedded in one call; results stream back in order.
+            remote_outcomes = (
+                iter(remote.embed_lyrics([str(item[2]["text"]) for item in embeddable]))
+                if remote
+                else None
+            )
             for index, (track_id, title, lyrics) in enumerate(embeddable):
                 try:
-                    embedded = model.embed(str(lyrics["text"]))
+                    if remote_outcomes is None:
+                        embedded = model.embed(str(lyrics["text"]))
+                    else:
+                        embedded = next(remote_outcomes)
+                        if isinstance(embedded, BaseException):
+                            raise embedded
                     _store_embeddings(connection, track_id, run_id, embedded)
                     record_track(connection, attempt_id, str(track_id), track_id)
                     summary["embedded"] += 1
@@ -269,15 +466,30 @@ def backfill_lyrics(
                 except Exception:
                     connection.rollback()
                     summary["failed"] += 1
-                    record_track(connection, attempt_id, str(track_id), track_id,
-                                 error="Lyrics embedding failed; see service logs")
+                    record_track(
+                        connection,
+                        attempt_id,
+                        str(track_id),
+                        track_id,
+                        error="Lyrics embedding failed; see service logs",
+                    )
                     connection.commit()
-                report({"phase": "lyrics", "message": f"Embedding lyrics for {title}",
-                        "completed": index + 1, "total": len(embeddable), "unit": "tracks",
-                        "summary": summary})
+                report(
+                    {
+                        "phase": "lyrics",
+                        "message": f"Embedding lyrics for {title}",
+                        "completed": index + 1,
+                        "total": len(embeddable),
+                        "unit": "tracks",
+                        "summary": summary,
+                    }
+                )
             finish_attempt(connection, attempt_id)
             with connection.cursor() as cursor:
-                cursor.execute("UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id=%s", (run_id,))
+                cursor.execute(
+                    "UPDATE analysis_runs SET status='complete', finished_at=now() WHERE id=%s",
+                    (run_id,),
+                )
             connection.commit()
         finally:
             release_model(model)

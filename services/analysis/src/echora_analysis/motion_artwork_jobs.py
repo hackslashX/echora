@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
+import shutil
 import tempfile
 import time
 import uuid
@@ -80,22 +81,6 @@ def _complete(cover_sha256: str, recipe: Recipe) -> bool:
             (cover_sha256, recipe.hash()),
         )
         return cursor.fetchone() is not None
-
-
-@contextmanager
-def _cover_lock(cover_sha256: str):
-    """Hold a session advisory lock for one cover while it renders; yields False if another worker has it."""
-    with _connect() as connection:
-        connection.autocommit = True
-        key = f"motion-artwork:{cover_sha256}"
-        owned = connection.execute(
-            "SELECT pg_try_advisory_lock(hashtextextended(%s, 0)) AS owned", (key,)
-        ).fetchone()["owned"]
-        try:
-            yield owned
-        finally:
-            if owned:
-                connection.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (key,))
 
 
 @contextmanager
@@ -221,7 +206,7 @@ def _cover_name(cover: dict) -> str:
 
 
 def _render(comfy: ComfyUI, recipe: Recipe, cover: dict, work: Path, wait: dict) -> dict:
-    settings = get_settings()
+    """Render one loop into the working directory and return its file and properties."""
     sha = cover["sha256"]
     graph = build_graph(
         recipe,
@@ -236,16 +221,34 @@ def _render(comfy: ComfyUI, recipe: Recipe, cover: dict, work: Path, wait: dict)
     if not videos:
         raise ComfyUIError("ComfyUI finished without a video")
     raw = comfy.download(videos[0], work / "raw.mp4")
-    relative = f"{sha[:2]}/{sha}-{recipe.hash()}.mp4"
-    target = Path(settings.motion_artwork_dir) / relative
+    target = work / "loops" / f"{sha}.mp4"
     width, height, frames = finish(raw, target)
     raw.unlink(missing_ok=True)
-    return {
-        "path": relative,
-        "size": (width, height),
-        "frames": frames,
-        "bytes": target.stat().st_size,
-    }
+    return {"file": str(target), "size": (width, height), "frames": frames}
+
+
+@contextmanager
+def _cover_locks(cover_sha256s: list[str]):
+    """Hold session advisory locks for covers while they render; yields the ones this worker owns.
+
+    One connection holds every lock, so a batch of any size uses one database connection.
+    """
+    with _connect() as connection:
+        connection.autocommit = True
+        owned = []
+        try:
+            for sha in cover_sha256s:
+                key = f"motion-artwork:{sha}"
+                if connection.execute(
+                    "SELECT pg_try_advisory_lock(hashtextextended(%s, 0)) AS owned", (key,)
+                ).fetchone()["owned"]:
+                    owned.append(sha)
+            yield set(owned)
+        finally:
+            for sha in owned:
+                connection.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (f"motion-artwork:{sha}",)
+                )
 
 
 def render_batch(
@@ -259,14 +262,19 @@ def render_batch(
 ) -> dict | None:
     """Render missing loops for a sync or import batch's tracks.
 
-    None when motion artwork is disabled or not generated during sync. `mode="all"` also replaces
-    loops that already exist for the current settings.
+    None when motion artwork is disabled or not generated in syncs at the batch's location (this
+    server or Modal). `mode="all"` also replaces loops that already exist for the current settings.
     """
     from .navidrome import NavidromeClient
+    from .remote_compute import current as current_remote, location
 
     with _connect() as connection, connection.cursor() as cursor:
         settings = load_settings(cursor)
-        if not (settings.enabled and settings.generate_during_sync):
+        on_modal = location() == "modal"
+        if not (
+            settings.enabled
+            and (settings.generate_on_modal if on_modal else settings.generate_during_sync)
+        ):
             return None
         tracks = plan_tracks(cursor, user_id, credentials[0], external_ids)
     recipe = settings.recipe()
@@ -315,49 +323,18 @@ def render_batch(
             }
     if not pending:
         return summary
-    try:
-        summary["timings"] = _render_pending(
-            settings, recipe, list(pending.values()), mode, summary, progress, check
-        )
-    except ComfyUIUnavailable as error:
-        # Motion artwork is optional: the rest of the batch has already finished.
-        logger.warning("Motion artwork skipped: %s", error)
-        summary["unavailable"] = str(error)
-    return summary
+    covers = list(pending.values())
+    for cover in covers:
+        cover["seed"] = recipe.seed if recipe.seed is not None else secrets.randbelow(2**31)
+        if recipe.prompt_mode == "fixed":
+            cover["prompt"] = (
+                recipe.fixed_prompt.replace("{title}", cover["title"] or "")
+                .replace("{album}", cover["album"] or "")
+                .replace("{artist}", cover["artist"] or "")
+                .replace("{lyrics}", cover["lyrics"] or "")
+            )
 
-
-def _label(cover: dict) -> str:
-    return f"{cover['title'] or 'Unknown title'} · {cover['artist'] or 'Unknown artist'}"
-
-
-def _render_pending(
-    settings: MotionArtworkSettings,
-    recipe: Recipe,
-    covers: list[dict],
-    mode: str,
-    summary: dict,
-    progress: Callable[[dict], None],
-    check: Callable[[], None],
-) -> dict:
-    """Render covers in three phases, each with only one large model loaded.
-
-    1. Prompts: Gemma writes every cover's description (skipped for a fixed prompt).
-    2. Encodings: the LTX text encoder encodes every prompt to a small file.
-    3. Video: LTX renders every loop from those encodings, never loading the text encoder.
-
-    The built-in ComfyUI restarts between phases, so each model's memory is freed completely. An
-    external ComfyUI cannot read Echora's files, so it renders with the prompt text instead.
-    """
-    deployment = get_settings()
-    wait = {
-        "check": check,
-        "timeout_seconds": deployment.motion_artwork_render_timeout_seconds,
-        "poll_seconds": deployment.motion_artwork_poll_seconds,
-    }
-    external = bool(settings.external_url())
-    timings: dict[str, float] = {}
-
-    def failed(cover: dict, error: Exception) -> None:
+    def failed(cover: dict, error: Exception | str) -> None:
         with _connect() as connection, connection.cursor() as cursor:
             _record(
                 cursor,
@@ -369,34 +346,128 @@ def _render_pending(
         summary["errors"] += 1
         cover["failed"] = True
 
-    for cover in covers:
-        cover["seed"] = recipe.seed if recipe.seed is not None else secrets.randbelow(2**31)
-        if recipe.prompt_mode == "fixed":
-            cover["prompt"] = (
-                recipe.fixed_prompt.replace("{title}", cover["title"] or "")
-                .replace("{album}", cover["album"] or "")
-                .replace("{artist}", cover["artist"] or "")
-                .replace("{lyrics}", cover["lyrics"] or "")
-            )
+    with _cover_locks([cover["sha256"] for cover in covers]) as owned:
+        # Another worker is rendering a cover, or finished it meanwhile.
+        ready = [
+            cover
+            for cover in covers
+            if cover["sha256"] in owned
+            and not (mode == "missing" and _complete(cover["sha256"], recipe))
+        ]
+        summary["reused"] += len(covers) - len(ready)
+        by_sha = {cover["sha256"]: cover for cover in ready}
+        try:
+            if ready and recipe.prompt_mode == "external":
+                # External AI is reached from this server in both locations.
+                _write_external_prompts(recipe, ready, progress, check, failed)
+            if ready:
+                if on_modal:
+                    remote = current_remote()
+                    if remote is None:
+                        raise ComfyUIUnavailable("Modal is not connected for this batch")
+                    events = remote.motion_artwork(settings, recipe, ready)
+                else:
+                    events = render_loops(settings, recipe, ready, check)
+                for event in events:
+                    check()
+                    if "progress" in event:
+                        progress(event["progress"])
+                    elif "failed" in event:
+                        failed(by_sha[event["failed"]], event["error"])
+                    elif "rendered" in event:
+                        cover = by_sha[event["rendered"]]
+                        _store(cover, recipe, event)
+                        summary["rendered"] += 1
+                    elif "timings" in event:
+                        summary["timings"] = event["timings"]
+        except ComfyUIUnavailable as error:
+            # Motion artwork is optional: the rest of the batch has already finished.
+            logger.warning("Motion artwork skipped: %s", error)
+            summary["unavailable"] = str(error)
+    return summary
+
+
+def _store(cover: dict, recipe: Recipe, event: dict) -> None:
+    """Move a rendered loop into the artwork directory and record it."""
+    sha = cover["sha256"]
+    relative = f"{sha[:2]}/{sha}-{recipe.hash()}.mp4"
+    target = Path(get_settings().motion_artwork_dir) / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_suffix(".part.mp4")
+    shutil.move(event["file"], partial)
+    partial.replace(target)
+    with _connect() as connection, connection.cursor() as cursor:
+        _record(
+            cursor,
+            cover_sha256=sha,
+            recipe=recipe,
+            status="complete",
+            prompt=event.get("prompt") or cover.get("prompt"),
+            path=relative,
+            size=tuple(event["size"]),
+            frames=event["frames"],
+            file_bytes=target.stat().st_size,
+        )
+
+
+def _label(cover: dict) -> str:
+    return f"{cover['title'] or 'Unknown title'} · {cover['artist'] or 'Unknown artist'}"
+
+
+def render_loops(
+    settings: MotionArtworkSettings,
+    recipe: Recipe,
+    covers: list[dict],
+    check: Callable[[], None] = lambda: None,
+) -> Iterator[dict]:
+    """Render covers' loops in three phases, each with only one large model loaded. No database.
+
+    1. Prompts: Gemma writes every cover's description (unless the prompt is already given).
+    2. Encodings: the LTX text encoder encodes every prompt to a small file.
+    3. Video: LTX renders every loop from those encodings, never loading the text encoder.
+
+    The built-in ComfyUI restarts between phases, so each model's memory is freed completely. An
+    external ComfyUI cannot read Echora's files, so it renders with the prompt text instead.
+
+    Yields {"progress": ...}, {"failed": sha, "error": ...}, {"rendered": sha, "file", "size",
+    "frames", "prompt"} and finally {"timings": ...}. A rendered file is in a working directory
+    removed later, so the consumer moves it before asking for the next event. The same code runs
+    on this server and on Modal.
+    """
+    deployment = get_settings()
+    wait = {
+        "check": check,
+        "timeout_seconds": deployment.motion_artwork_render_timeout_seconds,
+        "poll_seconds": deployment.motion_artwork_poll_seconds,
+    }
+    external = bool(settings.external_url())
+    timings: dict[str, float] = {}
+    failures: list[dict] = []
+
+    def failed(cover: dict, error: Exception) -> None:
+        cover["failed"] = True
+        failures.append({"failed": cover["sha256"], "error": str(error)[:500]})
+
+    def drain() -> Iterator[dict]:
+        while failures:
+            yield failures.pop(0)
+
+    def status(**update) -> dict:
+        return {"progress": {"phase": "motion-artwork", **update}}
 
     with tempfile.TemporaryDirectory(prefix="echora-artwork-") as directory:
         work = Path(directory)
         started = time.monotonic()
-        if recipe.prompt_mode == "external":
-            _write_external_prompts(recipe, covers, progress, check, failed)
         if external or recipe.prompt_mode == "auto":
             with comfyui_phase(settings, work, check) as comfy:
                 for index, cover in enumerate(covers):
                     if cover.get("failed"):
                         continue
-                    progress(
-                        {
-                            "phase": "motion-artwork",
-                            "completed": index,
-                            "total": len(covers),
-                            "unit": "prompts",
-                            "message": f"Writing a prompt for {_label(cover)}",
-                        }
+                    yield status(
+                        completed=index,
+                        total=len(covers),
+                        unit="prompts",
+                        message=f"Writing a prompt for {_label(cover)}",
                     )
                     cover["image"] = comfy.upload_image(
                         cover["data"], _cover_name(cover), cover["content_type"]
@@ -410,14 +481,14 @@ def _render_pending(
                             raise
                         except ComfyUIError as error:
                             failed(cover, error)
+                    yield from drain()
                 if external:
                     timings["prompts_seconds"] = round(time.monotonic() - started)
                     started = time.monotonic()
-                    _render_covers(
-                        comfy, recipe, covers, work, wait, mode, summary, progress, failed
-                    )
+                    yield from _render_covers(comfy, recipe, covers, work, wait, failed, drain)
                     timings["video_seconds"] = round(time.monotonic() - started)
-                    return timings
+                    yield {"timings": timings}
+                    return
         else:
             (work / "input").mkdir(parents=True, exist_ok=True)
             for cover in covers:
@@ -433,14 +504,11 @@ def _render_pending(
             negative = encoding_file("negative")
             comfy.wait(comfy.queue(build_encode_graph(NEGATIVE, "negative")), **wait)
             for index, cover in enumerate(covers):
-                progress(
-                    {
-                        "phase": "motion-artwork",
-                        "completed": index,
-                        "total": len(covers),
-                        "unit": "encodings",
-                        "message": f"Encoding the prompt for {_label(cover)}",
-                    }
+                yield status(
+                    completed=index,
+                    total=len(covers),
+                    unit="encodings",
+                    message=f"Encoding the prompt for {_label(cover)}",
                 )
                 key = cover["sha256"][:16]
                 try:
@@ -449,24 +517,24 @@ def _render_pending(
                     raise
                 except ComfyUIError as error:
                     failed(cover, error)
+                    yield from drain()
                     continue
                 cover["encodings"] = (encoding_file(key), negative)
-        missing = [
-            cover
-            for cover in covers
-            if cover.get("encodings")
-            and not (work / "output" / "conditioning" / cover["encodings"][0]).is_file()
-        ]
-        for cover in missing:
-            failed(cover, ComfyUIError("The encoded prompt was not saved"))
+        for cover in covers:
+            if (
+                cover.get("encodings")
+                and not (work / "output" / "conditioning" / cover["encodings"][0]).is_file()
+            ):
+                failed(cover, ComfyUIError("The encoded prompt was not saved"))
+        yield from drain()
         timings["encode_seconds"] = round(time.monotonic() - started)
 
         started = time.monotonic()
         covers = [cover for cover in covers if not cover.get("failed")]
         with comfyui_phase(settings, work, check) as comfy:
-            _render_covers(comfy, recipe, covers, work, wait, mode, summary, progress, failed)
+            yield from _render_covers(comfy, recipe, covers, work, wait, failed, drain)
         timings["video_seconds"] = round(time.monotonic() - started)
-    return timings
+    yield {"timings": timings}
 
 
 def _write_external_prompts(
@@ -525,44 +593,27 @@ def _render_covers(
     covers: list[dict],
     work: Path,
     wait: dict,
-    mode: str,
-    summary: dict,
-    progress: Callable[[dict], None],
     failed: Callable,
-) -> None:
-    for index, cover in enumerate(cover for cover in covers if not cover.get("failed")):
-        progress(
-            {
+    drain: Callable[[], Iterator[dict]],
+) -> Iterator[dict]:
+    active = [cover for cover in covers if not cover.get("failed")]
+    for index, cover in enumerate(active):
+        yield {
+            "progress": {
                 "phase": "motion-artwork",
                 "completed": index,
-                "total": len(covers),
+                "total": len(active),
                 "unit": "loops",
                 "message": f"Rendering {_label(cover)}",
             }
-        )
-        with _cover_lock(cover["sha256"]) as owned:
-            # Another worker is rendering this exact cover, or finished it meanwhile.
-            if not owned or (mode == "missing" and _complete(cover["sha256"], recipe)):
-                summary["reused"] += 1
-                continue
-            try:
-                result = _render(comfy, recipe, cover, work, wait)
-            except ComfyUIUnavailable:
-                raise
-            except ComfyUIError as error:
-                # The graph or its models failed for this cover; record it and move on.
-                failed(cover, error)
-                continue
-            with _connect() as connection, connection.cursor() as cursor:
-                _record(
-                    cursor,
-                    cover_sha256=cover["sha256"],
-                    recipe=recipe,
-                    status="complete",
-                    prompt=cover["prompt"],
-                    path=result["path"],
-                    size=result["size"],
-                    frames=result["frames"],
-                    file_bytes=result["bytes"],
-                )
-            summary["rendered"] += 1
+        }
+        try:
+            result = _render(comfy, recipe, cover, work, wait)
+        except ComfyUIUnavailable:
+            raise
+        except ComfyUIError as error:
+            # The graph or its models failed for this cover; record it and move on.
+            failed(cover, error)
+            yield from drain()
+            continue
+        yield {"rendered": cover["sha256"], "prompt": cover["prompt"], **result}
