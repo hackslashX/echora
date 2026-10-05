@@ -17,6 +17,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .motion_artwork_prompts import CAMERA_RULE, I2V_SYSTEM_PROMPT
+
 LTX_REPOSITORY = "Lightricks/LTX-2.5"
 LTX_REVISION = "5e6e71018ee1756ed329b697a7b4aedc934dfce9"
 GEMMA_REPOSITORY = "Comfy-Org/gemma-4"
@@ -43,27 +45,16 @@ REQUIRED_LOADERS = (
 FPS = 24
 # The rendered clip plays forward, then backward ("ping-pong"), to make the loop.
 LOOP = "ping-pong"
-# Bump when the External AI writer's system prompt changes, so covers get new loops.
-WRITER_REVISION = "song-guided-4-static"
+# Bump when either generated-prompt strategy changes, so covers get new loops.
+WRITER_REVISION = "ltx-i2v-5-static"
 DISTILLED_SIGMAS = "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
 # cfg=1 ignores the negative branch, but the conditioning nodes still require one.
 NEGATIVE = "static, blurry, low quality, jpeg artifacts, deformed, distorted face, warped text"
 DEFAULT_INSTRUCTIONS = (
-    "Animate this album cover as a short, lively clip that starts on the cover. The clip is played forward "
-    "and then in reverse to make a loop, so describe one continuous forward movement and choose motion that "
-    "also looks natural backwards, such as swaying, turning, a breeze, ripples or drifting clouds; avoid "
-    "falling or pouring things, walking and things that appear or vanish. The camera is locked off and "
-    "does not move at all: no pan, tilt, drift, rise or arc. Never zoom, push in, pull out, move closer, move farther away or dolly: the whole cover "
-    "stays in frame at its original size. Bring the whole scene to life, not only the main subject. Alongside "
-    "any main action, describe subtle, continuous ambient motion in the surroundings that suits the artwork, "
-    "such as grass, flowers and leaves swaying in a light breeze, ripples on water, drifting clouds, mist or "
-    "smoke, floating dust or light particles, stirring hair or fabric, softly flickering lights, or confetti "
-    "and petals drifting. Keep "
-    "every face, the composition, the art style, logos, lettering and borders unchanged. If a person's face is "
-    "not visible on the cover, because they are seen from behind, turned away, covered or out of frame, it stays "
-    "hidden for the whole clip: they never turn toward the camera and no face is revealed. A face that is partly "
-    "visible may stay as it is. Avoid camera flashes, lens flares and full-frame lighting changes."
-)
+    "Animate the pictured subject with one clear, natural movement that looks natural when reversed. "
+    "Include subtle ambient motion in the surroundings only where the artwork supports it. "
+    "Preserve the original art style, composition, identities and lettering. "
+) + CAMERA_RULE
 # Zooms crop the cover and warp it as it enlarges, so prompts that ask for one are written again.
 ZOOM_WORDS = re.compile(
     r"\b(zoom\w*|push(?:es|ed|ing)?[- ]?in|pull(?:s|ed|ing)?[- ]?(?:out|back)|dolly\w*|dollies|"
@@ -84,7 +75,7 @@ class Recipe:
 
     def as_dict(self) -> dict:
         prompt_model = {
-            "auto": f"{GEMMA_REPOSITORY}@{GEMMA_REVISION}",
+            "auto": f"{GEMMA_REPOSITORY}@{GEMMA_REVISION}:{WRITER_REVISION}",
             "external": f"external:{WRITER_REVISION}",
         }
         return {
@@ -106,8 +97,16 @@ class Recipe:
 
 
 def build_prompt_graph(recipe: Recipe, image_name: str, seed: int) -> dict:
-    """Gemma-4 E2B writes a scene description from the cover, using ComfyUI's built-in LTX
-    image-to-video caption template plus Echora's instructions."""
+    """Use the pinned node's Gemma 4 chat format with our stationary-camera I2V template.
+
+    TextGenerateLTX2Prompt in the pinned ComfyUI does not support a system override.
+    TextGenerate with skip-template accepts the same formatted chat and image tokens.
+    """
+    caption_request = (
+        f"<|turn>system\n{I2V_SYSTEM_PROMPT}\nOutput only the caption text.<turn|>\n"
+        f"<|turn>user\n<|image><|image|><image|>\n\n{recipe.instructions}\n\n{CAMERA_RULE}<turn|>\n"
+        "<|turn>model\n<|channel>final\n"
+    )
     return {
         "1_cover": {"class_type": "LoadImage", "inputs": {"image": image_name}},
         "30_prompt_model": {
@@ -115,11 +114,11 @@ def build_prompt_graph(recipe: Recipe, image_name: str, seed: int) -> dict:
             "inputs": {"clip_name": PROMPT_MODEL, "type": "ltxv", "device": "default"},
         },
         "31_write_prompt": {
-            "class_type": "TextGenerateLTX2Prompt",
+            "class_type": "TextGenerate",
             "inputs": {
                 "clip": ["30_prompt_model", 0],
                 "image": ["1_cover", 0],
-                "prompt": recipe.instructions,
+                "prompt": caption_request,
                 "max_length": 600,
                 "sampling_mode": "on",
                 "sampling_mode.temperature": 0.3,
@@ -129,7 +128,7 @@ def build_prompt_graph(recipe: Recipe, image_name: str, seed: int) -> dict:
                 "sampling_mode.repetition_penalty": 1.15,
                 "sampling_mode.seed": seed,
                 "thinking": False,
-                "use_default_template": True,
+                "use_default_template": False,
             },
         },
         "32_show_prompt": {
@@ -143,21 +142,36 @@ def build_prompt_graph(recipe: Recipe, image_name: str, seed: int) -> dict:
 CAMERA_MOVES = re.compile(
     r"\bcamera\b[^.;:]{0,40}?\b(pans?|panning|drifts?|drifting|rises?|rising|arcs?|arcing|tilts?|tilting|"
     r"tracks?|tracking|glides?|gliding|sweeps?|orbits?|orbiting|slides?|sliding|cranes?|moves? (?:slowly|gently|"
-    r"sideways|left|right|up|down|forward|back))\b",
+    r"sideways|left|right|up|down|forward|back)|moves?|moving|advances?|approaches?|recedes?)\b",
     re.IGNORECASE,
 )
 
 
 NEGATION = re.compile(r"\b(no|not|never|without|nor|neither)\b|n't\b", re.IGNORECASE)
+# A negative in one clause must not excuse a later, affirmative camera move.
+CLAUSE_BREAK = re.compile(
+    r"[.;:]|\b(?:but|then|however|while|whereas)\b|"
+    r"\band\s+(?=(?:the\s+)?camera\b)|,\s*(?=(?:the\s+)?camera\b)",
+    re.IGNORECASE,
+)
+FRAME_CHANGES = re.compile(
+    r"\b(?:framing|frame|view)\b[^.;:]{0,30}?\b(?:tightens?|widens?|zooms?|enlarges?)\b",
+    re.IGNORECASE,
+)
 
 
 def zooms(prompt: str) -> bool:
     """Whether a prompt asks for a zoom-like or any other camera move ("no pan", "never zooms" do not count)."""
-    for pattern in (ZOOM_WORDS, CAMERA_MOVES):
+    for pattern in (ZOOM_WORDS, CAMERA_MOVES, FRAME_CHANGES):
         for match in pattern.finditer(prompt):
             # Look at the clause before the match too, for "the camera does not zoom" or "no push-in".
-            start = max(prompt.rfind(mark, 0, match.start()) for mark in (".", ";", ":"))
-            if not NEGATION.search(prompt[start + 1 : match.end()]):
+            # Camera patterns may start before a clause boundary ("camera does not pan,
+            # then zooms"). Evaluate the actual movement word, not the whole sentence.
+            movement = match.start(1) if pattern is CAMERA_MOVES else match.start()
+            preceding = prompt[:movement]
+            breaks = list(CLAUSE_BREAK.finditer(preceding))
+            start = breaks[-1].end() if breaks else 0
+            if not NEGATION.search(prompt[start : match.end()]):
                 return True
     return False
 
