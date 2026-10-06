@@ -165,6 +165,8 @@ export default function FullscreenPlayer() {
   const [motion, setMotion] = useState<{ trackId: string; src: string } | null>(null);
   const [motionReady, setMotionReady] = useState("");
   const motionVideos = useRef<(HTMLVideoElement | null)[]>([]);
+  // Read by the loop below without restarting it, so pause and resume keep the frame.
+  const motionPlaying = useRef(player.playing);
   const [closing, setClosing] = useState(false);
   const { setExpanded } = player;
   const close = useCallback(() => {
@@ -251,10 +253,10 @@ export default function FullscreenPlayer() {
       video.currentTime = 0;
       video.style.opacity = index === 0 ? "1" : "0";
     });
-    if (player.playing) videos[0].play().catch(() => {});
+    if (motionPlaying.current) videos[0].play().catch(() => {});
     const draw = () => {
       frame = requestAnimationFrame(draw);
-      if (!player.playing) return;
+      if (!motionPlaying.current) return;
       const current = videos[active];
       const next = videos[1 - active];
       if (!Number.isFinite(current.duration) || current.duration <= fadeSeconds) return;
@@ -283,6 +285,28 @@ export default function FullscreenPlayer() {
       videos.forEach((video) => video.pause());
     };
     // The loop's videos remount when the phone layout returns to the artwork view.
+  }, [showMotion, currentMotion?.src, artworkVisible]);
+  // Pausing the song freezes the loop on its current frame; resuming continues from there.
+  useEffect(() => {
+    motionPlaying.current = player.playing;
+    const videos = motionVideos.current.filter((video): video is HTMLVideoElement =>
+      Boolean(video),
+    );
+    if (!showMotion || videos.length !== 2) return;
+    if (!player.playing) {
+      videos.forEach((video) => {
+        video.dataset.resume = video.paused ? "" : "1";
+        video.pause();
+      });
+      return;
+    }
+    const resuming = videos.filter((video) => video.dataset.resume === "1");
+    // Nothing was playing when paused (for example a fresh loop): start the visible one.
+    (resuming.length
+      ? resuming
+      : videos.filter((video) => video.style.opacity !== "0").slice(0, 1)
+    ).forEach((video) => video.play().catch(() => {}));
+    videos.forEach((video) => delete video.dataset.resume);
   }, [player.playing, showMotion, currentMotion?.src, artworkVisible]);
   const currentLyrics = player.lyrics?.trackId === player.track?.id ? player.lyrics : null;
   const lyricFragments = useMemo(
