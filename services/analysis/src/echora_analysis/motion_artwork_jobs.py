@@ -615,6 +615,10 @@ def render_loops(
 
         started = time.monotonic()
         covers = [cover for cover in covers if not cover.get("failed")]
+        if not covers:
+            # Every prompt failed: start neither the encoder nor the video model.
+            yield {"timings": timings}
+            return
         with comfyui_phase(settings, work, check) as comfy:
             negative = encoding_file("negative")
             comfy.wait(comfy.queue(build_encode_graph(NEGATIVE, "negative")), **wait)
@@ -646,6 +650,9 @@ def render_loops(
 
         started = time.monotonic()
         covers = [cover for cover in covers if not cover.get("failed")]
+        if not covers:
+            yield {"timings": timings}
+            return
         with comfyui_phase(settings, work, check) as comfy:
             yield from _render_covers(comfy, recipe, covers, work, wait, failed, drain)
         timings["video_seconds"] = round(time.monotonic() - started)

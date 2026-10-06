@@ -515,7 +515,7 @@ def test_a_prompt_that_keeps_zooming_is_rejected_after_three_attempts(database, 
     _enable(database)
     FakeComfyUI.zooming_seeds = {42, 43, 44}
     result = batch["run"]()
-    assert result["rendered"] == 0 and result["failed"] == 4
+    assert result["rendered"] == 0 and result["errors"] == 4
     assert FakeComfyUI.prompt_seeds == [42, 43, 44] * 4
     assert not FakeComfyUI.rendered and not FakeComfyUI.encoded
 
