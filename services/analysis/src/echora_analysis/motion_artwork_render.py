@@ -151,7 +151,15 @@ NEGATION = re.compile(r"\b(no|not|never|without|nor|neither)\b|n't\b", re.IGNORE
 # A negative in one clause must not excuse a later, affirmative camera move.
 CLAUSE_BREAK = re.compile(
     r"[.;:]|\b(?:but|then|however|while|whereas)\b|"
-    r"\band\s+(?=(?:the\s+)?camera\b)|,\s*(?=(?:the\s+)?camera\b)",
+    r"\band\s+(?=(?:it|(?:the\s+)?camera)\b)|,\s*(?=(?:it|(?:the\s+)?camera)\b)",
+    re.IGNORECASE,
+)
+# What may sit between a clause break and a camera move whose subject is left out
+# ("the camera holds, then gently pans"). Any other word starts a new subject
+# ("the camera is locked off while leaves move"), whose movement is not the camera's.
+SAME_SUBJECT = re.compile(
+    r"^(?:[\s,]|\b(?:it|the|camera|then|and|also|now|slowly|gently|softly|subtly|smoothly|"
+    r"gradually|briefly|begins?|starts?|to)\b)*$",
     re.IGNORECASE,
 )
 FRAME_CHANGES = re.compile(
@@ -171,6 +179,12 @@ def zooms(prompt: str) -> bool:
             preceding = prompt[:movement]
             breaks = list(CLAUSE_BREAK.finditer(preceding))
             start = breaks[-1].end() if breaks else 0
+            if (
+                pattern is CAMERA_MOVES
+                and start > match.start()
+                and not SAME_SUBJECT.match(prompt[start:movement])
+            ):
+                continue
             if not NEGATION.search(prompt[start : match.end()]):
                 return True
     return False

@@ -157,6 +157,8 @@ def test_camera_movement_detection_respects_local_negation():
         "No particles appear, and the camera pushes in.",
         "The camera moves gently forward.",
         "The framing slowly tightens around the boat.",
+        "The camera does not pan, it zooms in.",
+        "The camera holds still, then gently pans left.",
     ):
         assert zooms(prompt), prompt
     for prompt in (
@@ -179,6 +181,7 @@ def test_camera_movement_detection_respects_local_negation():
         "Clouds drift across the sky.",
         "The camera never zooms.",
         "The camera does not pan, tilt or zoom.",
+        "The camera is locked off while leaves move.",
     ):
         assert not zooms(prompt), prompt
     assert not zooms(DEFAULT_INSTRUCTIONS)
