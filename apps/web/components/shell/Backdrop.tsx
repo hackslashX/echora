@@ -10,7 +10,11 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { BackdropPreset, PlaybackPreferences, readPlaybackPreferences } from "../player/playbackPreferences";
+import {
+  BackdropPreset,
+  PlaybackPreferences,
+  readPlaybackPreferences,
+} from "../player/playbackPreferences";
 import RootVisualizer from "../player/RootVisualizer";
 import SignalVisualizer from "../player/SignalVisualizer";
 import CloudVisualizer from "../player/CloudVisualizer";
@@ -22,9 +26,36 @@ import { advanceWaveSpring } from "./waveSpring";
 
 type RenderLayer = { render: (time: number) => void };
 type Color = [number, number, number];
-type SplineSettings = { flowSpeed: number; bandAmplitude: number; waveHeightScale: number; brightness: number; opacity: number; layerAmplitudes: number[]; layerColors: Color[]; colorR: number; colorG: number; colorB: number };
-type ParticleSettings = { count: number; flowSpeed: number; opacity: number; sizeBase: number; sizeVar: number };
-type Reactivity = { bass: number; mid: number; treble: number; level: number; onset?: boolean; timestamp?: number; bassAttack?: number; midAttack?: number; trebleAttack?: number };
+type SplineSettings = {
+  flowSpeed: number;
+  bandAmplitude: number;
+  waveHeightScale: number;
+  brightness: number;
+  opacity: number;
+  layerAmplitudes: number[];
+  layerColors: Color[];
+  colorR: number;
+  colorG: number;
+  colorB: number;
+};
+type ParticleSettings = {
+  count: number;
+  flowSpeed: number;
+  opacity: number;
+  sizeBase: number;
+  sizeVar: number;
+};
+type Reactivity = {
+  bass: number;
+  mid: number;
+  treble: number;
+  level: number;
+  onset?: boolean;
+  timestamp?: number;
+  bassAttack?: number;
+  midAttack?: number;
+  trebleAttack?: number;
+};
 type XmbWindow = Window & {
   createSplineLayer?: (gl: WebGL2RenderingContext, canvas: HTMLCanvasElement) => RenderLayer;
   createParticlesLayer?: (gl: WebGL2RenderingContext, canvas: HTMLCanvasElement) => RenderLayer;
@@ -32,7 +63,13 @@ type XmbWindow = Window & {
   PARTICLE_SETTINGS?: ParticleSettings;
 };
 
-const scripts = ["spline-settings.js", "particles-settings.js", "spline-reverse.js", "spline.js", "particles.js"];
+const scripts = [
+  "spline-settings.js",
+  "particles-settings.js",
+  "spline-reverse.js",
+  "spline.js",
+  "particles.js",
+];
 const scriptLoads = new Map<string, Promise<void>>();
 
 function loadScript(file: string) {
@@ -51,25 +88,47 @@ function loadScript(file: string) {
 }
 
 const DEFAULT_BASE: Color = [37, 89, 179];
-const DEFAULT_WAVES: [Color, Color, Color] = [[0.48, 0.98, 0.92], [0.76, 0.66, 1], [0.55, 0.8, 1]];
+const DEFAULT_WAVES: [Color, Color, Color] = [
+  [0.48, 0.98, 0.92],
+  [0.76, 0.66, 1],
+  [0.55, 0.8, 1],
+];
 
-function sceneBackground(ctx: CanvasRenderingContext2D, base: Color, width: number, height: number) {
+function sceneBackground(
+  ctx: CanvasRenderingContext2D,
+  base: Color,
+  width: number,
+  height: number,
+) {
   const gradient = ctx.createLinearGradient(0, 0, 0, height);
   const top = base.map((value, channel) => value * (channel === 2 ? 0.09 * 1.2 : 0.09));
-  const bottom = base.map(value => value * 0.62);
-  gradient.addColorStop(0, `rgb(${top.map(value => Math.round(value)).join(",")})`);
-  gradient.addColorStop(1, `rgb(${bottom.map(value => Math.round(value)).join(",")})`);
+  const bottom = base.map((value) => value * 0.62);
+  gradient.addColorStop(0, `rgb(${top.map((value) => Math.round(value)).join(",")})`);
+  gradient.addColorStop(1, `rgb(${bottom.map((value) => Math.round(value)).join(",")})`);
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, width, height);
 }
 
-
-type CurtainCell = { digit: number; lastChange: number; changeSpeed: number; speedMult: number; flash: number; darken: number };
+type CurtainCell = {
+  digit: number;
+  lastChange: number;
+  changeSpeed: number;
+  speedMult: number;
+  flash: number;
+  darken: number;
+};
 type CurtainState = { cells: CurtainCell[]; cols: number; rows: number };
 const SEGMENT_MAP: Record<number, number[]> = {
-  0: [1, 1, 1, 1, 1, 1, 0], 1: [0, 1, 1, 0, 0, 0, 0], 2: [1, 1, 0, 1, 1, 0, 1], 3: [1, 1, 1, 1, 0, 0, 1],
-  4: [0, 1, 1, 0, 0, 1, 1], 5: [1, 0, 1, 1, 0, 1, 1], 6: [1, 0, 1, 1, 1, 1, 1], 7: [1, 1, 1, 0, 0, 0, 0],
-  8: [1, 1, 1, 1, 1, 1, 1], 9: [1, 1, 1, 1, 0, 1, 1],
+  0: [1, 1, 1, 1, 1, 1, 0],
+  1: [0, 1, 1, 0, 0, 0, 0],
+  2: [1, 1, 0, 1, 1, 0, 1],
+  3: [1, 1, 1, 1, 0, 0, 1],
+  4: [0, 1, 1, 0, 0, 1, 1],
+  5: [1, 0, 1, 1, 0, 1, 1],
+  6: [1, 0, 1, 1, 1, 1, 1],
+  7: [1, 1, 1, 0, 0, 0, 0],
+  8: [1, 1, 1, 1, 1, 1, 1],
+  9: [1, 1, 1, 1, 0, 1, 1],
 };
 const ASCII_CHARS = "♪♫★☆◆◇○●◐◑░▒▓█▪▫ABCDEФ0123456789!?#$%&<>*+=-~";
 let asciiAtlas: HTMLCanvasElement | null = null;
@@ -78,20 +137,30 @@ let asciiRandoms: Float32Array | null = null;
 function asciiAtlasCanvas(): HTMLCanvasElement {
   if (asciiAtlas) return asciiAtlas;
   const canvas = document.createElement("canvas");
-  canvas.width = 256; canvas.height = 256;
+  canvas.width = 256;
+  canvas.height = 256;
   const ctx = canvas.getContext("2d")!;
   ctx.fillStyle = "#fff";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   for (let index = 0; index < 64; index++) {
     ctx.font = `${index % 2 ? 300 : 500} ${36 + (index % 3) * 4}px "DM Mono", monospace`;
-    ctx.fillText(ASCII_CHARS[index % ASCII_CHARS.length], (index % 8) * 32 + 16, Math.floor(index / 8) * 32 + 17);
+    ctx.fillText(
+      ASCII_CHARS[index % ASCII_CHARS.length],
+      (index % 8) * 32 + 16,
+      Math.floor(index / 8) * 32 + 17,
+    );
   }
   asciiAtlas = canvas;
   return canvas;
 }
 
-function curtainCellsFor(cols: number, rows: number, elapsed: number, existing: CurtainState | null): CurtainState {
+function curtainCellsFor(
+  cols: number,
+  rows: number,
+  elapsed: number,
+  existing: CurtainState | null,
+): CurtainState {
   if (existing && existing.cols === cols && existing.rows === rows) return existing;
   const cells: CurtainCell[] = Array.from({ length: cols * rows }, () => ({
     digit: Math.floor(Math.random() * 10),
@@ -104,9 +173,26 @@ function curtainCellsFor(cols: number, rows: number, elapsed: number, existing: 
   return { cells, cols, rows };
 }
 
-function presetScene(ctx: CanvasRenderingContext2D, preset: BackdropPreset, width: number, height: number, elapsed: number, clock: number, delta: number, reactive: Reactivity, background: Color, waves: [Color, Color, Color], curtainState: { current: CurtainState | null }) {
-  const mix = (a: Color, b: Color, amount: number): Color => [a[0] + (b[0] - a[0]) * amount, a[1] + (b[1] - a[1]) * amount, a[2] + (b[2] - a[2]) * amount];
-  const css = (color: Color, alpha = 1) => `rgba(${color.map(value => Math.round(value * 255)).join(",")},${alpha})`;
+function presetScene(
+  ctx: CanvasRenderingContext2D,
+  preset: BackdropPreset,
+  width: number,
+  height: number,
+  elapsed: number,
+  clock: number,
+  delta: number,
+  reactive: Reactivity,
+  background: Color,
+  waves: [Color, Color, Color],
+  curtainState: { current: CurtainState | null },
+) {
+  const mix = (a: Color, b: Color, amount: number): Color => [
+    a[0] + (b[0] - a[0]) * amount,
+    a[1] + (b[1] - a[1]) * amount,
+    a[2] + (b[2] - a[2]) * amount,
+  ];
+  const css = (color: Color, alpha = 1) =>
+    `rgba(${color.map((value) => Math.round(value * 255)).join(",")},${alpha})`;
   sceneBackground(ctx, background, width, height);
   const dpr = Math.max(0.01, width / Math.max(1, window.innerWidth));
   ctx.save();
@@ -131,7 +217,8 @@ function presetScene(ctx: CanvasRenderingContext2D, preset: BackdropPreset, widt
       for (const cell of state.cells) if (Math.random() < 0.1) cell.flash = 1;
     }
     for (const cell of state.cells) {
-      if (cell.speedMult === 1 && Math.random() < mid * delta * 9) cell.speedMult = 18 + Math.random() * 20;
+      if (cell.speedMult === 1 && Math.random() < mid * delta * 9)
+        cell.speedMult = 18 + Math.random() * 20;
       if (clock - cell.lastChange > 1 / (cell.changeSpeed * cell.speedMult)) {
         cell.digit = Math.floor(Math.random() * 10);
         cell.lastChange = clock;
@@ -150,15 +237,18 @@ function presetScene(ctx: CanvasRenderingContext2D, preset: BackdropPreset, widt
       ctx.lineCap = "round";
       const draw = (x1: number, y1: number, x2: number, y2: number, on: boolean) => {
         ctx.strokeStyle = on ? segmentColor(brightness) : segmentColor(0.025 * cell.darken);
-        ctx.beginPath(); ctx.moveTo(x + x1, y + y1); ctx.lineTo(x + x2, y + y2); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x + x1, y + y1);
+        ctx.lineTo(x + x2, y + y2);
+        ctx.stroke();
       };
-      draw(cellW * .18, 0, cellW * 1.82, 0, !!visible[0]);
-      draw(cellW * 2, cellH * .18, cellW * 2, cellH * .82, !!visible[1]);
+      draw(cellW * 0.18, 0, cellW * 1.82, 0, !!visible[0]);
+      draw(cellW * 2, cellH * 0.18, cellW * 2, cellH * 0.82, !!visible[1]);
       draw(cellW * 2, cellH * 1.18, cellW * 2, cellH * 1.82, !!visible[2]);
-      draw(cellW * .18, cellH * 2, cellW * 1.82, cellH * 2, !!visible[3]);
+      draw(cellW * 0.18, cellH * 2, cellW * 1.82, cellH * 2, !!visible[3]);
       draw(0, cellH * 1.18, 0, cellH * 1.82, !!visible[4]);
-      draw(0, cellH * .18, 0, cellH * .82, !!visible[5]);
-      draw(cellW * .18, cellH, cellW * 1.82, cellH, !!visible[6]);
+      draw(0, cellH * 0.18, 0, cellH * 0.82, !!visible[5]);
+      draw(cellW * 0.18, cellH, cellW * 1.82, cellH, !!visible[6]);
     }
   } else if (preset === "ascii") {
     const bass = reactive.bass;
@@ -168,7 +258,8 @@ function presetScene(ctx: CanvasRenderingContext2D, preset: BackdropPreset, widt
     const cell = Math.max(22, Math.min(30, Math.floor(w / 34)));
     const cols = Math.ceil(w / cell);
     const rows = Math.ceil(h / cell);
-    if (!asciiRandoms || asciiRandoms.length < cols * rows) asciiRandoms = Float32Array.from({ length: cols * rows }, () => Math.random());
+    if (!asciiRandoms || asciiRandoms.length < cols * rows)
+      asciiRandoms = Float32Array.from({ length: cols * rows }, () => Math.random());
     const rand = asciiRandoms;
     const noiseSpeed = 0.02 + mid * 0.3;
     const slowTime = Math.floor(clock * 9);
@@ -180,23 +271,37 @@ function presetScene(ctx: CanvasRenderingContext2D, preset: BackdropPreset, widt
         const gridIndex = row * cols + column;
         const px = (column + 0.5) * cell;
         const py = (row + 0.5) * cell;
-        const nx = column / cols * 3;
-        const ny = row / rows * 3;
-        const noise = (
-          Math.sin(nx * 3 + clock * noiseSpeed * 9) +
-          Math.sin(ny * 4 + clock * noiseSpeed * 4.5) +
-          Math.sin(nx * 5 - clock * noiseSpeed * 1.8) +
-          Math.sin(ny * 7 - clock * noiseSpeed * 7.2)
-        ) / 8 + 0.5;
+        const nx = (column / cols) * 3;
+        const ny = (row / rows) * 3;
+        const noise =
+          (Math.sin(nx * 3 + clock * noiseSpeed * 9) +
+            Math.sin(ny * 4 + clock * noiseSpeed * 4.5) +
+            Math.sin(nx * 5 - clock * noiseSpeed * 1.8) +
+            Math.sin(ny * 7 - clock * noiseSpeed * 7.2)) /
+            8 +
+          0.5;
         let charIndex = Math.floor((noise * 64 + rand[gridIndex] * 64 + slowTime * 7) % 64);
-        if (rand[(gridIndex + slowTime) % rand.length] < treble * 0.3) charIndex = Math.floor(rand[(gridIndex * 7 + slowTime) % rand.length] * 64);
+        if (rand[(gridIndex + slowTime) % rand.length] < treble * 0.3)
+          charIndex = Math.floor(rand[(gridIndex * 7 + slowTime) % rand.length] * 64);
         const brightness = Math.max(0, Math.min(1, noise * 0.2 + bass * 0.4));
         if (brightness < 0.3) continue;
         const color = mix(waves[0], waves[1], noise);
-        const edgeFade = Math.min(1, Math.sin(Math.PI * Math.min(1, (row + 0.5) / rows * 1.04)) * 0.7 + 0.3) * Math.min(1, Math.sin(Math.PI * Math.min(1, (column + 0.5) / cols * 1.04)) * 0.5 + 0.5);
+        const edgeFade =
+          Math.min(1, Math.sin(Math.PI * Math.min(1, ((row + 0.5) / rows) * 1.04)) * 0.7 + 0.3) *
+          Math.min(1, Math.sin(Math.PI * Math.min(1, ((column + 0.5) / cols) * 1.04)) * 0.5 + 0.5);
         ctx.globalAlpha = Math.min(0.22, brightness * 0.3 * edgeFade);
         ctx.fillStyle = css(brightness > 0.85 ? waves[1] : color, 1);
-        ctx.drawImage(atlas, (charIndex % 8) * 32, Math.floor(charIndex / 8) * 32, 32, 32, px - cell / 2, py - cell / 2, cell, cell);
+        ctx.drawImage(
+          atlas,
+          (charIndex % 8) * 32,
+          Math.floor(charIndex / 8) * 32,
+          32,
+          32,
+          px - cell / 2,
+          py - cell / 2,
+          cell,
+          cell,
+        );
       }
     }
     ctx.globalAlpha = 1;
@@ -209,7 +314,8 @@ export default function Backdrop() {
   useEffect(() => {
     const apply = (preferences: PlaybackPreferences) => {
       const value = preferences.backdropOpacity;
-      const opacity = typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.5;
+      const opacity =
+        typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.5;
       backdropRef.current?.style.setProperty("--backdrop-opacity", String(opacity));
     };
     apply(readPlaybackPreferences());
@@ -240,13 +346,27 @@ export default function Backdrop() {
     let opacityScale = 1;
     let targetOpacityScale = 1;
     const baseColor: Color = [...DEFAULT_BASE];
-    const waveColors: [Color, Color, Color] = [[...DEFAULT_WAVES[0]], [...DEFAULT_WAVES[1]], [...DEFAULT_WAVES[2]]];
+    const waveColors: [Color, Color, Color] = [
+      [...DEFAULT_WAVES[0]],
+      [...DEFAULT_WAVES[1]],
+      [...DEFAULT_WAVES[2]],
+    ];
     const reactive: Reactivity = { ...target };
-    const receiveAudio = (event: Event) => Object.assign(target, (event as CustomEvent<Reactivity>).detail);
-    const receiveMode = (event: Event) => { targetOpacityScale = (event as CustomEvent<{ waveOpacity: number }>).detail.waveOpacity; };
-    const receivePreferences = (event: Event) => { preferences = (event as CustomEvent<PlaybackPreferences>).detail; };
+    const receiveAudio = (event: Event) =>
+      Object.assign(target, (event as CustomEvent<Reactivity>).detail);
+    const receiveMode = (event: Event) => {
+      targetOpacityScale = (event as CustomEvent<{ waveOpacity: number }>).detail.waveOpacity;
+    };
+    const receivePreferences = (event: Event) => {
+      preferences = (event as CustomEvent<PlaybackPreferences>).detail;
+    };
     const receivePalette = (event: Event) => {
-      const detail = (event as CustomEvent<{ active: boolean; palette: { background: Color; waves: [Color, Color, Color] } | null }>).detail;
+      const detail = (
+        event as CustomEvent<{
+          active: boolean;
+          palette: { background: Color; waves: [Color, Color, Color] } | null;
+        }>
+      ).detail;
       paletteTarget = detail.active ? detail.palette : null;
     };
     window.addEventListener("echora:audio-reactivity", receiveAudio);
@@ -257,7 +377,11 @@ export default function Backdrop() {
     async function start() {
       for (const file of scripts) await loadScript(file);
       if (cancelled) return;
-      const gl = canvas.getContext("webgl2", { antialias: true, alpha: false, powerPreference: "high-performance" });
+      const gl = canvas.getContext("webgl2", {
+        antialias: true,
+        alpha: false,
+        powerPreference: "high-performance",
+      });
       const scope = window as XmbWindow;
       if (!gl || !scope.createSplineLayer || !scope.createParticlesLayer) return;
       gl.getExtension("OES_texture_float_linear");
@@ -265,11 +389,15 @@ export default function Backdrop() {
 
       const resize = () => {
         const ratio = Math.min(window.devicePixelRatio || 1, 2);
-        for (const [element, elementRatio] of [[canvas, ratio], [sceneCanvas, 1]] as const) {
+        for (const [element, elementRatio] of [
+          [canvas, ratio],
+          [sceneCanvas, 1],
+        ] as const) {
           const width = Math.max(1, Math.floor(element.clientWidth * elementRatio));
           const height = Math.max(1, Math.floor(element.clientHeight * elementRatio));
           if (element.width !== width || element.height !== height) {
-            element.width = width; element.height = height;
+            element.width = width;
+            element.height = height;
           }
         }
         gl.viewport(0, 0, canvas.width, canvas.height);
@@ -282,64 +410,149 @@ export default function Backdrop() {
       const particles = scope.createParticlesLayer(gl, canvas);
       const splineSettings = scope.SPLINE_SETTINGS;
       const particleSettings = scope.PARTICLE_SETTINGS;
-      const baseline = splineSettings && particleSettings ? {
-        spline: { layerAmplitudes: [...splineSettings.layerAmplitudes], opacity: splineSettings.opacity, layerColors: splineSettings.layerColors.map(color => [...color] as Color), background: [splineSettings.colorR, splineSettings.colorG, splineSettings.colorB] as Color },
-        particles: { count: particleSettings.count },
-      } : null;
-      const waveSprings = [0, 1, 2].map(layer => ({ position: baseline?.spline.layerAmplitudes[layer] ?? 0, velocity: 0 }));
+      const baseline =
+        splineSettings && particleSettings
+          ? {
+              spline: {
+                layerAmplitudes: [...splineSettings.layerAmplitudes],
+                opacity: splineSettings.opacity,
+                layerColors: splineSettings.layerColors.map((color) => [...color] as Color),
+                background: [
+                  splineSettings.colorR,
+                  splineSettings.colorG,
+                  splineSettings.colorB,
+                ] as Color,
+              },
+              particles: { count: particleSettings.count },
+            }
+          : null;
+      const waveSprings = [0, 1, 2].map((layer) => ({
+        position: baseline?.spline.layerAmplitudes[layer] ?? 0,
+        velocity: 0,
+      }));
       let previous = performance.now();
       let lastRendered = 0;
       let elapsed = 0;
       const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       const frame = (now: number) => {
-        const activeFrameInterval = preferences.waveFrameRate === "uncapped" ? 0 : 1000 / Number(preferences.waveFrameRate);
+        const activeFrameInterval =
+          preferences.waveFrameRate === "uncapped" ? 0 : 1000 / Number(preferences.waveFrameRate);
         const frameInterval = preferences.wavesEnabled ? activeFrameInterval : 500;
         if (now - lastRendered < frameInterval) {
           if (!reduced && !cancelled) animation = requestAnimationFrame(frame);
           return;
         }
-        const animationSpeed = preferences.animationSpeed === "slow" ? 0.65 : preferences.animationSpeed === "fast" ? 1.45 : 1;
-        if (preferences.wavesEnabled) elapsed += Math.max(0, now - previous) / 1000 * animationSpeed;
+        const animationSpeed =
+          preferences.animationSpeed === "slow"
+            ? 0.65
+            : preferences.animationSpeed === "fast"
+              ? 1.45
+              : 1;
+        if (preferences.wavesEnabled)
+          elapsed += (Math.max(0, now - previous) / 1000) * animationSpeed;
         const frameDelta = Math.min(0.1, Math.max(0.001, (now - previous) / 1000));
         previous = now;
         lastRendered = now;
-        for (const key of ["bass", "mid", "treble", "level"] as const) reactive[key] += (target[key] - reactive[key]) * .11;
+        for (const key of ["bass", "mid", "treble", "level"] as const)
+          reactive[key] += (target[key] - reactive[key]) * 0.11;
         reactive.bassAttack = target.bassAttack ?? 0;
         reactive.midAttack = target.midAttack ?? 0;
         reactive.trebleAttack = target.trebleAttack ?? 0;
         reactive.onset = target.onset;
         reactive.timestamp = target.timestamp;
         target.onset = false;
-        opacityScale += (targetOpacityScale - opacityScale) * .035;
+        opacityScale += (targetOpacityScale - opacityScale) * 0.035;
         const background = paletteTarget?.background ?? DEFAULT_BASE;
         const colors = paletteTarget?.waves ?? DEFAULT_WAVES;
-        for (let channel = 0; channel < 3; channel++) baseColor[channel] += (background[channel] - baseColor[channel]) * .025;
+        for (let channel = 0; channel < 3; channel++)
+          baseColor[channel] += (background[channel] - baseColor[channel]) * 0.025;
         for (let layer = 0; layer < 3; layer++) {
-          for (let channel = 0; channel < 3; channel++) waveColors[layer][channel] += (colors[layer][channel] - waveColors[layer][channel]) * .035;
+          for (let channel = 0; channel < 3; channel++)
+            waveColors[layer][channel] +=
+              (colors[layer][channel] - waveColors[layer][channel]) * 0.035;
         }
         const rootsActive = preferences.wavesEnabled && preferences.backdropPreset === "roots";
-        const fallActive = preferences.wavesEnabled && preferences.backdropPreset === "lightningfall";
-        const signalActive = preferences.backdropPreset === "oscilloscope" || preferences.backdropPreset === "void" || preferences.backdropPreset === "clouds" || preferences.backdropPreset === "meshgrid" || preferences.backdropPreset === "waterdrops";
-        const sceneActive = preferences.wavesEnabled && preferences.backdropPreset !== "waves" && !rootsActive && !fallActive && !signalActive;
+        const fallActive =
+          preferences.wavesEnabled && preferences.backdropPreset === "lightningfall";
+        const signalActive =
+          preferences.backdropPreset === "oscilloscope" ||
+          preferences.backdropPreset === "void" ||
+          preferences.backdropPreset === "clouds" ||
+          preferences.backdropPreset === "meshgrid" ||
+          preferences.backdropPreset === "waterdrops";
+        const sceneActive =
+          preferences.wavesEnabled &&
+          preferences.backdropPreset !== "waves" &&
+          !rootsActive &&
+          !fallActive &&
+          !signalActive;
         sceneCanvas.style.opacity = sceneActive ? "1" : "0";
-        canvas.style.opacity = sceneActive || rootsActive || fallActive || signalActive || (preferences.backdropPreset === "waves" && !preferences.wavesEnabled) ? "0" : "1";
+        canvas.style.opacity =
+          sceneActive ||
+          rootsActive ||
+          fallActive ||
+          signalActive ||
+          (preferences.backdropPreset === "waves" && !preferences.wavesEnabled)
+            ? "0"
+            : "1";
         if (sceneActive && scene) {
-          const sceneReactive: Reactivity = { ...reactive, bass: reactive.bass * preferences.bassReactivity, mid: reactive.mid * preferences.vocalReactivity, treble: reactive.treble * preferences.trebleReactivity };
-          presetScene(scene, preferences.backdropPreset, sceneCanvas.width, sceneCanvas.height, elapsed, now / 1000, frameDelta, sceneReactive, [...baseColor] as Color, [[...waveColors[0]], [...waveColors[1]], [...waveColors[2]]], curtainState);
-        } else if (!rootsActive && !fallActive && !signalActive && baseline && splineSettings && particleSettings) {
+          const sceneReactive: Reactivity = {
+            ...reactive,
+            bass: reactive.bass * preferences.bassReactivity,
+            mid: reactive.mid * preferences.vocalReactivity,
+            treble: reactive.treble * preferences.trebleReactivity,
+          };
+          presetScene(
+            scene,
+            preferences.backdropPreset,
+            sceneCanvas.width,
+            sceneCanvas.height,
+            elapsed,
+            now / 1000,
+            frameDelta,
+            sceneReactive,
+            [...baseColor] as Color,
+            [[...waveColors[0]], [...waveColors[1]], [...waveColors[2]]],
+            curtainState,
+          );
+        } else if (
+          !rootsActive &&
+          !fallActive &&
+          !signalActive &&
+          baseline &&
+          splineSettings &&
+          particleSettings
+        ) {
           splineSettings.opacity = baseline.spline.opacity * opacityScale;
-          const waveLevels = [target.bass * preferences.bassReactivity, target.mid * preferences.vocalReactivity, target.treble * preferences.trebleReactivity];
+          const waveLevels = [
+            target.bass * preferences.bassReactivity,
+            target.mid * preferences.vocalReactivity,
+            target.treble * preferences.trebleReactivity,
+          ];
           for (let layer = 0; layer < 3; layer++) {
-            const desired = preferences.wavesEnabled && preferences.backdropPreset === "waves"
-              ? baseline.spline.layerAmplitudes[layer] + waveLevels[layer] * [1.65, 1.3, 1.05][layer] : 0;
-            splineSettings.layerAmplitudes[layer] = advanceWaveSpring(waveSprings[layer], desired, frameDelta, [7, 8, 9][layer]);
+            const desired =
+              preferences.wavesEnabled && preferences.backdropPreset === "waves"
+                ? baseline.spline.layerAmplitudes[layer] +
+                  waveLevels[layer] * [1.65, 1.3, 1.05][layer]
+                : 0;
+            splineSettings.layerAmplitudes[layer] = advanceWaveSpring(
+              waveSprings[layer],
+              desired,
+              frameDelta,
+              [7, 8, 9][layer],
+            );
           }
-          particleSettings.count = preferences.wavesEnabled && preferences.backdropPreset === "waves" ? Math.round((baseline.particles.count + reactive.treble * 2600) / 100) * 100 : 0;
-          splineSettings.colorR += (baseColor[0] - splineSettings.colorR) * .025;
-          splineSettings.colorG += (baseColor[1] - splineSettings.colorG) * .025;
-          splineSettings.colorB += (baseColor[2] - splineSettings.colorB) * .025;
+          particleSettings.count =
+            preferences.wavesEnabled && preferences.backdropPreset === "waves"
+              ? Math.round((baseline.particles.count + reactive.treble * 2600) / 100) * 100
+              : 0;
+          splineSettings.colorR += (baseColor[0] - splineSettings.colorR) * 0.025;
+          splineSettings.colorG += (baseColor[1] - splineSettings.colorG) * 0.025;
+          splineSettings.colorB += (baseColor[2] - splineSettings.colorB) * 0.025;
           for (let layer = 0; layer < splineSettings.layerColors.length; layer++) {
-            for (let channel = 0; channel < 3; channel++) splineSettings.layerColors[layer][channel] += (waveColors[layer][channel] - splineSettings.layerColors[layer][channel]) * .035;
+            for (let channel = 0; channel < 3; channel++)
+              splineSettings.layerColors[layer][channel] +=
+                (waveColors[layer][channel] - splineSettings.layerColors[layer][channel]) * 0.035;
           }
           spline.render(elapsed);
           particles.render(elapsed + 417);
@@ -350,8 +563,27 @@ export default function Backdrop() {
     }
 
     start().catch(() => {});
-    return () => { cancelled = true; cancelAnimationFrame(animation); removeResize(); window.removeEventListener("echora:audio-reactivity", receiveAudio); window.removeEventListener("echora:backdrop-mode", receiveMode); window.removeEventListener("echora:track-palette", receivePalette); window.removeEventListener("echora:playback-preferences", receivePreferences); };
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(animation);
+      removeResize();
+      window.removeEventListener("echora:audio-reactivity", receiveAudio);
+      window.removeEventListener("echora:backdrop-mode", receiveMode);
+      window.removeEventListener("echora:track-palette", receivePalette);
+      window.removeEventListener("echora:playback-preferences", receivePreferences);
+    };
   }, []);
 
-  return <div ref={backdropRef} className={styles.backdrop} aria-hidden="true"><canvas ref={glRef} /><canvas ref={sceneRef} className={styles.scene} /><RootVisualizer /><SignalVisualizer /><CloudVisualizer /><LightningFallVisualizer /><MeshGridVisualizer /><WaterDropVisualizer /></div>;
+  return (
+    <div ref={backdropRef} className={styles.backdrop} aria-hidden="true">
+      <canvas ref={glRef} />
+      <canvas ref={sceneRef} className={styles.scene} />
+      <RootVisualizer />
+      <SignalVisualizer />
+      <CloudVisualizer />
+      <LightningFallVisualizer />
+      <MeshGridVisualizer />
+      <WaterDropVisualizer />
+    </div>
+  );
 }

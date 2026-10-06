@@ -65,25 +65,40 @@ export default function MeshGridVisualizer() {
     let preferences = readPlaybackPreferences();
     let renderer: THREE.WebGLRenderer | null = null;
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(58, 1, .1, 100);
+    const camera = new THREE.PerspectiveCamera(58, 1, 0.1, 100);
     camera.position.set(0, 5.2, 18);
     camera.lookAt(0, -2, -7);
     const base = new THREE.PlaneGeometry(80, 80, 180, 180);
     // Seeded vertex offsets break the rectangular lattice without cracks.
     const positions = base.getAttribute("position");
-    const random = (n: number) => { const value = Math.sin(n * 127.1) * 43758.5453; return value - Math.floor(value); };
+    const random = (n: number) => {
+      const value = Math.sin(n * 127.1) * 43758.5453;
+      return value - Math.floor(value);
+    };
     for (let i = 0; i < positions.count; i++) {
-      positions.setXY(i, positions.getX(i) + (random(i + 1) - .5) * .23, positions.getY(i) + (random(i + 907) - .5) * .23);
+      positions.setXY(
+        i,
+        positions.getX(i) + (random(i + 1) - 0.5) * 0.23,
+        positions.getY(i) + (random(i + 907) - 0.5) * 0.23,
+      );
     }
     const geometry = base.toNonIndexed();
     base.dispose();
     const barycentric = new Float32Array(geometry.getAttribute("position").count * 3);
-    for (let i = 0; i < barycentric.length / 3; i++) barycentric[i * 3 + i % 3] = 1;
+    for (let i = 0; i < barycentric.length / 3; i++) barycentric[i * 3 + (i % 3)] = 1;
     geometry.setAttribute("barycentric", new THREE.BufferAttribute(barycentric, 3));
-    const targetColors = [new THREE.Vector3(.48, .98, .92), new THREE.Vector3(.76, .66, 1), new THREE.Vector3(.55, .8, 1), new THREE.Vector3(.48, .98, .92), new THREE.Vector3(.76, .66, 1)];
+    const targetColors = [
+      new THREE.Vector3(0.48, 0.98, 0.92),
+      new THREE.Vector3(0.76, 0.66, 1),
+      new THREE.Vector3(0.55, 0.8, 1),
+      new THREE.Vector3(0.48, 0.98, 0.92),
+      new THREE.Vector3(0.76, 0.66, 1),
+    ];
     const colorNames = ["colorA", "colorB", "colorC", "colorD", "colorE"] as const;
     const material = new THREE.ShaderMaterial({
-      depthTest: true, depthWrite: true, side: THREE.DoubleSide,
+      depthTest: true,
+      depthWrite: true,
+      side: THREE.DoubleSide,
       uniforms: {
         colorA: { value: targetColors[0].clone() },
         colorB: { value: targetColors[1].clone() },
@@ -92,8 +107,13 @@ export default function MeshGridVisualizer() {
         colorE: { value: targetColors[4].clone() },
         colorCount: { value: 3 },
         resolution: { value: new THREE.Vector2(1, 1) },
-        travel: { value: 0 }, energy: { value: 0 }, visibility: { value: .38 },
-        bass: { value: 0 }, mid: { value: 0 }, treble: { value: 0 }, pulse: { value: 0 },
+        travel: { value: 0 },
+        energy: { value: 0 },
+        visibility: { value: 0.38 },
+        bass: { value: 0 },
+        mid: { value: 0 },
+        treble: { value: 0 },
+        pulse: { value: 0 },
       },
       vertexShader,
       fragmentShader,
@@ -101,10 +121,20 @@ export default function MeshGridVisualizer() {
     const mesh = new THREE.Mesh(geometry, material);
     mesh.frustumCulled = false;
     scene.add(mesh);
-    let frame = 0, lastFrame = 0, lastAudio = -Infinity, targetEnergy = 0, playing = true;
-    let active = false, failed = false, fade = 0;
-    let targetBass = 0, targetMid = 0, targetTreble = 0, pendingPulse = 0;
-    let bpm = 0, travelSpeed = 0;
+    let frame = 0,
+      lastFrame = 0,
+      lastAudio = -Infinity,
+      targetEnergy = 0,
+      playing = true;
+    let active = false,
+      failed = false,
+      fade = 0;
+    let targetBass = 0,
+      targetMid = 0,
+      targetTreble = 0,
+      pendingPulse = 0;
+    let bpm = 0,
+      travelSpeed = 0;
     const resize = () => {
       if (!renderer) return;
       const bounds = canvas.getBoundingClientRect();
@@ -117,18 +147,24 @@ export default function MeshGridVisualizer() {
     const draw = (now: number) => {
       if (!active || !renderer) return;
       frame = requestAnimationFrame(draw);
-      const interval = preferences.waveFrameRate === "uncapped" ? 0 : 1000 / Number(preferences.waveFrameRate);
+      const interval =
+        preferences.waveFrameRate === "uncapped" ? 0 : 1000 / Number(preferences.waveFrameRate);
       if (now - lastFrame < interval) return;
-      const dt = Math.min(.05, (now - lastFrame) / 1000 || .016);
+      const dt = Math.min(0.05, (now - lastFrame) / 1000 || 0.016);
       lastFrame = now;
       const audible = playing && now - lastAudio < 700;
       // A reversible 800ms fade. Smoothstep softens both ends without a jump
       // when playback toggles again halfway through a transition.
-      fade = THREE.MathUtils.clamp(fade + (audible ? 1 : -1) * dt / .8, 0, 1);
-      material.uniforms.visibility.value = .38 + .62 * fade * fade * (3 - 2 * fade);
+      fade = THREE.MathUtils.clamp(fade + ((audible ? 1 : -1) * dt) / 0.8, 0, 1);
+      material.uniforms.visibility.value = 0.38 + 0.62 * fade * fade * (3 - 2 * fade);
       const energy = material.uniforms.energy.value;
-      material.uniforms.energy.value += ((audible ? targetEnergy : 0) - energy) * (1 - Math.exp(-dt * 3));
-      for (const [name, target] of [["bass", targetBass], ["mid", targetMid], ["treble", targetTreble]] as const) {
+      material.uniforms.energy.value +=
+        ((audible ? targetEnergy : 0) - energy) * (1 - Math.exp(-dt * 3));
+      for (const [name, target] of [
+        ["bass", targetBass],
+        ["mid", targetMid],
+        ["treble", targetTreble],
+      ] as const) {
         const current = material.uniforms[name].value;
         const next = audible ? target : 0;
         // Fast attack preserves beats; slower release avoids strobing.
@@ -136,45 +172,88 @@ export default function MeshGridVisualizer() {
         material.uniforms[name].value += (next - current) * (1 - Math.exp(-dt * response));
       }
       material.uniforms.pulse.value = Math.max(
-        material.uniforms.pulse.value * Math.exp(-dt * 5), audible ? pendingPulse : 0,
+        material.uniforms.pulse.value * Math.exp(-dt * 5),
+        audible ? pendingPulse : 0,
       );
       pendingPulse = 0;
-      const rate = preferences.animationSpeed === "slow" ? .65 : preferences.animationSpeed === "fast" ? 1.45 : 1;
+      const rate =
+        preferences.animationSpeed === "slow"
+          ? 0.65
+          : preferences.animationSpeed === "fast"
+            ? 1.45
+            : 1;
       // Volume controls the push; detected tempo controls the pace. Smooth
       // speed changes rather than jumping the ripples' position on each beat.
-      const tempoScale = THREE.MathUtils.clamp(Math.pow((bpm || 100) / 100, 1.3), .5, 2.2);
+      const tempoScale = THREE.MathUtils.clamp(Math.pow((bpm || 100) / 100, 1.3), 0.5, 2.2);
       const targetSpeed = audible
-        ? (.08 + energy * .32 + material.uniforms.bass.value * .32 + material.uniforms.pulse.value * .16) * tempoScale : 0;
+        ? (0.08 +
+            energy * 0.32 +
+            material.uniforms.bass.value * 0.32 +
+            material.uniforms.pulse.value * 0.16) *
+          tempoScale
+        : 0;
       travelSpeed += (targetSpeed - travelSpeed) * (1 - Math.exp(-dt * 3));
       material.uniforms.travel.value += dt * rate * travelSpeed;
-      colorNames.forEach((name, index) => material.uniforms[name].value.lerp(targetColors[index], 1 - Math.exp(-dt * 2)));
+      colorNames.forEach((name, index) =>
+        material.uniforms[name].value.lerp(targetColors[index], 1 - Math.exp(-dt * 2)),
+      );
       renderer.render(scene, camera);
     };
     const sync = () => {
-      const next = !failed && preferences.wavesEnabled && preferences.backdropPreset === "meshgrid"
-        && !compact.matches && !reduced.matches && !document.hidden;
+      const next =
+        !failed &&
+        preferences.wavesEnabled &&
+        preferences.backdropPreset === "meshgrid" &&
+        !compact.matches &&
+        !reduced.matches &&
+        !document.hidden;
       canvas.style.display = next ? "block" : "none";
       if (next && !renderer) {
-        try { renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false }); resize(); }
-        catch { failed = true; canvas.style.display = "none"; return; }
+        try {
+          renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false });
+          resize();
+        } catch {
+          failed = true;
+          canvas.style.display = "none";
+          return;
+        }
       }
       if (next === active) return;
       active = next;
       cancelAnimationFrame(frame);
-      if (active) { lastFrame = performance.now(); frame = requestAnimationFrame(draw); }
+      if (active) {
+        lastFrame = performance.now();
+        frame = requestAnimationFrame(draw);
+      }
     };
-    const receivePreferences = (event: Event) => { preferences = (event as CustomEvent<PlaybackPreferences>).detail; sync(); };
+    const receivePreferences = (event: Event) => {
+      preferences = (event as CustomEvent<PlaybackPreferences>).detail;
+      sync();
+    };
     const receiveAudio = (event: Event) => {
       const detail = (event as CustomEvent<VisualFrame>).detail;
-      if (!detail.active) { reset(); return; }
-      playing = true; bpm = detail.bpm ?? 0;
-      targetEnergy = Math.min(1, detail.bass * preferences.bassReactivity * .5 + detail.mid * preferences.vocalReactivity * .35 + detail.treble * preferences.trebleReactivity * .15);
+      if (!detail.active) {
+        reset();
+        return;
+      }
+      playing = true;
+      bpm = detail.bpm ?? 0;
+      targetEnergy = Math.min(
+        1,
+        detail.bass * preferences.bassReactivity * 0.5 +
+          detail.mid * preferences.vocalReactivity * 0.35 +
+          detail.treble * preferences.trebleReactivity * 0.15,
+      );
       targetBass = Math.min(1, detail.bass * preferences.bassReactivity * 1.4);
       targetMid = Math.min(1, detail.mid * preferences.vocalReactivity * 1.5);
       targetTreble = Math.min(1, detail.treble * preferences.trebleReactivity * 1.8);
-      pendingPulse = Math.max(pendingPulse, Math.min(1,
-        ((detail.bassAttack ?? 0) * 5 + (detail.beat ? .55 : 0)) * preferences.bassReactivity,
-      ));
+      pendingPulse = Math.max(
+        pendingPulse,
+        Math.min(
+          1,
+          ((detail.bassAttack ?? 0) * 5 + (detail.beat ? 0.55 : 0)) * preferences.bassReactivity,
+        ),
+      );
       const now = performance.now();
       lastAudio = now;
     };
@@ -187,28 +266,42 @@ export default function MeshGridVisualizer() {
         targetColors.forEach((color, index) => color.fromArray(colors[index % colors.length]));
       }
     };
-    const receiveState = (event: Event) => { playing = Boolean((event as CustomEvent<boolean>).detail); };
+    const receiveState = (event: Event) => {
+      playing = Boolean((event as CustomEvent<boolean>).detail);
+    };
     const reset = () => {
-      targetEnergy = 0; targetBass = 0; targetMid = 0; targetTreble = 0; pendingPulse = 0; lastAudio = -Infinity;
+      targetEnergy = 0;
+      targetBass = 0;
+      targetMid = 0;
+      targetTreble = 0;
+      pendingPulse = 0;
+      lastAudio = -Infinity;
       // Neutral frames arrive repeatedly while paused. Let the render loop
       // release the bands, pulse, and speed instead of cutting them to zero.
     };
     const events: [string, EventListener][] = [
-      ["echora:playback-preferences", receivePreferences], ["echora:visual-frame", receiveAudio],
-      ["echora:track-palette", receivePalette], ["echora:playback-state", receiveState], ["echora:track-change", reset],
+      ["echora:playback-preferences", receivePreferences],
+      ["echora:visual-frame", receiveAudio],
+      ["echora:track-palette", receivePalette],
+      ["echora:playback-state", receiveState],
+      ["echora:track-change", reset],
       ["resize", resize],
     ];
     events.forEach(([name, handler]) => window.addEventListener(name, handler));
-    compact.addEventListener("change", sync); reduced.addEventListener("change", sync);
+    compact.addEventListener("change", sync);
+    reduced.addEventListener("change", sync);
     document.addEventListener("visibilitychange", sync);
     sync();
     window.dispatchEvent(new Event("echora:playback-state-request"));
     return () => {
       cancelAnimationFrame(frame);
       events.forEach(([name, handler]) => window.removeEventListener(name, handler));
-      compact.removeEventListener("change", sync); reduced.removeEventListener("change", sync);
+      compact.removeEventListener("change", sync);
+      reduced.removeEventListener("change", sync);
       document.removeEventListener("visibilitychange", sync);
-      geometry.dispose(); material.dispose(); renderer?.dispose();
+      geometry.dispose();
+      material.dispose();
+      renderer?.dispose();
     };
   }, []);
   return <canvas ref={ref} className={styles.signal} aria-hidden="true" />;

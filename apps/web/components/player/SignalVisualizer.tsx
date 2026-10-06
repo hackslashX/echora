@@ -78,12 +78,20 @@ export default function SignalVisualizer() {
     texture.needsUpdate = true;
     const geometry = new THREE.PlaneGeometry(2, 2);
     const material = new THREE.ShaderMaterial({
-      depthTest: false, depthWrite: false,
+      depthTest: false,
+      depthWrite: false,
       uniforms: {
-        waveform: { value: texture }, resolution: { value: new THREE.Vector2(1, 1) },
-        tint: { value: new THREE.Vector3(.3, .7, .65) },
-        mode: { value: 0 }, travel: { value: 0 }, energy: { value: 0 }, opacity: { value: 1 },
-        bass: { value: 0 }, mid: { value: 0 }, treble: { value: 0 }, pulse: { value: 0 },
+        waveform: { value: texture },
+        resolution: { value: new THREE.Vector2(1, 1) },
+        tint: { value: new THREE.Vector3(0.3, 0.7, 0.65) },
+        mode: { value: 0 },
+        travel: { value: 0 },
+        energy: { value: 0 },
+        opacity: { value: 1 },
+        bass: { value: 0 },
+        mid: { value: 0 },
+        treble: { value: 0 },
+        pulse: { value: 0 },
       },
       vertexShader: "varying vec2 vUv; void main(){vUv=uv;gl_Position=vec4(position.xy,0.0,1.0);}",
       fragmentShader,
@@ -91,11 +99,20 @@ export default function SignalVisualizer() {
     const mesh = new THREE.Mesh(geometry, material);
     mesh.frustumCulled = false;
     scene.add(mesh);
-    const targetColor = new THREE.Vector3(.3, .7, .65);
-    let frame = 0, lastFrame = 0, lastAudio = -Infinity, targetEnergy = 0, playing = true;
-    let active = false, failed = false;
-    let targetBass = 0, targetMid = 0, targetTreble = 0, pendingPulse = 0;
-    let bpm = 0, travelSpeed = 0;
+    const targetColor = new THREE.Vector3(0.3, 0.7, 0.65);
+    let frame = 0,
+      lastFrame = 0,
+      lastAudio = -Infinity,
+      targetEnergy = 0,
+      playing = true;
+    let active = false,
+      failed = false;
+    let targetBass = 0,
+      targetMid = 0,
+      targetTreble = 0,
+      pendingPulse = 0;
+    let bpm = 0,
+      travelSpeed = 0;
     const resize = () => {
       if (!renderer) return;
       const bounds = canvas.getBoundingClientRect();
@@ -106,14 +123,20 @@ export default function SignalVisualizer() {
     const draw = (now: number) => {
       if (!active || !renderer) return;
       frame = requestAnimationFrame(draw);
-      const interval = preferences.waveFrameRate === "uncapped" ? 0 : 1000 / Number(preferences.waveFrameRate);
+      const interval =
+        preferences.waveFrameRate === "uncapped" ? 0 : 1000 / Number(preferences.waveFrameRate);
       if (now - lastFrame < interval) return;
-      const dt = Math.min(.05, (now - lastFrame) / 1000 || .016);
+      const dt = Math.min(0.05, (now - lastFrame) / 1000 || 0.016);
       lastFrame = now;
       const audible = playing && now - lastAudio < 700;
       const energy = material.uniforms.energy.value;
-      material.uniforms.energy.value += ((audible ? targetEnergy : 0) - energy) * (1 - Math.exp(-dt * 3));
-      for (const [name, target] of [["bass", targetBass], ["mid", targetMid], ["treble", targetTreble]] as const) {
+      material.uniforms.energy.value +=
+        ((audible ? targetEnergy : 0) - energy) * (1 - Math.exp(-dt * 3));
+      for (const [name, target] of [
+        ["bass", targetBass],
+        ["mid", targetMid],
+        ["treble", targetTreble],
+      ] as const) {
         const current = material.uniforms[name].value;
         const next = audible ? target : 0;
         // Fast attack preserves beats; slower release avoids strobing.
@@ -121,50 +144,88 @@ export default function SignalVisualizer() {
         material.uniforms[name].value += (next - current) * (1 - Math.exp(-dt * response));
       }
       material.uniforms.pulse.value = Math.max(
-        material.uniforms.pulse.value * Math.exp(-dt * 5), audible ? pendingPulse : 0,
+        material.uniforms.pulse.value * Math.exp(-dt * 5),
+        audible ? pendingPulse : 0,
       );
       pendingPulse = 0;
       material.uniforms.tint.value.lerp(targetColor, 1 - Math.exp(-dt * 2));
-      const rate = preferences.animationSpeed === "slow" ? .65 : preferences.animationSpeed === "fast" ? 1.45 : 1;
+      const rate =
+        preferences.animationSpeed === "slow"
+          ? 0.65
+          : preferences.animationSpeed === "fast"
+            ? 1.45
+            : 1;
       // Volume controls the push; detected tempo controls the pace. Smooth
       // speed changes rather than jumping the tunnel's position on each beat.
-      const tempoScale = THREE.MathUtils.clamp(Math.pow(bpm / 100, 1.3), .5, 2.2);
+      const tempoScale = THREE.MathUtils.clamp(Math.pow(bpm / 100, 1.3), 0.5, 2.2);
       const targetSpeed = audible
-        ? (.025 + energy * .46 + material.uniforms.pulse.value * .10) * tempoScale : 0;
+        ? (0.025 + energy * 0.46 + material.uniforms.pulse.value * 0.1) * tempoScale
+        : 0;
       travelSpeed += (targetSpeed - travelSpeed) * (1 - Math.exp(-dt * 3));
       material.uniforms.travel.value += dt * rate * travelSpeed;
       if (!audible) {
-        for (let i = 0; i < SAMPLES; i++) samples[i] = Math.round(samples[i] + (128 - samples[i]) * Math.min(1, dt * 8));
+        for (let i = 0; i < SAMPLES; i++)
+          samples[i] = Math.round(samples[i] + (128 - samples[i]) * Math.min(1, dt * 8));
         texture.needsUpdate = true;
       }
       renderer.render(scene, camera);
     };
     const sync = () => {
-      const next = !failed && preferences.wavesEnabled && ["oscilloscope", "void"].includes(preferences.backdropPreset)
-        && !compact.matches && !reduced.matches && !document.hidden;
+      const next =
+        !failed &&
+        preferences.wavesEnabled &&
+        ["oscilloscope", "void"].includes(preferences.backdropPreset) &&
+        !compact.matches &&
+        !reduced.matches &&
+        !document.hidden;
       canvas.style.display = next ? "block" : "none";
       if (next && !renderer) {
-        try { renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false }); resize(); }
-        catch { failed = true; canvas.style.display = "none"; return; }
+        try {
+          renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false });
+          resize();
+        } catch {
+          failed = true;
+          canvas.style.display = "none";
+          return;
+        }
       }
       material.uniforms.mode.value = preferences.backdropPreset === "void" ? 1 : 0;
       if (next === active) return;
       active = next;
       cancelAnimationFrame(frame);
-      if (active) { lastFrame = performance.now(); frame = requestAnimationFrame(draw); }
+      if (active) {
+        lastFrame = performance.now();
+        frame = requestAnimationFrame(draw);
+      }
     };
-    const receivePreferences = (event: Event) => { preferences = (event as CustomEvent<PlaybackPreferences>).detail; sync(); };
+    const receivePreferences = (event: Event) => {
+      preferences = (event as CustomEvent<PlaybackPreferences>).detail;
+      sync();
+    };
     const receiveAudio = (event: Event) => {
       const detail = (event as CustomEvent<VisualFrame>).detail;
-      if (!detail.active) { reset(); return; }
-      playing = true; bpm = detail.bpm ?? 0;
-      targetEnergy = Math.min(1, detail.bass * preferences.bassReactivity * .5 + detail.mid * preferences.vocalReactivity * .35 + detail.treble * preferences.trebleReactivity * .15);
+      if (!detail.active) {
+        reset();
+        return;
+      }
+      playing = true;
+      bpm = detail.bpm ?? 0;
+      targetEnergy = Math.min(
+        1,
+        detail.bass * preferences.bassReactivity * 0.5 +
+          detail.mid * preferences.vocalReactivity * 0.35 +
+          detail.treble * preferences.trebleReactivity * 0.15,
+      );
       targetBass = Math.min(1, detail.bass * preferences.bassReactivity * 1.4);
       targetMid = Math.min(1, detail.mid * preferences.vocalReactivity * 1.5);
       targetTreble = Math.min(1, detail.treble * preferences.trebleReactivity * 1.8);
-      pendingPulse = Math.max(pendingPulse, Math.min(1,
-        ((detail.bassAttack ?? 0) * 5 + (detail.beat ? .55 : 0)) * preferences.bassReactivity,
-      ));
+      pendingPulse = Math.max(
+        pendingPulse,
+        Math.min(
+          1,
+          ((detail.bassAttack ?? 0) * 5 + (detail.beat ? 0.55 : 0)) * preferences.bassReactivity,
+        ),
+      );
       const now = performance.now();
       lastAudio = now;
     };
@@ -173,8 +234,11 @@ export default function SignalVisualizer() {
       if (!active || preferences.backdropPreset !== "oscilloscope") return;
       const bins = (event as CustomEvent<VisualFrame>).detail.waveform;
       for (let i = 0; i < SAMPLES; i++) {
-        const start = Math.floor(i * bins.length / SAMPLES);
-        const end = Math.min(bins.length, Math.max(start + 1, Math.floor((i + 1) * bins.length / SAMPLES)));
+        const start = Math.floor((i * bins.length) / SAMPLES);
+        const end = Math.min(
+          bins.length,
+          Math.max(start + 1, Math.floor(((i + 1) * bins.length) / SAMPLES)),
+        );
         let sum = 0;
         for (let j = start; j < end; j++) sum += bins[j];
         samples[i] = end > start ? Math.round((sum / (end - start) + 1) * 127.5) : 128;
@@ -182,33 +246,52 @@ export default function SignalVisualizer() {
       texture.needsUpdate = true;
     };
     const receivePalette = (event: Event) => {
-      const detail = (event as CustomEvent<{ palette: { waves: [number[], number[], number[]] } | null }>).detail;
+      const detail = (
+        event as CustomEvent<{ palette: { waves: [number[], number[], number[]] } | null }>
+      ).detail;
       if (detail.palette) targetColor.fromArray(detail.palette.waves[0]);
     };
-    const receiveState = (event: Event) => { playing = Boolean((event as CustomEvent<boolean>).detail); };
+    const receiveState = (event: Event) => {
+      playing = Boolean((event as CustomEvent<boolean>).detail);
+    };
     const reset = () => {
-      samples.fill(128); texture.needsUpdate = true;
-      targetEnergy = 0; targetBass = 0; targetMid = 0; targetTreble = 0; pendingPulse = 0; lastAudio = -Infinity;
+      samples.fill(128);
+      texture.needsUpdate = true;
+      targetEnergy = 0;
+      targetBass = 0;
+      targetMid = 0;
+      targetTreble = 0;
+      pendingPulse = 0;
+      lastAudio = -Infinity;
       material.uniforms.pulse.value = 0;
-      bpm = 0; travelSpeed = 0;
+      bpm = 0;
+      travelSpeed = 0;
       for (const name of ["energy", "bass", "mid", "treble"]) material.uniforms[name].value = 0;
     };
     const events: [string, EventListener][] = [
-      ["echora:playback-preferences", receivePreferences], ["echora:visual-frame", receiveAudio],
-      ["echora:visual-frame", receiveWaveform], ["echora:track-palette", receivePalette],
-      ["echora:playback-state", receiveState], ["echora:track-change", reset],
+      ["echora:playback-preferences", receivePreferences],
+      ["echora:visual-frame", receiveAudio],
+      ["echora:visual-frame", receiveWaveform],
+      ["echora:track-palette", receivePalette],
+      ["echora:playback-state", receiveState],
+      ["echora:track-change", reset],
       ["resize", resize],
     ];
     events.forEach(([name, handler]) => window.addEventListener(name, handler));
-    compact.addEventListener("change", sync); reduced.addEventListener("change", sync);
+    compact.addEventListener("change", sync);
+    reduced.addEventListener("change", sync);
     document.addEventListener("visibilitychange", sync);
     sync();
     return () => {
       cancelAnimationFrame(frame);
       events.forEach(([name, handler]) => window.removeEventListener(name, handler));
-      compact.removeEventListener("change", sync); reduced.removeEventListener("change", sync);
+      compact.removeEventListener("change", sync);
+      reduced.removeEventListener("change", sync);
       document.removeEventListener("visibilitychange", sync);
-      geometry.dispose(); material.dispose(); texture.dispose(); renderer?.dispose();
+      geometry.dispose();
+      material.dispose();
+      texture.dispose();
+      renderer?.dispose();
     };
   }, []);
   return <canvas ref={ref} className={styles.signal} aria-hidden="true" />;

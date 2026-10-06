@@ -64,29 +64,64 @@ export default function WaterDropVisualizer() {
     const compact = window.matchMedia("(max-width:1199px), (max-height:719px)");
     let preferences = readPlaybackPreferences();
     let renderer: THREE.WebGLRenderer | null = null;
-    let failed = false, active = false, animation = 0, previous = 0;
-    let audio = neutralVisualFrame(), lastAudio = -Infinity, playing = false;
-    let pendingHit = 0, spawnCredit = 0, lastSpawn = -Infinity;
+    let failed = false,
+      active = false,
+      animation = 0,
+      previous = 0;
+    let audio = neutralVisualFrame(),
+      lastAudio = -Infinity,
+      playing = false;
+    let pendingHit = 0,
+      spawnCredit = 0,
+      lastSpawn = -Infinity;
     const surface = new WaterSurface();
-    const texture = new THREE.DataTexture(surface.height, surface.width, surface.depth, THREE.RedFormat, THREE.FloatType);
-    texture.minFilter = THREE.NearestFilter; texture.magFilter = THREE.NearestFilter;
+    const texture = new THREE.DataTexture(
+      surface.height,
+      surface.width,
+      surface.depth,
+      THREE.RedFormat,
+      THREE.FloatType,
+    );
+    texture.minFilter = THREE.NearestFilter;
+    texture.magFilter = THREE.NearestFilter;
     texture.needsUpdate = true;
-    const colors = [new THREE.Vector3(.48, .98, .92), new THREE.Vector3(.76, .66, 1), new THREE.Vector3(.55, .8, 1), new THREE.Vector3(.48, .98, .92), new THREE.Vector3(.76, .66, 1)];
+    const colors = [
+      new THREE.Vector3(0.48, 0.98, 0.92),
+      new THREE.Vector3(0.76, 0.66, 1),
+      new THREE.Vector3(0.55, 0.8, 1),
+      new THREE.Vector3(0.48, 0.98, 0.92),
+      new THREE.Vector3(0.76, 0.66, 1),
+    ];
     const colorNames = ["colorA", "colorB", "colorC", "colorD", "colorE"] as const;
     let colorCount = 3;
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(48, 1, .1, 160);
-    camera.position.set(0, 24, 27); camera.lookAt(0, 0, 0);
+    const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 160);
+    camera.position.set(0, 24, 27);
+    camera.lookAt(0, 0, 0);
     const geometry = new THREE.PlaneGeometry(48, 30, surface.width - 1, surface.depth - 1);
     const material = new THREE.ShaderMaterial({
-      uniforms: { heights: { value: texture }, texel: { value: new THREE.Vector2(1 / surface.width, 1 / surface.depth) }, colorA: { value: colors[0].clone() }, colorB: { value: colors[1].clone() }, colorC: { value: colors[2].clone() }, colorD: { value: colors[3].clone() }, colorE: { value: colors[4].clone() }, colorCount: { value: 3 }, energy: { value: 0 } },
-      vertexShader, fragmentShader, side: THREE.DoubleSide,
+      uniforms: {
+        heights: { value: texture },
+        texel: { value: new THREE.Vector2(1 / surface.width, 1 / surface.depth) },
+        colorA: { value: colors[0].clone() },
+        colorB: { value: colors[1].clone() },
+        colorC: { value: colors[2].clone() },
+        colorD: { value: colors[3].clone() },
+        colorE: { value: colors[4].clone() },
+        colorCount: { value: 3 },
+        energy: { value: 0 },
+      },
+      vertexShader,
+      fragmentShader,
+      side: THREE.DoubleSide,
     });
     const water = new THREE.Mesh(geometry, material);
-    water.frustumCulled = false; scene.add(water);
+    water.frustumCulled = false;
+    scene.add(water);
     // Drops remain in the simulation but are deliberately not rendered.
     const drops: Drop[] = [];
-    let tension = .15, damping = .984;
+    let tension = 0.15,
+      damping = 0.984;
 
     const resize = () => {
       if (!renderer) return;
@@ -97,28 +132,52 @@ export default function WaterDropVisualizer() {
       camera.updateProjectionMatrix();
     };
     const clear = () => {
-      audio = neutralVisualFrame(); lastAudio = -Infinity; pendingHit = 0; spawnCredit = 0;
-      drops.length = 0; surface.clear(); texture.needsUpdate = true;
+      audio = neutralVisualFrame();
+      lastAudio = -Infinity;
+      pendingHit = 0;
+      spawnCredit = 0;
+      drops.length = 0;
+      surface.clear();
+      texture.needsUpdate = true;
     };
     const draw = (now: number) => {
       if (!active || !renderer) return;
       animation = requestAnimationFrame(draw);
-      const interval = preferences.waveFrameRate === "uncapped" ? 0 : 1000 / Number(preferences.waveFrameRate);
+      const interval =
+        preferences.waveFrameRate === "uncapped" ? 0 : 1000 / Number(preferences.waveFrameRate);
       if (now - previous < interval) return;
-      const dt = Math.min(.05, (now - previous) / 1000 || .016); previous = now;
+      const dt = Math.min(0.05, (now - previous) / 1000 || 0.016);
+      previous = now;
       const audible = playing && now - lastAudio < 700 && audio.active;
       const controls = waterControls(audible ? audio : neutralVisualFrame(), preferences);
-      const rate = preferences.animationSpeed === "slow" ? .65 : preferences.animationSpeed === "fast" ? 1.45 : 1;
+      const rate =
+        preferences.animationSpeed === "slow"
+          ? 0.65
+          : preferences.animationSpeed === "fast"
+            ? 1.45
+            : 1;
       const seconds = dt * rate;
       tension += (controls.tension - tension) * (1 - Math.exp(-dt * 4));
       damping += (controls.damping - damping) * (1 - Math.exp(-dt * 4));
       spawnCredit = audible ? Math.min(1.5, spawnCredit + seconds * controls.rate) : 0;
-      if (audible && controls.energy > .015 && now - lastSpawn > 130 && (pendingHit > .05 || spawnCredit >= 1) && drops.length < MAX_DROPS) {
+      if (
+        audible &&
+        controls.energy > 0.015 &&
+        now - lastSpawn > 130 &&
+        (pendingHit > 0.05 || spawnCredit >= 1) &&
+        drops.length < MAX_DROPS
+      ) {
         const hit = pendingHit;
-        drops.push({ x: (Math.random() - .5) * 36, z: (Math.random() - .5) * 22, y: 7 + Math.random() * 6,
+        drops.push({
+          x: (Math.random() - 0.5) * 36,
+          z: (Math.random() - 0.5) * 22,
+          y: 7 + Math.random() * 6,
           velocity: controls.fallSpeed + hit * 5,
-          radius: controls.radius, strength: controls.impact + hit * .15 });
-        spawnCredit = Math.max(0, spawnCredit - 1); lastSpawn = now;
+          radius: controls.radius,
+          strength: controls.impact + hit * 0.15,
+        });
+        spawnCredit = Math.max(0, spawnCredit - 1);
+        lastSpawn = now;
       }
       pendingHit = 0;
       // Already-falling drops finish their impacts after pause; no new drops spawn.
@@ -127,36 +186,71 @@ export default function WaterDropVisualizer() {
         drop.velocity += controls.gravity * seconds;
         drop.y -= drop.velocity * seconds;
         if (drop.y <= 0) {
-          surface.impact(drop.x / 48 + .5, drop.z / 30 + .5, drop.radius * 1.5, drop.strength * Math.min(1.5, drop.velocity / 16));
+          surface.impact(
+            drop.x / 48 + 0.5,
+            drop.z / 30 + 0.5,
+            drop.radius * 1.5,
+            drop.strength * Math.min(1.5, drop.velocity / 16),
+          );
           drops.splice(i, 1);
         }
       }
-      surface.advance(seconds, tension, damping); texture.needsUpdate = true;
+      surface.advance(seconds, tension, damping);
+      texture.needsUpdate = true;
       const response = 1 - Math.exp(-dt * 2);
-      colorNames.forEach((name, index) => material.uniforms[name].value.lerp(colors[index], response));
-      material.uniforms.energy.value += (controls.energy - material.uniforms.energy.value) * response;
+      colorNames.forEach((name, index) =>
+        material.uniforms[name].value.lerp(colors[index], response),
+      );
+      material.uniforms.energy.value +=
+        (controls.energy - material.uniforms.energy.value) * response;
       renderer.render(scene, camera);
     };
     const sync = () => {
-      const next = !failed && preferences.wavesEnabled && preferences.backdropPreset === "waterdrops"
-        && !compact.matches && !reduced.matches && !document.hidden;
+      const next =
+        !failed &&
+        preferences.wavesEnabled &&
+        preferences.backdropPreset === "waterdrops" &&
+        !compact.matches &&
+        !reduced.matches &&
+        !document.hidden;
       canvas.style.display = next ? "block" : "none";
       if (next && !renderer) {
-        try { renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false }); renderer.setClearColor(0x020408); resize(); }
-        catch { failed = true; canvas.style.display = "none"; return; }
+        try {
+          renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false });
+          renderer.setClearColor(0x020408);
+          resize();
+        } catch {
+          failed = true;
+          canvas.style.display = "none";
+          return;
+        }
       }
       if (next === active) return;
-      active = next; cancelAnimationFrame(animation);
-      if (active) { previous = performance.now(); pendingHit = 0; spawnCredit = 0; animation = requestAnimationFrame(draw); }
-      else clear();
+      active = next;
+      cancelAnimationFrame(animation);
+      if (active) {
+        previous = performance.now();
+        pendingHit = 0;
+        spawnCredit = 0;
+        animation = requestAnimationFrame(draw);
+      } else clear();
     };
     const receiveAudio = (event: Event) => {
       const next = (event as CustomEvent<VisualFrame>).detail;
       audio = next;
-      if (!active || !next.active) { pendingHit = 0; lastAudio = -Infinity; return; }
-      playing = true; lastAudio = performance.now();
+      if (!active || !next.active) {
+        pendingHit = 0;
+        lastAudio = -Infinity;
+        return;
+      }
+      playing = true;
+      lastAudio = performance.now();
       const controls = waterControls(next, preferences);
-      pendingHit = Math.max(pendingHit, controls.attack, (next.beat || next.onset) ? controls.energy * .65 : 0);
+      pendingHit = Math.max(
+        pendingHit,
+        controls.attack,
+        next.beat || next.onset ? controls.energy * 0.65 : 0,
+      );
     };
     const receivePalette = (event: Event) => {
       const palette = (event as CustomEvent<{ palette: TrackPalette | null }>).detail.palette;
@@ -167,22 +261,41 @@ export default function WaterDropVisualizer() {
         colors.forEach((color, index) => color.fromArray(extracted[index % colorCount]));
       }
     };
-    const receiveState = (event: Event) => { playing = Boolean((event as CustomEvent<boolean>).detail); if (!playing) { pendingHit = 0; spawnCredit = 0; } };
-    const receivePreferences = (event: Event) => { preferences = (event as CustomEvent<PlaybackPreferences>).detail; sync(); };
+    const receiveState = (event: Event) => {
+      playing = Boolean((event as CustomEvent<boolean>).detail);
+      if (!playing) {
+        pendingHit = 0;
+        spawnCredit = 0;
+      }
+    };
+    const receivePreferences = (event: Event) => {
+      preferences = (event as CustomEvent<PlaybackPreferences>).detail;
+      sync();
+    };
     const events: [string, EventListener][] = [
-      ["echora:visual-frame", receiveAudio], ["echora:track-palette", receivePalette], ["echora:playback-state", receiveState],
-      ["echora:track-change", clear], ["echora:playback-preferences", receivePreferences], ["resize", resize],
+      ["echora:visual-frame", receiveAudio],
+      ["echora:track-palette", receivePalette],
+      ["echora:playback-state", receiveState],
+      ["echora:track-change", clear],
+      ["echora:playback-preferences", receivePreferences],
+      ["resize", resize],
     ];
     events.forEach(([name, handler]) => window.addEventListener(name, handler));
-    reduced.addEventListener("change", sync); compact.addEventListener("change", sync);
+    reduced.addEventListener("change", sync);
+    compact.addEventListener("change", sync);
     document.addEventListener("visibilitychange", sync);
-    sync(); window.dispatchEvent(new Event("echora:playback-state-request"));
+    sync();
+    window.dispatchEvent(new Event("echora:playback-state-request"));
     return () => {
       cancelAnimationFrame(animation);
       events.forEach(([name, handler]) => window.removeEventListener(name, handler));
-      reduced.removeEventListener("change", sync); compact.removeEventListener("change", sync);
+      reduced.removeEventListener("change", sync);
+      compact.removeEventListener("change", sync);
       document.removeEventListener("visibilitychange", sync);
-      texture.dispose(); geometry.dispose(); material.dispose(); renderer?.dispose();
+      texture.dispose();
+      geometry.dispose();
+      material.dispose();
+      renderer?.dispose();
     };
   }, []);
   return <canvas ref={ref} className={styles.water} aria-hidden="true" />;
