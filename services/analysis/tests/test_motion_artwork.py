@@ -2,12 +2,12 @@
 
 import json
 import os
-from types import SimpleNamespace
 import runpy
 import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -22,6 +22,7 @@ from pydantic import ValidationError
 from echora_analysis import motion_artwork, motion_artwork_jobs
 from echora_analysis.comfyui import ComfyUIUnavailable, launch
 from echora_analysis.motion_artwork import MotionArtworkSettings, artwork_path
+from echora_analysis.motion_artwork_prompts import CAMERA_RETRY, I2V_SYSTEM_PROMPT
 from echora_analysis.motion_artwork_render import (
     DEFAULT_INSTRUCTIONS,
     NEGATIVE,
@@ -54,10 +55,16 @@ def test_recipe_hash_tracks_only_settings_that_change_the_output():
 def test_prompt_graph_writes_a_description_from_the_cover():
     graph = build_prompt_graph(Recipe(), "cover.jpg", 7)
     writer = graph["31_write_prompt"]["inputs"]
-    assert writer["image"] == ["1_cover", 0] and writer["prompt"] == DEFAULT_INSTRUCTIONS
+    assert writer["image"] == ["1_cover", 0]
+    assert graph["31_write_prompt"]["class_type"] == "TextGenerate"
+    assert not writer["use_default_template"]
+    assert writer["prompt"].startswith("<|turn>system\n" + I2V_SYSTEM_PROMPT)
+    assert "<|turn>user\n<|image><|image|><image|>" in writer["prompt"]
+    assert DEFAULT_INSTRUCTIONS in writer["prompt"]
+    assert writer["prompt"].endswith("<|turn>model\n<|channel>final\n")
     assert writer["sampling_mode"] == "on" and writer["sampling_mode.seed"] == 7
     assert graph["32_show_prompt"]["class_type"] == "PreviewAny"
-    assert "hidden for the whole clip" in DEFAULT_INSTRUCTIONS
+    assert "hidden for the whole clip" in I2V_SYSTEM_PROMPT
 
 
 def test_video_graph_loops_on_the_cover_with_the_given_prompt():
@@ -137,7 +144,7 @@ def test_clean_prompt_cuts_a_repeated_caption():
     assert len(cleaned) <= 300 and cleaned.endswith(".")
 
 
-def test_zoom_detection_spots_push_ins_but_not_pans_or_rises():
+def test_camera_movement_detection_respects_local_negation():
     for prompt in (
         "the camera executes a very slow, smooth push-in towards the center",
         "as the camera pushes in on her face",
@@ -145,6 +152,11 @@ def test_zoom_detection_spots_push_ins_but_not_pans_or_rises():
         "the camera pulls back to reveal the city",
         "a gentle dolly forward",
         "the camera moves closer to the flower",
+        "The camera does not pan, but slowly zooms in.",
+        "The camera does not zoom, then the camera pans right.",
+        "No particles appear, and the camera pushes in.",
+        "The camera moves gently forward.",
+        "The framing slowly tightens around the boat.",
     ):
         assert zooms(prompt), prompt
     for prompt in (
@@ -152,7 +164,7 @@ def test_zoom_detection_spots_push_ins_but_not_pans_or_rises():
         "she pushes her hair back",
     ):
         assert not zooms(prompt), prompt
-    assert "never zoom" in DEFAULT_INSTRUCTIONS.lower() and "push-in" not in DEFAULT_INSTRUCTIONS
+    assert "never zoom" in DEFAULT_INSTRUCTIONS.lower()
     # Any described camera movement counts; negated mentions do not.
     for prompt in (
         "the camera slowly drifts sideways, then eases back without changing distance",
@@ -166,6 +178,7 @@ def test_zoom_detection_spots_push_ins_but_not_pans_or_rises():
         "The camera stays still, with no pan or push-in.",
         "Clouds drift across the sky.",
         "The camera never zooms.",
+        "The camera does not pan, tilt or zoom.",
     ):
         assert not zooms(prompt), prompt
     assert not zooms(DEFAULT_INSTRUCTIONS)
@@ -498,12 +511,13 @@ def test_each_album_and_each_cover_image_renders_once_in_three_phases(database, 
     assert FakeComfyUI.sessions == 6
 
 
-def test_a_prompt_that_keeps_zooming_is_used_after_three_attempts(database, batch):
+def test_a_prompt_that_keeps_zooming_is_rejected_after_three_attempts(database, batch):
     _enable(database)
     FakeComfyUI.zooming_seeds = {42, 43, 44}
-    assert batch["run"]()["rendered"] == 4
+    result = batch["run"]()
+    assert result["rendered"] == 0 and result["failed"] == 4
     assert FakeComfyUI.prompt_seeds == [42, 43, 44] * 4
-    assert len(prompts()) == 4 and all(zooms(prompt) for prompt in prompts())
+    assert not FakeComfyUI.rendered and not FakeComfyUI.encoded
 
 
 def test_fixed_prompt_mode_fills_in_album_details_without_a_prompt_model(database, batch):
@@ -695,7 +709,7 @@ def test_external_writer_sends_the_cover_and_returns_prompt_and_people():
         "key",
         b"cover",
         "image/png",
-        "Prefer rises.",
+        "Prefer rocking.",
         transport=httpx.MockTransport(handler),
     )
     assert (prompt, people) == (CAPTION, 2)
@@ -703,7 +717,7 @@ def test_external_writer_sends_the_cover_and_returns_prompt_and_people():
     assert body["model"] == "vision" and body["response_format"] == {"type": "json_object"}
     assert (
         "locked off on a tripod" in body["messages"][0]["content"]
-        and "Prefer rises." in body["messages"][0]["content"]
+        and "Prefer rocking." in body["messages"][0]["content"]
     )
     image = body["messages"][1]["content"][1]["image_url"]["url"]
     assert image == "data:image/png;base64,Y292ZXI="
@@ -726,7 +740,7 @@ def test_external_writer_rewrites_zooms_and_rejects_bad_answers():
     calls = []
 
     def handler(request):
-        calls.append(1)
+        calls.append(json.loads(request.content))
         return _chat(next(answers))
 
     assert (
@@ -736,6 +750,8 @@ def test_external_writer_rewrites_zooms_and_rejects_bad_answers():
         == CAPTION
     )
     assert len(calls) == 2
+    assert calls[1]["messages"][-1] == {"role": "user", "content": CAMERA_RETRY}
+    assert "pushes in" in calls[1]["messages"][-2]["content"]
     for response in (
         _chat("not json"),
         _chat(json.dumps({"prompt": "too short", "people": 1})),
@@ -754,6 +770,55 @@ def test_external_writer_rewrites_zooms_and_rejects_bad_answers():
 
     with pytest.raises(WriterError, match="not enabled"):
         write_prompt(ExternalAISettings(), None, b"c", "image/jpeg")
+
+
+def test_external_writer_never_returns_a_repeated_camera_move():
+    from echora_analysis.motion_artwork_writer import WriterError, write_prompt
+
+    calls = []
+
+    def handler(request):
+        calls.append(json.loads(request.content))
+        return _chat(
+            json.dumps(
+                {
+                    "prompt": "The camera slowly zooms in toward the empty boat on the water.",
+                    "people": 0,
+                }
+            )
+        )
+
+    with pytest.raises(WriterError, match="camera movement after three attempts"):
+        write_prompt(
+            _external_ai(), None, b"c", "image/png", transport=httpx.MockTransport(handler)
+        )
+    assert len(calls) == 3
+
+
+def test_gemma_retries_with_correction_and_never_encodes_camera_movement():
+    class CameraWriter:
+        def __init__(self):
+            self.requests = []
+
+        def queue(self, graph):
+            self.requests.append(graph["31_write_prompt"]["inputs"]["prompt"])
+            return "request"
+
+        def wait(self, request, **kwargs):
+            return {
+                "32_show_prompt": {
+                    "text": ["The camera slowly zooms in toward the empty boat on the water."]
+                }
+            }
+
+    comfy = CameraWriter()
+    with pytest.raises(
+        motion_artwork_jobs.ComfyUIError, match="camera movement after three attempts"
+    ):
+        motion_artwork_jobs._write_prompt(comfy, Recipe(), {}, "cover.png", 42, {})
+    assert len(comfy.requests) == 3
+    assert CAMERA_RETRY not in comfy.requests[0]
+    assert CAMERA_RETRY in comfy.requests[1]
 
 
 def test_external_prompts_skip_the_prompt_comfyui_and_never_pin_on_their_own(

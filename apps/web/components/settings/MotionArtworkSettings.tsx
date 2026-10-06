@@ -413,7 +413,7 @@ export default function MotionArtworkSettings({ connectionId }: { connectionId: 
                 maxLength={4000}
                 rows={4}
                 value={value.instructions}
-                placeholder="For example: prefer camera rises over sideways drifts."
+                placeholder="For example: favour gentle rocking or swaying within the artwork."
                 onChange={(event) => update({ instructions: event.target.value })}
               />
             </SettingRow>
@@ -423,7 +423,8 @@ export default function MotionArtworkSettings({ connectionId }: { connectionId: 
               htmlFor="motion-artwork-instructions"
               description={
                 <>
-                  Describe the kind of motion you want. Leave blank for the default.{" "}
+                  Describe subject or background motion. The camera stays stationary. Leave blank
+                  for the default.{" "}
                   {value.instructions && (
                     <Button
                       type="button"
