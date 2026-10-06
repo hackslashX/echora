@@ -4,7 +4,7 @@ import test from 'node:test';
 const source = readFileSync(new URL('./WaterDropVisualizer.tsx', import.meta.url), 'utf8');
 test('drop impacts remain simulated without rendering droplets', () => {
   assert.match(source, /drop\.velocity \+= controls\.gravity/);
-  assert.match(source, /surface\.impact\(drop\.x/);
+  assert.match(source, /surface\.impact\(\s*drop\.x/);
   assert.doesNotMatch(source, /InstancedMesh|SphereGeometry/);
 });
 test('water uses up to five extracted album colors with smooth transitions', () => {

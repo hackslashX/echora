@@ -15,8 +15,8 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from dataclasses import replace
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import psycopg
@@ -25,6 +25,7 @@ from psycopg.types.json import Jsonb
 
 from .comfyui import ComfyUI, ComfyUIError, ComfyUIUnavailable, launch, output_items
 from .motion_artwork import MotionArtworkSettings, load_settings
+from .motion_artwork_prompts import CAMERA_RETRY
 from .motion_artwork_render import (
     FPS,
     NEGATIVE,
@@ -192,10 +193,10 @@ def _write_prompt(
         prompt = clean_prompt(texts[0]) if texts else ""
         if prompt and not zooms(prompt):
             return prompt
+        guided = replace(guided, instructions=guided.instructions + "\n\n" + CAMERA_RETRY)
     if not prompt:
         raise ComfyUIError("The prompt model returned no description")
-    # Every attempt described a zoom; the instructions still steer the render, so keep the last.
-    return prompt
+    raise ComfyUIError("The prompt model requested camera movement after three attempts")
 
 
 def _cover_name(cover: dict) -> str:
@@ -267,7 +268,8 @@ def render_batch(
     server or Modal). `mode="all"` also replaces loops that already exist for the current settings.
     """
     from .navidrome import NavidromeClient
-    from .remote_compute import current as current_remote, location
+    from .remote_compute import current as current_remote
+    from .remote_compute import location
 
     with _connect() as connection, connection.cursor() as cursor:
         settings = load_settings(cursor)
@@ -613,6 +615,10 @@ def render_loops(
 
         started = time.monotonic()
         covers = [cover for cover in covers if not cover.get("failed")]
+        if not covers:
+            # Every prompt failed: start neither the encoder nor the video model.
+            yield {"timings": timings}
+            return
         with comfyui_phase(settings, work, check) as comfy:
             negative = encoding_file("negative")
             comfy.wait(comfy.queue(build_encode_graph(NEGATIVE, "negative")), **wait)
@@ -644,6 +650,9 @@ def render_loops(
 
         started = time.monotonic()
         covers = [cover for cover in covers if not cover.get("failed")]
+        if not covers:
+            yield {"timings": timings}
+            return
         with comfyui_phase(settings, work, check) as comfy:
             yield from _render_covers(comfy, recipe, covers, work, wait, failed, drain)
         timings["video_seconds"] = round(time.monotonic() - started)

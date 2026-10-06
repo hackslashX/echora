@@ -4,8 +4,8 @@ Echora can render a short, song-guided looping video for each track and play it 
 
 Rendering uses [LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5) through ComfyUI. The cover is the first frame and the model animates freely from there for 5 seconds. The saved loop plays that clip forward and then straight back to the cover, so each loop lasts 10 seconds and wraps seamlessly. Prompts therefore describe one forward movement that also looks natural reversed. The prompt describing each loop comes from one of three sources:
 
-- **External AI** (recommended): the model configured under Settings → External AI receives the cover, song title, artist, album and full available lyrics, then writes a lively description. It must accept images. Lyrics guide the theme but are treated as data, not instructions.
-- **Built-in Gemma**: Gemma 4 E2B runs locally inside ComfyUI. It needs no provider, but its prompts are much plainer.
+- **External AI**: the vision model configured under Settings → External AI receives the cover, song title, artist, album and full available lyrics, then writes an animation caption. It must accept images. Lyrics guide the theme but are treated as data, not instructions.
+- **Built-in Gemma**: Gemma 4 E2B runs locally inside ComfyUI using the LTX image-to-video chat format.
 - **Same prompt for every track**, with `{title}`, `{artist}`, `{album}` and `{lyrics}` placeholders.
 
 ## How it runs
@@ -25,7 +25,7 @@ ComfyUI is installed in the GPU analysis image at `/opt/comfyui`, in its own vir
 
 If ComfyUI is missing, cannot start or has no models, the stage is skipped and recorded in the batch summary. The rest of the sync is unaffected.
 
-An administrator can enter an external ComfyUI URL instead (or set `ECHORA_COMFYUI_URL`). Echora then writes all prompts first and renders with the prompt text, since that ComfyUI cannot read Echora's encoding files, and asks it to release its memory after each batch. That ComfyUI needs the same models and a recent enough version for the LTX-2.5 and `TextGenerateLTX2Prompt` nodes.
+An administrator can enter an external ComfyUI URL instead (or set `ECHORA_COMFYUI_URL`). Echora then writes all prompts first and renders with the prompt text, since that ComfyUI cannot read Echora's encoding files, and asks it to release its memory after each batch. That ComfyUI needs the same models and a recent enough version for the LTX-2.5 and `TextGenerate` nodes.
 
 ## Requirements
 
@@ -73,7 +73,17 @@ A track that fails to render is recorded and retried on the next run.
 | Seed | 42 | Blank picks a new seed per album. |
 | Hold to the cover at the turnaround | Off | A partial cover keyframe on the last rendered frame, where playback reverses. Keeps the loop closer to the cover, with less movement. |
 | Prompt source | Built-in Gemma | External AI, built-in Gemma, or one fixed prompt for every cover. |
-| Instructions | Built-in | What Gemma is asked to aim for. The default asks for a still camera or one gentle pan, slide or rise that returns (never a zoom), motion across the whole scene, and hidden faces to stay hidden. Illustrations, logos, lettering and borders may animate while remaining legible and returning to the original cover. A prompt that still describes a zoom is written again with the next seed, up to three times. |
+| Instructions | Built-in | Subject and environmental motion to aim for. Both generated-prompt sources use a stationary-camera caption template; custom instructions cannot override this requirement. Prompts requesting camera movement are rewritten with corrective feedback, up to three attempts. Repeated failures are recorded without rendering and retried on the next sync. |
+
+### Prompt strategy
+
+Gemma and External AI share an image-to-video caption format adapted from [Lightricks' Gemma 4 I2V template](https://github.com/Lightricks/LTX-2/blob/main/packages/ltx-core/src/ltx_core/text_encoders/gemma/encoders/prompts/gemma4_i2v_system_prompt.txt), [LTX-2.5 prompting guide](https://ltx.io/blog/ltx-2-5-prompt-guide), and [image-to-video guide](https://docs.ltx.io/open-source-model/usage-guides/image-to-video). Captions ground the action in the first frame, state shot type and viewpoint, and describe observable motion chronologically in one flowing paragraph. Detail follows scene complexity, normally 4–8 sentences, without a minimum word count or mandatory second event. Ambient movement is included only when the artwork supports it. Photographic effects are not added to drawings; speech is not invented from lyrics. Sound descriptions are optional in Echora's video-only renderer.
+
+Echora adds two playback requirements: the camera remains stationary with constant framing and scale, and scene motion must look natural in reverse. The built-in writer uses the Gemma 4 chat format directly through `TextGenerate`, replacing ComfyUI's caption template, which otherwise encourages camera movement. External AI follows the same instructions and returns a JSON envelope. Gemma 4 E2B is the official local enhancer; another vision-capable model can write the caption through External AI. The separate LTX text encoder remains unchanged.
+
+Camera-movement detection checks caption text, not the finished video, so this cannot guarantee a stationary result. Fixed prompts remain user-controlled and bypass the generated-prompt checks. Changes to the shared writer revision invalidate loops from both generated-prompt sources on the next sync, including those with saved custom instructions.
+
+Community reports favoring simpler prompts ([Reddit discussion](https://www.reddit.com/r/StableDiffusion/comments/1vly93b/the_simple_secret_to_better_ltx_25_results/)) are anecdotal and sometimes still show unwanted zooming. They support keeping actions focused, rather than adopting a new prompt syntax or claiming a reliable camera fix. A [GitHub issue](https://github.com/Lightricks/LTX-2/issues/11) reports similar slight zooms in earlier LTX image-to-video generation; it is not evidence specific to LTX-2.5.
 
 Deployment settings:
 
