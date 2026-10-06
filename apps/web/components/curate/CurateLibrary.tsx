@@ -574,7 +574,8 @@ export default function CurateLibrary() {
   const savedList = !curationsLoaded ? (
     <LoadingState label="Loading curations…" />
   ) : curations.length ? (
-    <ul className="grid gap-2">
+    // minmax(0, 1fr): a long name truncates instead of widening the list past the pane.
+    <ul className="grid grid-cols-[minmax(0,1fr)] gap-2">
       {curations.map((curation) => {
         const selected = selectedCurationId === curation.id;
         const refreshing =
@@ -584,7 +585,7 @@ export default function CurateLibrary() {
           <li
             key={curation.id}
             className={cn(
-              "relative border transition-colors",
+              "relative min-w-0 border transition-colors",
               selected
                 ? "border-primary/60 bg-primary/[.06]"
                 : "border-border bg-surface/50 hover:border-border-strong hover:bg-surface",
