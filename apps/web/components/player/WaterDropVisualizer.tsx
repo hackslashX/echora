@@ -6,6 +6,7 @@ import { readPlaybackPreferences, type PlaybackPreferences } from "./playbackPre
 import { neutralVisualFrame, type VisualFrame } from "./visualFeatures";
 import type { TrackPalette } from "./artworkPalette";
 import { WaterSurface, waterControls } from "./waterPhysics";
+import { SongJourney } from "./songJourney";
 import styles from "./WaterDropVisualizer.module.css";
 
 const vertexShader = `
@@ -94,6 +95,11 @@ export default function WaterDropVisualizer() {
     ];
     const colorNames = ["colorA", "colorB", "colorC", "colorD", "colorE"] as const;
     let colorCount = 3;
+    let artwork: [number, number, number][] = colors.map(
+      (color) => color.toArray() as [number, number, number],
+    );
+    const journey = new SongJourney();
+    let lastImpact = 0;
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 160);
     camera.position.set(0, 24, 27);
@@ -132,6 +138,7 @@ export default function WaterDropVisualizer() {
       camera.updateProjectionMatrix();
     };
     const clear = () => {
+      journey.reset();
       audio = neutralVisualFrame();
       lastAudio = -Infinity;
       pendingHit = 0;
@@ -157,9 +164,29 @@ export default function WaterDropVisualizer() {
             ? 1.45
             : 1;
       const seconds = dt * rate;
+      journey.step(dt, rate, now / 1000);
+      // A bigger section landing drops a stone in the middle of the pool.
+      if (audible && journey.impact > lastImpact + 0.2) {
+        drops.push({
+          x: (Math.random() - 0.5) * 8,
+          z: (Math.random() - 0.5) * 5,
+          y: 9,
+          velocity: controls.fallSpeed + 8,
+          radius: controls.radius * 2.6,
+          strength: controls.impact * 2.4 + 0.3,
+        });
+      }
+      lastImpact = journey.impact;
       tension += (controls.tension - tension) * (1 - Math.exp(-dt * 4));
       damping += (controls.damping - damping) * (1 - Math.exp(-dt * 4));
-      spawnCredit = audible ? Math.min(1.5, spawnCredit + seconds * controls.rate) : 0;
+      // The song's push thickens the rain; a build-up quickens it further.
+      spawnCredit = audible
+        ? Math.min(
+            1.5,
+            spawnCredit +
+              seconds * controls.rate * (0.5 + journey.drive + journey.anticipation * 1.5),
+          )
+        : 0;
       if (
         audible &&
         controls.energy > 0.015 &&
@@ -198,11 +225,12 @@ export default function WaterDropVisualizer() {
       surface.advance(seconds, tension, damping);
       texture.needsUpdate = true;
       const response = 1 - Math.exp(-dt * 2);
+      colors.forEach((color, index) => color.set(...journey.color(artwork, index)));
       colorNames.forEach((name, index) =>
         material.uniforms[name].value.lerp(colors[index], response),
       );
       material.uniforms.energy.value +=
-        (controls.energy - material.uniforms.energy.value) * response;
+        (controls.energy * (0.6 + journey.drive * 0.8) - material.uniforms.energy.value) * response;
       renderer.render(scene, camera);
     };
     const sync = () => {
@@ -238,6 +266,7 @@ export default function WaterDropVisualizer() {
     const receiveAudio = (event: Event) => {
       const next = (event as CustomEvent<VisualFrame>).detail;
       audio = next;
+      journey.receive(next, preferences);
       if (!active || !next.active) {
         pendingHit = 0;
         lastAudio = -Infinity;
@@ -258,7 +287,7 @@ export default function WaterDropVisualizer() {
         const extracted = palette.trails?.length ? palette.trails : palette.waves;
         colorCount = Math.min(5, extracted.length);
         material.uniforms.colorCount.value = colorCount;
-        colors.forEach((color, index) => color.fromArray(extracted[index % colorCount]));
+        artwork = extracted.slice(0, 5) as [number, number, number][];
       }
     };
     const receiveState = (event: Event) => {

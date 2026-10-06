@@ -3,6 +3,7 @@ export type VisualFeatureTimeline = {
   rhythm?: DescriptorRhythm | null;
   enrichment?: VisualEnrichment;
   structureSummary?: { edges_seconds: number[]; novelty: number[] };
+  sections?: JourneySection[];
   revision: "2";
   sample_rate: number;
   hop_length: number;
@@ -179,7 +180,15 @@ export function validateVisualFeatures(value: unknown): VisualFeatureTimeline | 
   const structureSummary = record(value.structure)
     ? { edges_seconds: value.structure.edges_seconds, novelty: value.structure.novelty }
     : undefined;
+  // Sections are planned here, while the similarity matrices are at hand; only the bounded plan is kept.
+  const sections = planSongSections(
+    record(value.structure) ? (value.structure as JourneyStructure) : undefined,
+    level as number[],
+    hop_seconds as number,
+    duration_seconds as number,
+  );
   return {
+    sections,
     revision,
     sample_rate,
     hop_length,
@@ -229,6 +238,7 @@ export type VisualFrame = {
     melodySource: string | null;
   } | null;
   structuralNovelty: number | null;
+  section: FrameSection | null;
   rhythmSource: "core" | "descriptors" | null;
   active: boolean;
   timestamp: number;
@@ -262,6 +272,7 @@ export function neutralVisualFrame(timestamp = 0): VisualFrame {
     tempoCandidatesBpm: [],
     enrichment: null,
     structuralNovelty: null,
+    section: null,
     rhythmSource: null,
     features: null,
     active: false,
@@ -342,6 +353,7 @@ export function visualFrameAt(
       melodySource: melody?.source ?? null,
     },
     structuralNovelty: structure?.novelty[structureIndex] ?? null,
+    section: sectionAt(timeline.sections, timestamp),
     rhythmSource: timeline.rhythm ? "descriptors" : "core",
     features: {
       chroma: timeline.chroma[index],
@@ -495,4 +507,146 @@ export function validateVisualEnrichment(value: unknown, duration: number): Visu
       result.melody = { source: melody.source, points };
   }
   return result;
+}
+
+/** Song sections for the backdrops: boundaries from checkerboard novelty on the averaged
+ * chroma/MFCC self-similarity; a section that resembles an earlier one, relative to this
+ * song's own similarity spread, returns to that section's scene (a chorus comes back to the
+ * same place). Energy is each section's mean level, normalised within the song. */
+export type JourneySection = { start: number; end: number; scene: number; energy: number };
+export type JourneyStructure = {
+  edges_seconds: number[];
+  novelty: number[];
+  chroma_cosine: number[][];
+  mfcc_rbf: number[][];
+};
+export type FrameSection = {
+  index: number;
+  count: number;
+  scene: number;
+  energy: number;
+  nextEnergy: number | null;
+  start: number;
+  end: number;
+};
+
+const KERNEL = 4; // bins (~2 s each) on each side of a candidate boundary
+const MIN_SPACING = 6; // bins between boundaries, about 12 s
+const MAX_BOUNDARIES = 20;
+const RECURRENCE_Z = 1;
+
+export function planSongSections(
+  structure: JourneyStructure | undefined,
+  level: number[],
+  hopSeconds: number,
+  duration: number,
+): JourneySection[] {
+  const whole = [{ start: 0, end: duration, scene: 0, energy: 0.5 }];
+  if (!structure) return whole;
+  const n = structure.novelty.length;
+  if (n < KERNEL * 2 + 2) return whole;
+  const similarity = (i: number, j: number) =>
+    (structure.chroma_cosine[i][j] + structure.mfcc_rbf[i][j]) / 2;
+  const blockMean = (a0: number, a1: number, b0: number, b1: number) => {
+    let sum = 0;
+    for (let i = a0; i < a1; i++) for (let j = b0; j < b1; j++) sum += similarity(i, j);
+    return sum / Math.max(1, (a1 - a0) * (b1 - b0));
+  };
+  const foote = new Array<number>(n).fill(0);
+  for (let i = KERNEL; i < n - KERNEL; i++) {
+    const within =
+      (blockMean(i - KERNEL, i, i - KERNEL, i) + blockMean(i, i + KERNEL, i, i + KERNEL)) / 2;
+    foote[i] = Math.max(0, within - blockMean(i - KERNEL, i, i, i + KERNEL));
+  }
+  const peak = Math.max(...foote) || 1;
+  const strength = foote.map((value) => value / peak);
+  const candidates: number[] = [];
+  for (let i = KERNEL; i < n - KERNEL; i++) {
+    let local = true;
+    for (let j = Math.max(0, i - 3); j <= Math.min(n - 1, i + 3); j++)
+      if (strength[j] > strength[i]) local = false;
+    if (local && strength[i] > 0.25) candidates.push(i);
+  }
+  candidates.sort((a, b) => strength[b] - strength[a] || a - b);
+  const chosen: number[] = [];
+  for (const index of candidates) {
+    if (chosen.length >= MAX_BOUNDARIES) break;
+    if (chosen.every((other) => Math.abs(other - index) >= MIN_SPACING)) chosen.push(index);
+  }
+  chosen.sort((a, b) => a - b);
+  const bounds = [0, ...chosen, n];
+  const bins = bounds.slice(0, -1).map((start, index) => [start, bounds[index + 1]] as const);
+
+  // Recurrence: compare each section with every other, then judge the best earlier
+  // match against this song's own spread of between-section similarity.
+  const m = bins.length;
+  const cross = bins.map(([a0, a1]) => bins.map(([b0, b1]) => blockMean(a0, a1, b0, b1)));
+  const off: number[] = [];
+  for (let i = 0; i < m; i++) for (let j = 0; j < m; j++) if (i !== j) off.push(cross[i][j]);
+  const mean = off.reduce((sum, value) => sum + value, 0) / Math.max(1, off.length);
+  const spread =
+    Math.sqrt(off.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(1, off.length)) ||
+    1;
+  const scenes: number[] = [];
+  for (let i = 0; i < m; i++) {
+    let best = -1;
+    for (let j = 0; j < i; j++) if (best < 0 || cross[i][j] > cross[i][best]) best = j;
+    scenes.push(
+      best >= 0 && (cross[i][best] - mean) / spread >= RECURRENCE_Z
+        ? scenes[best]
+        : Math.max(-1, ...scenes) + 1,
+    );
+  }
+
+  const edges = structure.edges_seconds;
+  const energies = bins.map(([a, b]) => {
+    const from = Math.min(level.length - 1, Math.floor(edges[a] / hopSeconds));
+    const to = Math.max(from + 1, Math.min(level.length, Math.floor(edges[b] / hopSeconds)));
+    let sum = 0;
+    for (let i = from; i < to; i++) sum += level[i];
+    return sum / (to - from);
+  });
+  // Half range, half rank: mastered pop sits within a narrow loudness band, and
+  // the rank still separates verse, pre-chorus and chorus.
+  const low = Math.min(...energies),
+    high = Math.max(...energies);
+  const order = energies
+    .map((value, index) => [value, index])
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1])
+    .map((item) => item[1]);
+  const rank = new Array<number>(m);
+  order.forEach((index, position) => {
+    rank[index] = m > 1 ? position / (m - 1) : 0.5;
+  });
+  return bins.map(([a, b], index) => ({
+    start: edges[a],
+    end: index === m - 1 ? duration : edges[b],
+    scene: scenes[index],
+    energy: high - low > 1e-6 ? ((energies[index] - low) / (high - low) + rank[index]) / 2 : 0.5,
+  }));
+}
+
+export function sectionAt(
+  sections: JourneySection[] | undefined,
+  time: number,
+): FrameSection | null {
+  if (!sections?.length) return null;
+  let low = 0,
+    high = sections.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (sections[middle].start <= time) low = middle + 1;
+    else high = middle;
+  }
+  const index = Math.max(0, low - 1),
+    section = sections[index];
+  return {
+    index,
+    count: sections.length,
+    scene: section.scene,
+    energy: section.energy,
+    nextEnergy: sections[index + 1]?.energy ?? null,
+    start: section.start,
+    end: section.end,
+  };
 }

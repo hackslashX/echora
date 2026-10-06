@@ -6,6 +6,7 @@ import { useEffect, useRef } from "react";
 import { readPlaybackPreferences, type PlaybackPreferences } from "./playbackPreferences";
 import { CloudResponse } from "./cloudResponse";
 import { cloudFragmentShader } from "./cloudShader";
+import { SongJourney } from "./songJourney";
 import styles from "./CloudVisualizer.module.css";
 
 export default function CloudVisualizer() {
@@ -42,10 +43,20 @@ export default function CloudVisualizer() {
         glow: { value: 0 },
         strike: { value: 0 },
         seed: { value: 1 },
+        flight: { value: 0 },
+        skyLevel: { value: 0 },
+        skyTint: { value: new THREE.Vector3(0.4, 0.5, 0.7) },
       },
       vertexShader: "varying vec2 vUv; void main(){vUv=uv;gl_Position=vec4(position.xy,0.0,1.0);}",
       fragmentShader: cloudFragmentShader,
     });
+    const journey = new SongJourney();
+    let palette: [number, number, number][] = [
+      [0.38, 0.48, 0.63],
+      [0.38, 0.34, 0.52],
+      [0.5, 0.6, 0.8],
+    ];
+    let lastImpact = 0;
     const mesh = new THREE.Mesh(geometry, material);
     mesh.frustumCulled = false;
     scene.add(mesh);
@@ -82,8 +93,29 @@ export default function CloudVisualizer() {
             ? 1.45
             : 1;
       response.step(dt, now / 1000, playing, rate);
+      journey.step(dt, rate, now / 1000);
+      // A build-up charges light inside the banks; the landing releases a storm.
+      if (journey.impact > lastImpact + 0.2) {
+        response.strike = Math.max(response.strike, 0.85);
+        response.seed += 7.13;
+      }
+      lastImpact = journey.impact;
+      response.glow = Math.max(response.glow, journey.anticipation * 0.7);
       for (const key of ["travel", "bass", "mid", "treble", "glow", "strike", "seed"] as const)
         material.uniforms[key].value = response[key];
+      material.uniforms.flight.value = journey.travel * 0.2;
+      material.uniforms.skyLevel.value =
+        0.02 +
+        journey.drive * journey.sectionEnergy * 0.16 +
+        journey.anticipation * 0.06 +
+        journey.impact * 0.1;
+      // Scenes recolour the clouds; the artwork palette still decides which colours.
+      targetTint.set(...journey.color(palette, 0));
+      targetSecondaryTint.set(...journey.color(palette, 1));
+      material.uniforms.skyTint.value.lerp(
+        new THREE.Vector3(...journey.color(palette, 2)),
+        1 - Math.exp(-dt * 0.8),
+      );
       material.uniforms.tint.value.lerp(targetTint, 1 - Math.exp(-dt * 0.6));
       material.uniforms.secondaryTint.value.lerp(targetSecondaryTint, 1 - Math.exp(-dt * 0.6));
       renderer.render(scene, camera);
@@ -128,6 +160,7 @@ export default function CloudVisualizer() {
     };
     const receiveAudio = (event: Event) => {
       const detail = (event as CustomEvent<VisualFrame>).detail;
+      journey.receive(detail, preferences);
       if (!detail.active) {
         response.reset();
         return;
@@ -140,17 +173,25 @@ export default function CloudVisualizer() {
         event as CustomEvent<{ active: boolean; palette: { waves: number[][] } | null }>
       ).detail;
       // Pause clears the shared accent. Keep cloud pigments until new artwork arrives.
-      const palette = detail.palette;
-      if (palette?.waves[0]) {
-        targetTint.fromArray(palette.waves[0]);
-        targetSecondaryTint.fromArray(palette.waves[1] || palette.waves[0]);
-      }
+      if (detail.palette?.waves[0])
+        palette = (
+          detail.palette.waves.length >= 3
+            ? detail.palette.waves
+            : [
+                detail.palette.waves[0],
+                detail.palette.waves[1] || detail.palette.waves[0],
+                detail.palette.waves[0],
+              ]
+        ) as [number, number, number][];
     };
     const receiveState = (event: Event) => {
       playing = Boolean((event as CustomEvent<boolean>).detail);
       if (!playing) response.reset();
     };
-    const reset = () => response.reset();
+    const reset = () => {
+      response.reset();
+      journey.reset();
+    };
     const lost = (event: Event) => {
       event.preventDefault();
       failed = true;

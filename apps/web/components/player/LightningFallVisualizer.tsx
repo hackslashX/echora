@@ -5,17 +5,19 @@ import type { VisualFrame } from "./visualFeatures";
 import * as THREE from "three";
 import { useEffect, useRef } from "react";
 import { readPlaybackPreferences, type PlaybackPreferences } from "./playbackPreferences";
+import { SongJourney } from "./songJourney";
 import styles from "./LightningFallVisualizer.module.css";
 
 const fragmentShader = `
   uniform sampler2D spectrum;
-  uniform float travel, energy, bass, mid, treble, pulse, visibility, colorCount;
+  uniform float travel, energy, bass, mid, treble, pulse, visibility, colorCount, anticipation, impact, drive;
   uniform vec3 colorA, colorB, colorC, colorD, colorE;
   varying vec2 vUv;
   float hash(float n) { return fract(sin(n * 127.1) * 43758.5453); }
   void main() {
     float y = 1.0 - vUv.y;
-    float spread = .16 + 1.65 * pow(y, 3.3);
+    // A build-up pinches the streams together; the landing throws them wide.
+    float spread = (.16 + 1.65 * pow(y, 3.3)) * (1.0 - anticipation * .3 + impact * .35);
     float bend = sin(y * 4.0 + travel * .3) * mid * .006 * y;
     float lane = ((vUv.x - .5 - bend) / spread + .5) * 150.0;
     float id = floor(lane);
@@ -30,14 +32,14 @@ const fragmentShader = `
     float halo = exp(-distanceToLine / (aa * 2.5 * thickness));
     float bloom = exp(-distanceToLine / (aa * 7.0));
     float phase = fract(y * (1.4 + seed * 1.8) - travel * (.7 + seed * .6) + seed * 13.0);
-    float streak = smoothstep(.56 - frequency * .12, .96, phase) * (1.0 - smoothstep(.96, 1.0, phase));
+    float streak = smoothstep(.56 - frequency * .12 - drive * .18, .96, phase) * (1.0 - smoothstep(.96, 1.0, phase));
     float head = exp(-pow((phase - .96) * 65.0, 2.0));
     float band = mod(id, 3.0);
     float response = band < 1.0 ? bass : band < 2.0 ? mid : treble;
     float colorIndex = floor(seed * colorCount);
     vec3 color = colorIndex < 1.0 ? colorA : colorIndex < 2.0 ? colorB : colorIndex < 3.0 ? colorC : colorIndex < 4.0 ? colorD : colorE;
-    float light = .06 + streak * (.4 + response * .85 + energy * .3);
-    light += head * treble * .5 + streak * pulse * .25;
+    float light = .06 + streak * (.4 + response * .85 + energy * .3) * (.7 + drive * .6);
+    light += head * (treble * .5 + impact * 1.2) + streak * pulse * .25;
     light *= .9 + frequency * .25;
     float edge = step(0.0, id) * step(id, 149.0);
     float depth = .26 + .74 * smoothstep(0.0, .85, y);
@@ -95,6 +97,9 @@ export default function LightningFallVisualizer() {
         colorE: { value: targetColors[4].clone() },
         colorCount: { value: 3 },
         visibility: { value: 0.38 },
+        anticipation: { value: 0 },
+        impact: { value: 0 },
+        drive: { value: 0 },
       },
       vertexShader: "varying vec2 vUv; void main(){vUv=uv;gl_Position=vec4(position.xy,0.0,1.0);}",
       fragmentShader,
@@ -110,9 +115,11 @@ export default function LightningFallVisualizer() {
     let active = false,
       failed = false;
     let trackId: string | null = null;
-    let bpm = 100,
-      travelSpeed = 0,
-      pendingPulse = 0;
+    let pendingPulse = 0;
+    const journey = new SongJourney();
+    let trails: [number, number, number][] = targetColors.map(
+      (color) => color.toArray() as [number, number, number],
+    );
     const targets = { bass: 0, mid: 0, treble: 0, energy: 0 };
     const resize = () => {
       if (!renderer) return;
@@ -155,16 +162,13 @@ export default function LightningFallVisualizer() {
         audible ? pendingPulse : 0,
       );
       pendingPulse = 0;
-      const tempoScale = THREE.MathUtils.clamp(Math.pow(bpm / 100, 1.3), 0.5, 2.2);
-      const speed = audible
-        ? (0.08 +
-            material.uniforms.energy.value * 0.32 +
-            material.uniforms.bass.value * 0.32 +
-            material.uniforms.pulse.value * 0.16) *
-          tempoScale
-        : 0;
-      travelSpeed += (speed - travelSpeed) * (1 - Math.exp(-dt * 3));
-      material.uniforms.travel.value += dt * rate * travelSpeed;
+      journey.step(dt, rate, now / 1000);
+      // The journey sets the pace; the bass still kicks the trails forward.
+      material.uniforms.travel.value = journey.travel * 0.55 + material.uniforms.bass.value * 0.02;
+      material.uniforms.anticipation.value = journey.anticipation;
+      material.uniforms.impact.value = journey.impact;
+      material.uniforms.drive.value = journey.drive;
+      targetColors.forEach((color, index) => color.set(...journey.color(trails, index)));
       colorNames.forEach((name, index) =>
         material.uniforms[name].value.lerp(targetColors[index], 1 - Math.exp(-dt * 2)),
       );
@@ -198,6 +202,7 @@ export default function LightningFallVisualizer() {
       }
     };
     const clear = () => {
+      journey.reset();
       targetBins.fill(0);
       targets.bass = targets.mid = targets.treble = targets.energy = pendingPulse = 0;
       lastAudio = -Infinity;
@@ -209,6 +214,7 @@ export default function LightningFallVisualizer() {
     const receiveAudio = (event: Event) => {
       const detail = (event as CustomEvent<VisualFrame>).detail;
       // Pause eases motion and light down without clearing the trails.
+      journey.receive(detail, preferences);
       if (!detail.active || !detail.source) {
         lastAudio = -Infinity;
         return;
@@ -219,7 +225,6 @@ export default function LightningFallVisualizer() {
       }
       playing = true;
       lastAudio = performance.now();
-      bpm = detail.bpm || 100;
       targets.bass = Math.min(1, detail.bass * preferences.bassReactivity * 1.4);
       targets.mid = Math.min(1, detail.mid * preferences.vocalReactivity * 1.5);
       targets.treble = Math.min(1, detail.treble * preferences.trebleReactivity * 1.8);
@@ -251,8 +256,9 @@ export default function LightningFallVisualizer() {
       const { palette } = (event as CustomEvent<{ palette: TrackPalette | null }>).detail;
       if (palette) {
         const colors = palette.trails?.length ? palette.trails : palette.waves;
-        material.uniforms.colorCount.value = Math.min(5, colors.length);
-        targetColors.forEach((color, index) => color.fromArray(colors[index % colors.length]));
+        // Each scene shows three of the artwork's colours, a different three per scene.
+        material.uniforms.colorCount.value = Math.min(3, colors.length);
+        trails = colors.slice(0, 5) as [number, number, number][];
       }
     };
     const receiveState = (event: Event) => {

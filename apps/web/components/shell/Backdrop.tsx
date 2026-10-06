@@ -23,6 +23,8 @@ import LightningFallVisualizer from "../player/LightningFallVisualizer";
 import WaterDropVisualizer from "../player/WaterDropVisualizer";
 import styles from "./Backdrop.module.css";
 import { advanceWaveSpring } from "./waveSpring";
+import { SongJourney } from "../player/songJourney";
+import type { VisualFrame } from "../player/visualFeatures";
 
 type RenderLayer = { render: (time: number) => void };
 type Color = [number, number, number];
@@ -55,6 +57,8 @@ type Reactivity = {
   bassAttack?: number;
   midAttack?: number;
   trebleAttack?: number;
+  drive?: number;
+  impact?: number;
 };
 type XmbWindow = Window & {
   createSplineLayer?: (gl: WebGL2RenderingContext, canvas: HTMLCanvasElement) => RenderLayer;
@@ -155,6 +159,28 @@ function asciiAtlasCanvas(): HTMLCanvasElement {
   return canvas;
 }
 
+// The glyph atlas is white; drawImage ignores fillStyle, so each colour gets a
+// tinted copy. Copies refresh at most a few times a second as colours drift.
+const tintedAtlases = new Map<number, { canvas: HTMLCanvasElement; color: Color; at: number }>();
+function tintedAtlas(slot: number, color: Color, now: number): HTMLCanvasElement {
+  const cached = tintedAtlases.get(slot);
+  const drift = cached
+    ? Math.max(...color.map((value, index) => Math.abs(value - cached.color[index])))
+    : 1;
+  if (cached && (drift < 0.02 || now - cached.at < 0.25)) return cached.canvas;
+  const canvas = cached?.canvas ?? document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext("2d")!;
+  ctx.globalCompositeOperation = "copy";
+  ctx.drawImage(asciiAtlasCanvas(), 0, 0);
+  ctx.globalCompositeOperation = "source-in";
+  ctx.fillStyle = `rgb(${color.map((value) => Math.round(Math.max(0, Math.min(1, value)) * 255)).join(",")})`;
+  ctx.fillRect(0, 0, 256, 256);
+  tintedAtlases.set(slot, { canvas, color: [...color] as Color, at: now });
+  return canvas;
+}
+
 function curtainCellsFor(
   cols: number,
   rows: number,
@@ -216,6 +242,9 @@ function presetScene(
     if ((reactive.bassAttack ?? 0) > 0.05) {
       for (const cell of state.cells) if (Math.random() < 0.1) cell.flash = 1;
     }
+    // A bigger section landing sweeps light across the whole curtain.
+    if ((reactive.impact ?? 0) > 0.6)
+      for (const cell of state.cells) if (Math.random() < 0.5) cell.flash = 1;
     for (const cell of state.cells) {
       if (cell.speedMult === 1 && Math.random() < mid * delta * 9)
         cell.speedMult = 18 + Math.random() * 20;
@@ -228,7 +257,9 @@ function presetScene(
       if (cell.darken < 1) cell.darken = Math.min(1, cell.darken + delta * 0.7);
       cell.flash *= flashDecay;
       const visible = SEGMENT_MAP[cell.digit];
-      const brightness = Math.min(1, 0.05 + bass * 0.3 + cell.flash * 1.1) * cell.darken;
+      const brightness =
+        Math.min(1, 0.05 + bass * 0.3 + (reactive.drive ?? 0) * 0.22 + cell.flash * 1.1) *
+        cell.darken;
       const cellIndex = state.cells.indexOf(cell);
       const x = (cellIndex % cols) * digitW + (digitW - cellW * 2) / 2;
       const y = Math.floor(cellIndex / cols) * digitH + (digitH - (cellH * 2 + cellW * 0.36)) / 2;
@@ -254,7 +285,12 @@ function presetScene(
     const bass = reactive.bass;
     const mid = reactive.mid;
     const treble = reactive.treble;
-    const atlas = asciiAtlasCanvas();
+    // Three tints: the two scene colours and their blend, chosen per glyph by the noise.
+    const atlases = [
+      tintedAtlas(0, waves[0], clock),
+      tintedAtlas(1, mix(waves[0], waves[1], 0.5), clock),
+      tintedAtlas(2, waves[1], clock),
+    ];
     const cell = Math.max(22, Math.min(30, Math.floor(w / 34)));
     const cols = Math.ceil(w / cell);
     const rows = Math.ceil(h / cell);
@@ -283,14 +319,22 @@ function presetScene(
         let charIndex = Math.floor((noise * 64 + rand[gridIndex] * 64 + slowTime * 7) % 64);
         if (rand[(gridIndex + slowTime) % rand.length] < treble * 0.3)
           charIndex = Math.floor(rand[(gridIndex * 7 + slowTime) % rand.length] * 64);
-        const brightness = Math.max(0, Math.min(1, noise * 0.2 + bass * 0.4));
+        const brightness = Math.max(
+          0,
+          Math.min(
+            1,
+            noise * 0.2 + bass * 0.4 + (reactive.drive ?? 0) * 0.3 + (reactive.impact ?? 0) * 0.5,
+          ),
+        );
         if (brightness < 0.3) continue;
-        const color = mix(waves[0], waves[1], noise);
         const edgeFade =
           Math.min(1, Math.sin(Math.PI * Math.min(1, ((row + 0.5) / rows) * 1.04)) * 0.7 + 0.3) *
           Math.min(1, Math.sin(Math.PI * Math.min(1, ((column + 0.5) / cols) * 1.04)) * 0.5 + 0.5);
-        ctx.globalAlpha = Math.min(0.22, brightness * 0.3 * edgeFade);
-        ctx.fillStyle = css(brightness > 0.85 ? waves[1] : color, 1);
+        ctx.globalAlpha = Math.min(
+          0.22 + (reactive.drive ?? 0) * 0.2 + (reactive.impact ?? 0) * 0.25,
+          brightness * 0.45 * edgeFade,
+        );
+        const atlas = atlases[brightness > 0.85 ? 2 : Math.min(2, Math.floor(noise * 3))];
         ctx.drawImage(
           atlas,
           (charIndex % 8) * 32,
@@ -352,8 +396,12 @@ export default function Backdrop() {
       [...DEFAULT_WAVES[2]],
     ];
     const reactive: Reactivity = { ...target };
-    const receiveAudio = (event: Event) =>
+    // One journey for the presets drawn here: waves, digital curtain and ASCII dance.
+    const journey = new SongJourney();
+    const receiveAudio = (event: Event) => {
       Object.assign(target, (event as CustomEvent<Reactivity>).detail);
+      journey.receive((event as CustomEvent<VisualFrame>).detail, preferences);
+    };
     const receiveMode = (event: Event) => {
       targetOpacityScale = (event as CustomEvent<{ waveOpacity: number }>).detail.waveOpacity;
     };
@@ -448,9 +496,14 @@ export default function Backdrop() {
             : preferences.animationSpeed === "fast"
               ? 1.45
               : 1;
-        if (preferences.wavesEnabled)
-          elapsed += (Math.max(0, now - previous) / 1000) * animationSpeed;
         const frameDelta = Math.min(0.1, Math.max(0.001, (now - previous) / 1000));
+        journey.step(frameDelta, animationSpeed, now / 1000);
+        // The waves flow faster as the song pushes harder, and surge through a build-up.
+        if (preferences.wavesEnabled)
+          elapsed +=
+            (Math.max(0, now - previous) / 1000) *
+            animationSpeed *
+            (0.6 + journey.drive * 0.8 + journey.anticipation * 0.5);
         previous = now;
         lastRendered = now;
         for (const key of ["bass", "mid", "treble", "level"] as const)
@@ -462,8 +515,17 @@ export default function Backdrop() {
         reactive.timestamp = target.timestamp;
         target.onset = false;
         opacityScale += (targetOpacityScale - opacityScale) * 0.035;
-        const background = paletteTarget?.background ?? DEFAULT_BASE;
-        const colors = paletteTarget?.waves ?? DEFAULT_WAVES;
+        // Scenes recolour the waves from the artwork palette; the background lifts with the push.
+        const lift = 0.85 + journey.drive * 0.35 + journey.impact * 0.35;
+        const background = (paletteTarget?.background ?? DEFAULT_BASE).map((value) =>
+          Math.min(255, value * lift),
+        ) as Color;
+        const artwork = paletteTarget?.waves ?? DEFAULT_WAVES;
+        const colors = [
+          journey.color(artwork, 0),
+          journey.color(artwork, 1),
+          journey.color(artwork, 2),
+        ];
         for (let channel = 0; channel < 3; channel++)
           baseColor[channel] += (background[channel] - baseColor[channel]) * 0.025;
         for (let layer = 0; layer < 3; layer++) {
@@ -501,6 +563,8 @@ export default function Backdrop() {
             bass: reactive.bass * preferences.bassReactivity,
             mid: reactive.mid * preferences.vocalReactivity,
             treble: reactive.treble * preferences.trebleReactivity,
+            drive: journey.drive,
+            impact: journey.impact,
           };
           presetScene(
             scene,
@@ -530,10 +594,13 @@ export default function Backdrop() {
             target.treble * preferences.trebleReactivity,
           ];
           for (let layer = 0; layer < 3; layer++) {
+            const swell =
+              0.7 + journey.drive * 0.6 + journey.anticipation * 0.5 + journey.impact * 0.9;
             const desired =
               preferences.wavesEnabled && preferences.backdropPreset === "waves"
-                ? baseline.spline.layerAmplitudes[layer] +
-                  waveLevels[layer] * [1.65, 1.3, 1.05][layer]
+                ? (baseline.spline.layerAmplitudes[layer] +
+                    waveLevels[layer] * [1.65, 1.3, 1.05][layer]) *
+                  swell
                 : 0;
             splineSettings.layerAmplitudes[layer] = advanceWaveSpring(
               waveSprings[layer],
@@ -544,7 +611,13 @@ export default function Backdrop() {
           }
           particleSettings.count =
             preferences.wavesEnabled && preferences.backdropPreset === "waves"
-              ? Math.round((baseline.particles.count + reactive.treble * 2600) / 100) * 100
+              ? Math.round(
+                  (baseline.particles.count +
+                    reactive.treble * 2600 +
+                    journey.drive * 1400 +
+                    journey.impact * 2000) /
+                    100,
+                ) * 100
               : 0;
           splineSettings.colorR += (baseColor[0] - splineSettings.colorR) * 0.025;
           splineSettings.colorG += (baseColor[1] - splineSettings.colorG) * 0.025;

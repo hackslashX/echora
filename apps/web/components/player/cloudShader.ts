@@ -5,6 +5,9 @@ varying vec2 vUv;
 uniform vec2 resolution;
 uniform vec3 tint, secondaryTint;
 uniform float travel, bass, mid, treble, glow, strike, seed;
+// The song's journey: forward flight and the sky glowing behind the banks.
+uniform float flight, skyLevel;
+uniform vec3 skyTint;
 float hash(vec3 p) {
   p = fract(p * .3183099 + vec3(.11,.27,.43));
   p *= 17.0;
@@ -23,7 +26,7 @@ float fbm(vec3 p) {
   return n;
 }
 vec3 cloudSpace(vec3 p) {
-  return p + vec3(travel*.28, -travel*.06, travel*.11);
+  return p + vec3(travel*.28, -travel*.06, travel*.11 + flight);
 }
 float cloudBody(vec3 p) {
   // Broad lobes establish distinct masses before smaller folds erode the edges.
@@ -77,7 +80,9 @@ void main() {
   for(int i=0;i<72;i++) {
     float t=(float(i)+.5+rayJitter)*.07;
     vec3 p=vec3(uv*.9,-.6)+ray*t;
-    float d=density(p);
+    // Banks thin out right in front of the camera, so the flight passes through
+    // them instead of meeting a lit wall that fills the screen.
+    float d=density(p)*smoothstep(.15,1.1,t);
     if(d<.005) continue;
     vec3 sun=normalize(vec3(-.65,.75,-.45));
     float nearProbe=density(p+sun*.11);
@@ -94,6 +99,8 @@ void main() {
     smoke += pigment*(shade*.02+rim*.014);
     smoke += cloudLight*rim*(.22+treble*.16)*powder;
     smoke += cloudLight*pow(shade,2.0)*(.025+mid*.11);
+    // Light from the sky behind catches the thin edges of each bank.
+    smoke += skyTint*skyLevel*(1.-powder)*.35;
     smoke *= .95+bass*.15;
     float distanceToLight=length(p-lightPos);
     float scattered=exp(-distanceToLight*distanceToLight*.65);
@@ -104,7 +111,9 @@ void main() {
     trans*=1.0-alpha;
     if(trans<.015) break;
   }
-  color+=trans*vec3(.003,.005,.009);
+  // The sky behind the banks: dark at rest, lit by the journey's colour as the song opens up.
+  vec3 sky=skyTint*skyLevel*(.35+.65*smoothstep(-.2,.9,vUv.y))*(1.+.5*exp(-length((vUv-vec2(.5,.62))*vec2(1.6,3.))*2.));
+  color+=trans*(vec3(.003,.005,.009)+sky);
   // A normal transient gets one forked bolt. Stronger hits add distant,
   // dimmer bolts so a cluster reads as a storm instead of a white flash.
   float bolt=lightning(vUv,uv,seed);
