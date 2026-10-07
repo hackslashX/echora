@@ -18,7 +18,6 @@ import {
 import { SectionHeading, Toggle, Choice, ChoiceItem, LocationToggles } from "./Presentation";
 import { SettingRow } from "./SettingRow";
 import { SettingsNotice } from "./SettingsNotice";
-import { RangeControl } from "./RangeControl";
 import styles from "./ExternalAISettings.module.css";
 import layout from "./SettingsView.module.css";
 
@@ -27,13 +26,14 @@ type Configuration = {
   comfyui_url: string;
   resolution: number;
   frames: number;
+  upscale: boolean;
   prompt_mode: "auto" | "external" | "fixed";
   instructions: string;
   fixed_prompt: string;
-  mid_anchor_strength: number;
   seed: number | null;
   generate_during_sync: boolean;
   generate_on_modal: boolean;
+  regenerate_outdated: boolean;
 };
 type Defaults = { comfyui_url: string; instructions: string };
 type Status = {
@@ -53,12 +53,21 @@ type Status = {
 };
 
 const endpoint = "/analysis/settings/motion-artwork";
-// Measured on an RTX 3090 with the int8 LTX-2.5 distilled model, 5-second clips.
+// Rendering time on an RTX 3090 with the int8 LTX-2.5 distilled model, for 10-second loops.
 const resolutions = [
-  { value: 768, label: "768 × 768", hint: "about 35 s per album" },
-  { value: 1024, label: "1024 × 1024", hint: "about 1–2 min per album" },
-  { value: 1536, label: "1536 × 1536", hint: "about 4 min per album, needs a 24 GB GPU" },
+  { value: 768, label: "768 × 768", hint: "about 1 min per track" },
+  { value: 1024, label: "1024 × 1024", hint: "about 2.5 min per track" },
+  { value: 1536, label: "1536 × 1536", hint: "about 9 min per track, needs a 24 GB GPU" },
   { value: 512, label: "512 × 512", hint: "fastest, soft detail" },
+];
+// Upscaling renders at these sizes and doubles them.
+const upscaledResolutions = [
+  {
+    value: 768,
+    label: "1536 × 1536",
+    hint: "Rendered at 768, then upscaled. About 5 min per track, needs a 24 GB GPU.",
+  },
+  { value: 512, label: "1024 × 1024", hint: "Rendered at 512, then upscaled." },
 ];
 
 async function request<T>(path = "", options?: RequestInit): Promise<T> {
@@ -277,7 +286,7 @@ export default function MotionArtworkSettings({ connectionId }: { connectionId: 
           </SettingRow>
           {comfy && comfy.missing_models.length > 0 && (
             <SettingsNotice tone="warning" title="Models missing">
-              Download them with <code>download_models --motion-artwork</code> (about 44 GB, needs a
+              Download them with <code>download_models --motion-artwork</code> (about 47 GB, needs a
               Hugging Face token with access to Lightricks/LTX-2.5). Missing:{" "}
               {comfy.missing_models.join(", ")}.
             </SettingsNotice>
@@ -288,19 +297,31 @@ export default function MotionArtworkSettings({ connectionId }: { connectionId: 
           <SectionHeading
             id="motion-artwork-render"
             title="Rendering"
-            description="Changing these renders new loops on the next generation run. Existing loops keep playing until they are replaced."
+            description="Changes apply to loops rendered from now on. Existing loops keep playing unless you choose to regenerate them below."
+          />
+          <Toggle
+            label="Upscale"
+            checked={value.upscale}
+            onChange={(upscale) =>
+              update(upscale && value.resolution > 768 ? { upscale, resolution: 768 } : { upscale })
+            }
+            description="Render at half size, double it with the LTX-2.5 upscaler and refine the result. Sharper than rendering at the larger size directly, and faster."
           />
           <SettingRow
             label="Resolution"
             htmlFor="motion-artwork-resolution"
-            description={resolutions.find((item) => item.value === value.resolution)?.hint}
+            description={
+              (value.upscale ? upscaledResolutions : resolutions).find(
+                (item) => item.value === value.resolution,
+              )?.hint
+            }
           >
             <Choice
               id="motion-artwork-resolution"
               value={String(value.resolution)}
               onChange={(next) => update({ resolution: Number(next) })}
             >
-              {resolutions.map((item) => (
+              {(value.upscale ? upscaledResolutions : resolutions).map((item) => (
                 <ChoiceItem key={item.value} value={String(item.value)}>
                   {item.label}
                 </ChoiceItem>
@@ -310,15 +331,15 @@ export default function MotionArtworkSettings({ connectionId }: { connectionId: 
           <SettingRow
             label="Loop length"
             htmlFor="motion-artwork-frames"
-            description="At 24 frames per second."
+            description="At 24 frames per second. Every loop starts and ends on the cover, so it repeats seamlessly. 5 seconds renders in about half the time."
           >
             <Choice
               id="motion-artwork-frames"
               value={String(value.frames)}
               onChange={(next) => update({ frames: Number(next) })}
             >
+              <ChoiceItem value="241">10 seconds</ChoiceItem>
               <ChoiceItem value="121">5 seconds</ChoiceItem>
-              <ChoiceItem value="97">4 seconds</ChoiceItem>
             </Choice>
           </SettingRow>
           <SettingRow
@@ -343,29 +364,12 @@ export default function MotionArtworkSettings({ connectionId }: { connectionId: 
               }
             />
           </SettingRow>
-          <SettingRow
-            label={
-              <>
-                <b>Hold to the cover at the turnaround</b>
-                <output className="font-normal tabular-nums">
-                  {value.mid_anchor_strength === 0
-                    ? "Off"
-                    : `${Math.round(value.mid_anchor_strength * 100)}%`}
-                </output>
-              </>
-            }
-            htmlFor="motion-artwork-anchor"
-            description="Pulls the last rendered frame, where playback reverses, toward the cover. Keeps faces in group shots steady, at the cost of less movement."
-          >
-            <RangeControl
-              id="motion-artwork-anchor"
-              min="0"
-              max="1"
-              step="0.05"
-              value={value.mid_anchor_strength}
-              onChange={(event) => update({ mid_anchor_strength: Number(event.target.value) })}
-            />
-          </SettingRow>
+          <Toggle
+            label="Regenerate loops made with other settings"
+            checked={value.regenerate_outdated}
+            onChange={(regenerate_outdated) => update({ regenerate_outdated })}
+            description="Off: entire-library syncs keep existing loops and only render missing ones. On: they also render again every loop made with different rendering or prompt settings, replacing it. Each loop records the settings it was made with."
+          />
         </section>
 
         <section aria-labelledby="motion-artwork-prompt">

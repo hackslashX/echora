@@ -1,8 +1,10 @@
 """LTX-2.5 motion artwork graph and video post-processing.
 
-The cover is the first frame (LTXVImgToVideoInplace) and the model is free from there; the saved loop
-plays the clip forward and then in reverse, so it starts and ends on the cover. Sampling follows Lightricks'
-distilled workflow: LTXVPreprocess on the cover, euler_ancestral and the distilled sigma list.
+The cover is pinned as both the first frame (LTXVImgToVideoInplace) and the last (LTXVAddGuide), so
+the clip starts and ends on the cover and loops seamlessly. Lightricks' static-camera LoRA holds the
+framing. Sampling follows Lightricks' distilled workflow: LTXVPreprocess on the cover, euler_ancestral
+and the distilled sigma list. With upscaling, that render is stage one of their two-stage pipeline: the
+latent is doubled with the LTX-2.5 spatial upscaler and refined at the larger size in three steps.
 In "auto" mode Gemma-4 E2B writes the prompt from the cover in a separate request, using the LTX
 caption-style system prompt plus Echora's instructions; Echora tidies it before rendering. Prompts
 can be encoded ahead of time (build_encode_graph) so rendering never loads the text encoder.
@@ -26,12 +28,21 @@ GEMMA_REVISION = "63d0f7c476756b88910170c1df75e2384ea1af31"
 TRANSFORMER = "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors"
 TEXT_ENCODER = "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors"
 VAE = "ltx-2.5-video-vae-conv-bf16.safetensors"
+UPSCALER = "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
+# Trained on LTX-2 19B; its layers match LTX-2.5 22B and it loads without missing keys.
+CAMERA_LORA_REPOSITORY = "Lightricks/LTX-2-19b-LoRA-Camera-Control-Static"
+CAMERA_LORA_REVISION = "ba623881aa5d59559a8b26c41beb4b28253b8cae"
+CAMERA_LORA = "ltx-2-19b-lora-camera-control-static.safetensors"
+# Full strength holds the camera but damps the subject's motion too.
+CAMERA_LORA_STRENGTH = 0.7
 PROMPT_MODEL = "gemma4_e2b_it_int8_convrot.safetensors"
 # (repository, revision, path in repository); ComfyUI resolves them by file name.
 MODEL_FILES = (
     (LTX_REPOSITORY, LTX_REVISION, f"diffusion_models/{TRANSFORMER}"),
     (LTX_REPOSITORY, LTX_REVISION, f"text_encoders/{TEXT_ENCODER}"),
     (LTX_REPOSITORY, LTX_REVISION, f"vae/{VAE}"),
+    (LTX_REPOSITORY, LTX_REVISION, f"latent_upscale_models/{UPSCALER}"),
+    (CAMERA_LORA_REPOSITORY, CAMERA_LORA_REVISION, CAMERA_LORA),
     (GEMMA_REPOSITORY, GEMMA_REVISION, f"text_encoders/{PROMPT_MODEL}"),
 )
 # (ComfyUI loader node, input name, file) for availability checks.
@@ -39,19 +50,24 @@ REQUIRED_LOADERS = (
     ("UNETLoader", "unet_name", TRANSFORMER),
     ("CLIPLoader", "clip_name", TEXT_ENCODER),
     ("VAELoader", "vae_name", VAE),
+    ("LatentUpscaleModelLoader", "model_name", UPSCALER),
+    ("LoraLoaderModelOnly", "lora_name", CAMERA_LORA),
     ("CLIPLoader", "clip_name", PROMPT_MODEL),
 )
 
 FPS = 24
-# The rendered clip plays forward, then backward ("ping-pong"), to make the loop.
-LOOP = "ping-pong"
+# The clip starts and ends on the cover; the saved loop drops the closing copy of it.
+LOOP = "pinned"
 # Bump when either generated-prompt strategy changes, so covers get new loops.
-WRITER_REVISION = "ltx-i2v-5-static"
+WRITER_REVISION = "ltx-i2v-6-pinned"
 DISTILLED_SIGMAS = "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
+# Lightricks' distilled second stage: the upscaled latent is refined from partway through.
+REFINE_SIGMAS = "0.909375, 0.725, 0.421875, 0.0"
 # cfg=1 ignores the negative branch, but the conditioning nodes still require one.
 NEGATIVE = "static, blurry, low quality, jpeg artifacts, deformed, distorted face, warped text"
 DEFAULT_INSTRUCTIONS = (
-    "Animate the pictured subject with one clear, natural movement that looks natural when reversed. "
+    "Animate the pictured subject with one clear, natural movement that settles back to the pose "
+    "on the cover by the end. "
     "Include subtle ambient motion in the surroundings only where the artwork supports it. "
     "Preserve the original art style, composition, identities and lettering. "
 ) + CAMERA_RULE
@@ -65,13 +81,18 @@ ZOOM_WORDS = re.compile(
 
 @dataclass(frozen=True)
 class Recipe:
-    resolution: int = 1536
-    frames: int = 121
+    # The size the model renders at; upscaling doubles it.
+    resolution: int = 768
+    frames: int = 241
+    upscale: bool = True
     prompt_mode: str = "auto"
     instructions: str = DEFAULT_INSTRUCTIONS
     fixed_prompt: str = ""
-    mid_anchor_strength: float = 0.0
     seed: int | None = 42
+
+    @property
+    def output_resolution(self) -> int:
+        return self.resolution * 2 if self.upscale else self.resolution
 
     def as_dict(self) -> dict:
         prompt_model = {
@@ -82,12 +103,14 @@ class Recipe:
             "model": f"{LTX_REPOSITORY}@{LTX_REVISION}",
             "prompt_model": prompt_model.get(self.prompt_mode),
             "resolution": self.resolution,
+            "output_resolution": self.output_resolution,
             "frames": self.frames,
+            "upscale": f"{LTX_REPOSITORY}@{LTX_REVISION}:{UPSCALER}" if self.upscale else None,
+            "camera_lora": f"{CAMERA_LORA_REPOSITORY}@{CAMERA_LORA_REVISION}:{CAMERA_LORA_STRENGTH}",
             "fps": FPS,
             "prompt_mode": self.prompt_mode,
             "instructions": self.instructions if self.prompt_mode != "fixed" else None,
             "fixed_prompt": self.fixed_prompt if self.prompt_mode == "fixed" else None,
-            "mid_anchor_strength": self.mid_anchor_strength,
             "seed": self.seed,
             "loop": LOOP,
         }
@@ -247,12 +270,19 @@ def build_graph(
     """The video graph for one cover, from prompt text or from saved (positive, negative) encodings."""
     if (prompt is None) == (encodings is None):
         raise ValueError("Give either a prompt or saved encodings")
-    anchor = recipe.mid_anchor_strength
     graph: dict[str, dict] = {
         "1_cover": {"class_type": "LoadImage", "inputs": {"image": image_name}},
         "2_model": {
             "class_type": "UNETLoader",
             "inputs": {"unet_name": TRANSFORMER, "weight_dtype": "default"},
+        },
+        "2b_camera_lora": {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": ["2_model", 0],
+                "lora_name": CAMERA_LORA,
+                "strength_model": CAMERA_LORA_STRENGTH,
+            },
         },
         "4_vae": {"class_type": "VAELoader", "inputs": {"vae_name": VAE}},
         "7_conditioning": {
@@ -309,30 +339,27 @@ def build_graph(
             "class_type": "CLIPTextEncode",
             "inputs": {"clip": ["3_text_encoder", 0], "text": NEGATIVE},
         }
-    positive, negative, latent = ["7_conditioning", 0], ["7_conditioning", 1], ["10_first_frame", 0]
-    if anchor > 0:
-        # The recipe's optional partial cover keyframe on the last frame, where the ping-pong turns
-        # around, keeps the loop from drifting far from the cover.
-        graph["12_end_frame"] = {
-            "class_type": "LTXVAddGuide",
-            "inputs": {
-                "positive": positive,
-                "negative": negative,
-                "vae": ["4_vae", 0],
-                "latent": latent,
-                "image": ["1_cover", 0],
-                "frame_idx": -1,
-                "strength": anchor,
-            },
-        }
-        positive, negative, latent = ["12_end_frame", 0], ["12_end_frame", 1], ["12_end_frame", 2]
+    # The cover is also the last frame, so the clip returns to it and loops seamlessly.
+    graph["12_end_frame"] = {
+        "class_type": "LTXVAddGuide",
+        "inputs": {
+            "positive": ["7_conditioning", 0],
+            "negative": ["7_conditioning", 1],
+            "vae": ["4_vae", 0],
+            "latent": ["10_first_frame", 0],
+            "image": ["1_cover", 0],
+            "frame_idx": -1,
+            "strength": 1.0,
+        },
+    }
+    positive, negative, latent = ["12_end_frame", 0], ["12_end_frame", 1], ["12_end_frame", 2]
     graph.update(
         {
             "13_noise": {"class_type": "RandomNoise", "inputs": {"noise_seed": seed}},
             "14_guider": {
                 "class_type": "CFGGuider",
                 "inputs": {
-                    "model": ["2_model", 0],
+                    "model": ["2b_camera_lora", 0],
                     "positive": positive,
                     "negative": negative,
                     "cfg": 1.0,
@@ -357,9 +384,84 @@ def build_graph(
                 "class_type": "LTXVCropGuides",
                 "inputs": {"positive": positive, "negative": negative, "latent": ["17_sample", 0]},
             },
+        }
+    )
+    final = "18_crop_guides"
+    if recipe.upscale:
+        # Double the latent, pin the cover to both ends again at the new size, and refine.
+        graph.update(
+            {
+                "22_upscale_model": {
+                    "class_type": "LatentUpscaleModelLoader",
+                    "inputs": {"model_name": UPSCALER},
+                },
+                "23_upscale": {
+                    "class_type": "LTXVLatentUpsampler",
+                    "inputs": {
+                        "samples": ["18_crop_guides", 2],
+                        "upscale_model": ["22_upscale_model", 0],
+                        "vae": ["4_vae", 0],
+                    },
+                },
+                "24_first_frame": {
+                    "class_type": "LTXVImgToVideoInplace",
+                    "inputs": {
+                        "vae": ["4_vae", 0],
+                        "image": ["9_preprocess", 0],
+                        "latent": ["23_upscale", 0],
+                        "strength": 1.0,
+                        "bypass": False,
+                    },
+                },
+                "25_end_frame": {
+                    "class_type": "LTXVAddGuide",
+                    "inputs": {
+                        "positive": ["18_crop_guides", 0],
+                        "negative": ["18_crop_guides", 1],
+                        "vae": ["4_vae", 0],
+                        "latent": ["24_first_frame", 0],
+                        "image": ["1_cover", 0],
+                        "frame_idx": -1,
+                        "strength": 1.0,
+                    },
+                },
+                "26_noise": {"class_type": "RandomNoise", "inputs": {"noise_seed": seed + 1}},
+                "27_guider": {
+                    "class_type": "CFGGuider",
+                    "inputs": {
+                        "model": ["2b_camera_lora", 0],
+                        "positive": ["25_end_frame", 0],
+                        "negative": ["25_end_frame", 1],
+                        "cfg": 1.0,
+                    },
+                },
+                "28_sigmas": {"class_type": "ManualSigmas", "inputs": {"sigmas": REFINE_SIGMAS}},
+                "29_refine": {
+                    "class_type": "SamplerCustomAdvanced",
+                    "inputs": {
+                        "noise": ["26_noise", 0],
+                        "guider": ["27_guider", 0],
+                        "sampler": ["15_sampler", 0],
+                        "sigmas": ["28_sigmas", 0],
+                        "latent_image": ["25_end_frame", 2],
+                    },
+                },
+                "30_crop_guides": {
+                    "class_type": "LTXVCropGuides",
+                    "inputs": {
+                        "positive": ["25_end_frame", 0],
+                        "negative": ["25_end_frame", 1],
+                        "latent": ["29_refine", 0],
+                    },
+                },
+            }
+        )
+        final = "30_crop_guides"
+    graph.update(
+        {
             "19_decode": {
                 "class_type": "VAEDecode",
-                "inputs": {"samples": ["18_crop_guides", 2], "vae": ["4_vae", 0]},
+                "inputs": {"samples": [final, 2], "vae": ["4_vae", 0]},
             },
             "20_video": {
                 "class_type": "CreateVideo",
@@ -402,25 +504,15 @@ def _probe(path: Path) -> tuple[int, int, int]:
 
 
 def finish(source: Path, target: Path) -> tuple[int, int, int]:
-    """Write the final H.264 loop: the clip forward, then reversed.
+    """Write the final H.264 loop.
 
-    Frames 0..N-1 then N-2..1, so neither turnaround repeats a frame and the loop wraps from the
-    second frame back to the cover.
+    The last frame is the cover again (pinned), so it is dropped and the loop wraps from the
+    second-to-last frame straight back to the first without showing the cover twice.
     """
     width, height, count = _probe(source)
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(".part.mp4")
-    if count < 3:
-        loop, frames = [], count
-    else:
-        frames = 2 * count - 2
-        loop = [
-            "-filter_complex",
-            f"[0:v]split[forward][back];[back]reverse,trim=start_frame=1:end_frame={count - 1},"
-            "setpts=PTS-STARTPTS[backward];[forward][backward]concat=n=2:v=1:a=0[loop]",
-            "-map",
-            "[loop]",
-        ]
+    frames = count - 1 if count > 1 else count
     result = subprocess.run(
         [
             "ffmpeg",
@@ -429,7 +521,8 @@ def finish(source: Path, target: Path) -> tuple[int, int, int]:
             "error",
             "-i",
             str(source),
-            *loop,
+            "-frames:v",
+            str(frames),
             "-r",
             str(FPS),
             "-c:v",

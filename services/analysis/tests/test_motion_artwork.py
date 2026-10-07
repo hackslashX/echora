@@ -24,8 +24,12 @@ from echora_analysis.comfyui import ComfyUIUnavailable, launch
 from echora_analysis.motion_artwork import MotionArtworkSettings, artwork_path
 from echora_analysis.motion_artwork_prompts import CAMERA_RETRY, I2V_SYSTEM_PROMPT
 from echora_analysis.motion_artwork_render import (
+    CAMERA_LORA,
+    CAMERA_LORA_STRENGTH,
     DEFAULT_INSTRUCTIONS,
     NEGATIVE,
+    REFINE_SIGMAS,
+    UPSCALER,
     Recipe,
     build_encode_graph,
     build_graph,
@@ -42,7 +46,8 @@ VERSIONS = Path(__file__).resolve().parents[1] / "alembic/versions"
 def test_recipe_hash_tracks_only_settings_that_change_the_output():
     base = Recipe()
     assert base.hash() == Recipe().hash()
-    assert Recipe(resolution=768).hash() != base.hash()
+    assert Recipe(resolution=512).hash() != base.hash()
+    assert Recipe(upscale=False).hash() != base.hash()
     # Instructions are unused in fixed mode and the fixed prompt is unused in auto mode.
     assert Recipe(fixed_prompt="ignored").hash() == base.hash()
     fixed = Recipe(prompt_mode="fixed", fixed_prompt="Rain falls.")
@@ -67,22 +72,56 @@ def test_prompt_graph_writes_a_description_from_the_cover():
     assert "hidden for the whole clip" in I2V_SYSTEM_PROMPT
 
 
+def _references_resolve(graph: dict) -> None:
+    for node in graph.values():
+        for value in node["inputs"].values():
+            if isinstance(value, list) and len(value) == 2 and isinstance(value[0], str):
+                assert value[0] in graph
+
+
 def test_video_graph_loops_on_the_cover_with_the_given_prompt():
-    graph = build_graph(Recipe(), "cover.jpg", 7, "prefix", "Wind moves through the grass.")
+    graph = build_graph(
+        Recipe(upscale=False), "cover.jpg", 7, "prefix", "Wind moves through the grass."
+    )
     assert graph["5_positive"]["inputs"]["text"] == "Wind moves through the grass."
     assert graph["8_latent"]["inputs"] == {
-        "width": 1536,
-        "height": 1536,
-        "length": 121,
+        "width": 768,
+        "height": 768,
+        "length": 241,
         "batch_size": 1,
     }
-    # Only the first frame is the cover; the model is free afterwards and the loop is a ping-pong.
+    # The cover is the first frame and, fully, the last, so the clip loops on it.
     assert graph["10_first_frame"]["inputs"]["image"] == ["9_preprocess", 0]
-    assert not any(node["class_type"] == "LTXVAddGuide" for node in graph.values())
-    assert graph["14_guider"]["inputs"]["positive"] == ["7_conditioning", 0]
-    assert graph["17_sample"]["inputs"]["latent_image"] == ["10_first_frame", 0]
+    end = graph["12_end_frame"]["inputs"]
+    assert (end["image"], end["frame_idx"], end["strength"]) == (["1_cover", 0], -1, 1.0)
+    assert end["latent"] == ["10_first_frame", 0]
+    assert graph["14_guider"]["inputs"]["positive"] == ["12_end_frame", 0]
+    assert graph["17_sample"]["inputs"]["latent_image"] == ["12_end_frame", 2]
+    assert graph["19_decode"]["inputs"]["samples"] == ["18_crop_guides", 2]
+    # The static-camera LoRA drives sampling.
+    lora = graph["2b_camera_lora"]["inputs"]
+    assert lora["lora_name"] == CAMERA_LORA and lora["strength_model"] == CAMERA_LORA_STRENGTH
+    assert graph["14_guider"]["inputs"]["model"] == ["2b_camera_lora", 0]
     assert graph["13_noise"]["inputs"]["noise_seed"] == 7
-    assert "31_write_prompt" not in graph
+    assert "31_write_prompt" not in graph and "23_upscale" not in graph
+    _references_resolve(graph)
+
+
+def test_upscaling_refines_a_doubled_latent_with_the_cover_pinned_again():
+    graph = build_graph(Recipe(), "cover.jpg", 7, "prefix", "text")
+    assert graph["8_latent"]["inputs"]["width"] == 768 and Recipe().output_resolution == 1536
+    assert graph["23_upscale"]["inputs"]["samples"] == ["18_crop_guides", 2]
+    assert graph["22_upscale_model"]["inputs"]["model_name"] == UPSCALER
+    assert graph["24_first_frame"]["inputs"]["latent"] == ["23_upscale", 0]
+    end = graph["25_end_frame"]["inputs"]
+    assert (end["frame_idx"], end["strength"], end["latent"]) == (-1, 1.0, ["24_first_frame", 0])
+    refine = graph["29_refine"]["inputs"]
+    assert refine["latent_image"] == ["25_end_frame", 2]
+    assert graph["28_sigmas"]["inputs"]["sigmas"] == REFINE_SIGMAS
+    assert graph["26_noise"]["inputs"]["noise_seed"] == 8
+    assert graph["27_guider"]["inputs"]["model"] == ["2b_camera_lora", 0]
+    assert graph["19_decode"]["inputs"]["samples"] == ["30_crop_guides", 2]
+    _references_resolve(graph)
 
 
 def test_prompts_are_encoded_ahead_so_rendering_skips_the_text_encoder():
@@ -110,26 +149,6 @@ def test_prompts_are_encoded_ahead_so_rendering_skips_the_text_encoder():
     for arguments in ({}, {"prompt": "text", "encodings": ("a", "b")}):
         with pytest.raises(ValueError):
             build_graph(Recipe(), "cover.jpg", 7, "prefix", **arguments)
-
-
-def test_turnaround_anchor_setting_pins_the_last_frame_partially():
-    graph = build_graph(
-        Recipe(mid_anchor_strength=0.5, frames=97), "cover.jpg", 1, "prefix", "text"
-    )
-    assert graph["12_end_frame"]["inputs"]["frame_idx"] == -1
-    assert graph["12_end_frame"]["inputs"]["strength"] == 0.5
-    assert graph["12_end_frame"]["inputs"]["latent"] == ["10_first_frame", 0]
-    for node, key in (
-        ("14_guider", "positive"),
-        ("17_sample", "latent_image"),
-        ("18_crop_guides", "negative"),
-    ):
-        assert graph[node]["inputs"][key][0] == "12_end_frame"
-    # Every reference points at a node in the graph.
-    for node in graph.values():
-        for value in node["inputs"].values():
-            if isinstance(value, list) and len(value) == 2 and isinstance(value[0], str):
-                assert value[0] in graph
 
 
 def test_clean_prompt_cuts_a_repeated_caption():
@@ -228,19 +247,26 @@ def _brightness(path: Path) -> list[float]:
     return np.frombuffer(raw, np.uint8).reshape(-1, 64 * 64).mean(axis=1).tolist()
 
 
-def test_finish_plays_the_clip_forward_then_backward(tmp_path):
+def test_finish_drops_the_closing_cover_frame(tmp_path):
     source = tmp_path / "raw.mp4"
-    _clip(source, [20 * index + 20 for index in range(10)])
+    # The last frame repeats the first, as the pinned cover does.
+    _clip(source, [20 * index + 20 for index in range(9)] + [20])
     width, height, frames = finish(source, tmp_path / "out" / "loop.mp4")
-    # Frames 0..9 then 8..1: no pause and no repeated frame at either turnaround.
-    assert (width, height, frames) == (64, 64, 18)
+    assert (width, height, frames) == (64, 64, 9)
     order = [round((value - 20) / 20) for value in _brightness(tmp_path / "out" / "loop.mp4")]
-    assert order == list(range(10)) + list(range(8, 0, -1))
+    assert order == list(range(9))
 
 
 def test_settings_validation_and_recipe_defaults():
     settings = MotionArtworkSettings()
-    assert not settings.enabled and settings.resolution == 1536
+    assert not settings.enabled and settings.resolution == 768
+    assert settings.upscale and settings.frames == 241
+    assert settings.recipe().output_resolution == 1536
+    assert MotionArtworkSettings(resolution=1536, upscale=False).recipe().output_resolution == 1536
+    with pytest.raises(ValidationError):
+        MotionArtworkSettings(resolution=1024)  # upscaling is on by default
+    with pytest.raises(ValidationError):
+        MotionArtworkSettings(frames=97)
     assert settings.recipe().instructions == DEFAULT_INSTRUCTIONS
     assert (
         MotionArtworkSettings(comfyui_url=" http://comfy:8188/ ").comfyui_url == "http://comfy:8188"
@@ -290,6 +316,7 @@ def database(monkeypatch, tmp_path):
             with patch("alembic.op.execute", side_effect=db.execute):
                 runpy.run_path(str(VERSIONS / "0057_motion_artwork.py"))["upgrade"]()
                 runpy.run_path(str(VERSIONS / "0059_motion_artwork_on_modal.py"))["upgrade"]()
+                runpy.run_path(str(VERSIONS / "0061_motion_artwork_upscale.py"))["upgrade"]()
         yield connect
     finally:
         with psycopg.connect(url, autocommit=True) as db:
@@ -494,12 +521,12 @@ def test_each_album_and_each_cover_image_renders_once_in_three_phases(database, 
             "SELECT status, prompt, frames, path FROM motion_artworks ORDER BY path"
         ).fetchall()
         assert [(row["status"], row["prompt"], row["frames"]) for row in rows] == [
-            ("complete", CAPTION, 6)
+            ("complete", CAPTION, 3)
         ] * 4
         track = db.execute("SELECT track_id FROM track_motion_artwork LIMIT 1").fetchone()[
             "track_id"
         ]
-        assert motion_artwork.track_artwork(db.cursor(), batch["owner"], track)["frames"] == 6
+        assert motion_artwork.track_artwork(db.cursor(), batch["owner"], track)["frames"] == 3
         assert motion_artwork.track_artwork(db.cursor(), uuid4(), track) is None
     assert all(artwork_path(row["path"]).is_file() for row in rows)
     assert prompts() == [CAPTION] * 4 and FakeComfyUI.encoded.count(NEGATIVE) == 1
@@ -578,13 +605,46 @@ def test_selection_finds_only_songs_whose_cover_has_no_loop(database, batch):
             )
             == set()
         )
-        # Other settings are a different recipe, so every song needs a new loop.
+        other = MotionArtworkSettings(resolution=512).recipe()
+        # Loops made with other settings are kept by default...
+        assert (
+            motion_artwork.missing_external_ids(
+                db.cursor(), batch["library"], batch["external_ids"], other
+            )
+            == set()
+        )
+        # ...and need a new loop only when regenerating outdated loops.
         assert motion_artwork.missing_external_ids(
-            db.cursor(),
-            batch["library"],
-            batch["external_ids"],
-            MotionArtworkSettings(resolution=768).recipe(),
+            db.cursor(), batch["library"], batch["external_ids"], other, regenerate_outdated=True
         ) == set(batch["external_ids"])
+
+
+def test_changed_settings_keep_existing_loops_unless_regenerating(database, batch):
+    _enable(database)
+    assert batch["run"]()["rendered"] == 4
+    with database() as db:
+        first = db.execute("SELECT path, recipe FROM motion_artworks").fetchall()
+        db.execute("UPDATE motion_artwork_settings SET resolution=512")
+    # Changed settings apply to future loops only; a sync keeps the existing ones.
+    summary = batch["run"]()
+    assert (summary["rendered"], summary["reused"]) == (0, 4)
+    with database() as db:
+        assert motion_artwork.sync_selection(db, batch["library"], batch["external_ids"]) == set()
+        db.execute("UPDATE motion_artwork_settings SET regenerate_outdated=true")
+        assert motion_artwork.sync_selection(db, batch["library"], batch["external_ids"]) == set(
+            batch["external_ids"]
+        )
+    assert batch["run"]()["rendered"] == 4
+    with database() as db:
+        rows = db.execute("SELECT path, recipe FROM motion_artworks").fetchall()
+    # Each loop records the settings it was made with; the new loops replace the old ones.
+    assert [row["recipe"]["resolution"] for row in first] == [768] * 4
+    assert [row["recipe"]["resolution"] for row in rows] == [512] * 4
+    assert all(row["recipe"]["output_resolution"] == 1024 for row in rows)
+    assert not any(artwork_path(row["path"]).exists() for row in first)
+    assert all(artwork_path(row["path"]).is_file() for row in rows)
+    # Up to date now: another sync renders nothing.
+    assert batch["run"]()["rendered"] == 0
 
 
 def test_disabled_or_not_during_sync_renders_nothing(database, batch):
@@ -824,7 +884,7 @@ def test_gemma_retries_with_correction_and_never_encodes_camera_movement():
     assert CAMERA_RETRY in comfy.requests[1]
 
 
-def test_external_prompts_skip_the_prompt_comfyui_and_never_pin_on_their_own(
+def test_external_prompts_skip_the_prompt_comfyui_and_every_loop_is_pinned(
     database, batch, monkeypatch
 ):
     _enable(database, prompt_mode="external")
@@ -848,8 +908,8 @@ def test_external_prompts_skip_the_prompt_comfyui_and_never_pin_on_their_own(
     anchors = sorted(
         graph.get("12_end_frame", {}).get("inputs", {}).get("strength", 0) for graph in videos
     )
-    # Even the four-person cover gets no turnaround pin: only the recipe setting adds one.
-    assert anchors == [0, 0, 0, 0]
+    # Every cover, whatever its people count, is pinned fully at the end.
+    assert anchors == [1.0, 1.0, 1.0, 1.0]
 
 
 class FakeModalSession:
@@ -968,6 +1028,6 @@ def test_a_prompt_prepared_for_other_settings_is_written_again(database, batch, 
     written.clear()
     # The recipe changes between preparing and rendering.
     with database() as db:
-        db.execute("UPDATE motion_artwork_settings SET resolution=768")
+        db.execute("UPDATE motion_artwork_settings SET resolution=512")
     assert batch["run"](prompts=prompts)["rendered"] == 4
     assert len(written) == 4

@@ -24,7 +24,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from .comfyui import ComfyUI, ComfyUIError, ComfyUIUnavailable, launch, output_items
-from .motion_artwork import MotionArtworkSettings, load_settings
+from .motion_artwork import MotionArtworkSettings, artwork_path, load_settings
 from .motion_artwork_prompts import CAMERA_RETRY
 from .motion_artwork_render import (
     FPS,
@@ -72,12 +72,13 @@ def plan_tracks(cursor, user_id, url: str, external_ids: list[str]) -> list[dict
     return cursor.fetchall()
 
 
-def _complete(cover_sha256: str, recipe: Recipe) -> bool:
+def _complete(cover_sha256: str, recipe: Recipe, regenerate_outdated: bool) -> bool:
+    """Whether a cover has its loop: any loop, or with regenerate_outdated one for this recipe."""
     with _connect() as connection, connection.cursor() as cursor:
         cursor.execute(
-            """SELECT 1 FROM motion_artworks WHERE cover_sha256=%s AND recipe_hash=%s
-                          AND status='complete'""",
-            (cover_sha256, recipe.hash()),
+            """SELECT 1 FROM motion_artworks WHERE cover_sha256=%s AND status='complete'
+                 AND (%s OR recipe_hash=%s)""",
+            (cover_sha256, not regenerate_outdated, recipe.hash()),
         )
         return cursor.fetchone() is not None
 
@@ -265,7 +266,8 @@ def render_batch(
     (external ID, cover SHA-256); covers without one get their prompt written here.
 
     None when motion artwork is disabled or not generated in syncs at the batch's location (this
-    server or Modal). `mode="all"` also replaces loops that already exist for the current settings.
+    server or Modal). Loops made with other settings are kept unless the regenerate-outdated
+    setting is on. `mode="all"` also replaces loops that already exist for the current settings.
     """
     from .navidrome import NavidromeClient
     from .remote_compute import current as current_remote
@@ -314,7 +316,7 @@ def render_batch(
                          cover_sha256=EXCLUDED.cover_sha256, cover_art_id=EXCLUDED.cover_art_id, checked_at=now()""",
                     (track["track_id"], asset_key, track["cover_art_id"]),
                 )
-            if mode == "missing" and _complete(asset_key, recipe):
+            if mode == "missing" and _complete(asset_key, recipe, settings.regenerate_outdated):
                 summary["reused"] += 1
                 continue
             pending[asset_key] = {
@@ -355,7 +357,10 @@ def render_batch(
             cover
             for cover in covers
             if cover["sha256"] in owned
-            and not (mode == "missing" and _complete(cover["sha256"], recipe))
+            and not (
+                mode == "missing"
+                and _complete(cover["sha256"], recipe, settings.regenerate_outdated)
+            )
         ]
         summary["reused"] += len(covers) - len(ready)
         by_sha = {cover["sha256"]: cover for cover in ready}
@@ -411,9 +416,10 @@ def prepare_prompts(
 
     So no GPU, here or on Modal, idles while External AI writes. Works before
     Echora knows the songs: cover, title, artist, album and lyrics come from
-    Navidrome. Songs Echora knows and that already have a loop for the current
-    recipe are skipped. A brand-new song is prompted with the lyrics Navidrome has
-    now; one that is transcribed later in the batch is prompted without lyrics.
+    Navidrome. Songs Echora knows and that already have a loop are skipped (with the
+    regenerate-outdated setting, only those whose loop has the current recipe). A
+    brand-new song is prompted with the lyrics Navidrome has now; one that is
+    transcribed later in the batch is prompted without lyrics.
     Returns prompts keyed by (external ID, cover SHA-256, recipe hash) for render_batch, or None
     when motion artwork does not run here or writes no External AI prompts.
     """
@@ -467,7 +473,7 @@ def prepare_prompts(
             row = known.get(song.id)
             if row is not None:
                 asset_key = hashlib.sha256(f"{cover_sha}:{row['track_id']}".encode()).hexdigest()
-                if _complete(asset_key, recipe):
+                if _complete(asset_key, recipe, settings.regenerate_outdated):
                     continue
             lyrics = row["lyrics"] if row is not None else None
             if not lyrics:
@@ -523,6 +529,18 @@ def _store(cover: dict, recipe: Recipe, event: dict) -> None:
             frames=event["frames"],
             file_bytes=target.stat().st_size,
         )
+        # The new loop replaces this track's loops from other settings.
+        cursor.execute(
+            """DELETE FROM motion_artworks WHERE cover_sha256=%s AND recipe_hash<>%s
+               RETURNING path""",
+            (sha, recipe.hash()),
+        )
+        superseded = [row["path"] for row in cursor.fetchall() if row["path"]]
+    for old in superseded:
+        try:
+            artwork_path(old).unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
 
 
 def _label(cover: dict) -> str:
