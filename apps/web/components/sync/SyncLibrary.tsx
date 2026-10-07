@@ -60,7 +60,11 @@ export default function SyncLibrary() {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
   // Progress phases of the running batches, so the model list can show what is in use now.
-  const [batchPhases, setBatchPhases] = useState<string[]>([]);
+  // Kept with their job, so a new sync never shows the previous sync's phases.
+  const [batchPhases, setBatchPhases] = useState<{ jobId: string; phases: string[] }>({
+    jobId: "",
+    phases: [],
+  });
 
   function scan(connection: string) {
     setBusy(true);
@@ -188,7 +192,11 @@ export default function SyncLibrary() {
         const phases = batches
           .filter((batch) => batch.status === "running" && batch.phase)
           .map((batch) => batch.phase);
-        setBatchPhases((current) => (current.join() === phases.join() ? current : phases));
+        setBatchPhases((current) =>
+          current.jobId === batchJobId && current.phases.join() === phases.join()
+            ? current
+            : { jobId: batchJobId, phases },
+        );
       } catch {
         if (controller.signal.aborted) return;
       }
@@ -201,7 +209,13 @@ export default function SyncLibrary() {
     };
   }, [batchJobId]);
   // Jobs without batches (such as the semantic fusion build) report their phase directly.
-  const activePhases = showBatches ? batchPhases : active && job?.phase ? [job.phase] : [];
+  const activePhases = showBatches
+    ? batchPhases.jobId === batchJobId
+      ? batchPhases.phases
+      : []
+    : active && job?.phase
+      ? [job.phase]
+      : [];
   const showJobDetails = active && !showBatches;
   const pendingLabel = `${status?.missing ?? "—"} new ${status?.missing === 1 ? "track" : "tracks"}`;
   const modes = [

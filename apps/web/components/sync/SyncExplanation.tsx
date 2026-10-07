@@ -98,7 +98,7 @@ const models: {
     phases: ["motion-artwork"],
     role: "Motion artwork",
     detail:
-      "Animates each cover into a seamless loop that starts and ends on the cover, with Lightricks' static-camera LoRA and 2× spatial upscaler. Enable it in Settings → Motion artwork.",
+      "Animates each cover into a seamless loop that starts and ends on the cover, held steady by Lightricks' static-camera LoRA and, when upscaling is on, sharpened by the 2× spatial upscaler. Enable it in Settings → Motion artwork.",
     optional: true,
   },
 ];
