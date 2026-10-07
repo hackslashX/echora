@@ -36,6 +36,8 @@ def model_paths_config() -> str:
     import os
 
     from .motion_artwork_render import (
+        CAMERA_LORA_REPOSITORY,
+        CAMERA_LORA_REVISION,
         GEMMA_REPOSITORY,
         GEMMA_REVISION,
         LTX_REPOSITORY,
@@ -50,6 +52,9 @@ def model_paths_config() -> str:
     return (
         f"echora_ltx:\n  base_path: {snapshot(LTX_REPOSITORY, LTX_REVISION)}\n"
         "  diffusion_models: diffusion_models\n  text_encoders: text_encoders\n  vae: vae\n"
+        "  latent_upscale_models: latent_upscale_models\n"
+        f"echora_camera_lora:\n  base_path: {snapshot(CAMERA_LORA_REPOSITORY, CAMERA_LORA_REVISION)}\n"
+        "  loras: .\n"
         f"echora_gemma:\n  base_path: {snapshot(GEMMA_REPOSITORY, GEMMA_REVISION)}\n"
         "  text_encoders: text_encoders\n"
     )

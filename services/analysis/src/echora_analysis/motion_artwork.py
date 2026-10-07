@@ -19,7 +19,13 @@ from fastapi.responses import FileResponse
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .motion_artwork_render import DEFAULT_INSTRUCTIONS, MODEL_FILES, REQUIRED_LOADERS, Recipe
+from .motion_artwork_render import (
+    CAMERA_LORA_STRENGTH,
+    DEFAULT_INSTRUCTIONS,
+    MODEL_FILES,
+    REQUIRED_LOADERS,
+    Recipe,
+)
 from .settings import get_settings
 
 FIELDS = (
@@ -27,13 +33,15 @@ FIELDS = (
     "comfyui_url",
     "resolution",
     "frames",
+    "upscale",
+    "camera_lock",
     "prompt_mode",
     "instructions",
     "fixed_prompt",
-    "mid_anchor_strength",
     "seed",
     "generate_during_sync",
     "generate_on_modal",
+    "regenerate_outdated",
 )
 
 
@@ -41,19 +49,26 @@ class MotionArtworkSettings(BaseModel):
     enabled: bool = False
     # Blank starts the worker's embedded ComfyUI (or ECHORA_COMFYUI_URL when set).
     comfyui_url: str = Field("", max_length=500)
-    resolution: Literal[512, 768, 1024, 1536] = 1536
-    frames: Literal[97, 121] = 121
+    # The size LTX renders at; upscaling doubles it (768 renders a 1536 loop).
+    resolution: Literal[512, 768, 1024, 1536] = 768
+    # 5 or 10 seconds at 24 fps; the cover is the first and last frame.
+    frames: Literal[121, 241] = 241
+    upscale: bool = True
+    # Strength of Lightricks' static-camera LoRA: higher holds the framing harder but damps motion.
+    camera_lock: float = Field(CAMERA_LORA_STRENGTH, ge=0, le=1)
     # "external" asks the configured External AI model; "auto" uses the built-in Gemma 4 E2B.
     prompt_mode: Literal["auto", "external", "fixed"] = "auto"
     # Blank means the built-in instructions.
     instructions: str = Field("", max_length=4000)
     fixed_prompt: str = Field("", max_length=4000)
-    mid_anchor_strength: float = Field(0.0, ge=0, le=1)
     # None picks a new seed for every album.
     seed: int | None = Field(42, ge=0, le=2**53)
     # Render missing loops in syncs on this server, and in syncs on Modal (docs/modal-compute.md).
     generate_during_sync: bool = True
     generate_on_modal: bool = False
+    # Off: changed settings apply to loops rendered from then on and existing loops stay.
+    # On: syncs render loops made with other settings again.
+    regenerate_outdated: bool = False
 
     @field_validator("comfyui_url")
     @classmethod
@@ -77,6 +92,8 @@ class MotionArtworkSettings(BaseModel):
     def _fixed_prompt(self):
         if self.prompt_mode == "fixed" and not self.fixed_prompt.strip():
             raise ValueError("A fixed prompt is required in fixed prompt mode")
+        if self.upscale and self.resolution > 768:
+            raise ValueError("Upscaling renders at 512 or 768 and doubles it")
         return self
 
     def recipe(self) -> Recipe:
@@ -87,10 +104,11 @@ class MotionArtworkSettings(BaseModel):
         return Recipe(
             resolution=self.resolution,
             frames=self.frames,
+            upscale=self.upscale,
+            camera_lock=self.camera_lock,
             prompt_mode=self.prompt_mode,
             instructions=instructions,
             fixed_prompt=self.fixed_prompt.strip(),
-            mid_anchor_strength=self.mid_anchor_strength,
             seed=self.seed,
         )
 
@@ -131,16 +149,21 @@ def save_settings(cursor, settings: MotionArtworkSettings) -> None:
     )
 
 
-def missing_external_ids(cursor, library_id, external_ids: list[str], recipe: Recipe) -> set[str]:
-    """Sources whose cover has no complete loop for this recipe, including covers not yet seen."""
+def missing_external_ids(
+    cursor, library_id, external_ids: list[str], recipe: Recipe, regenerate_outdated: bool = False
+) -> set[str]:
+    """Sources whose cover has no complete loop, including covers not yet seen.
+
+    With regenerate_outdated, a loop made with another recipe counts as missing too.
+    """
     cursor.execute(
         """SELECT DISTINCT ts.external_id FROM track_sources ts
            LEFT JOIN track_motion_artwork tma ON tma.track_id = ts.track_id
            WHERE ts.library_id = %s AND ts.source_type = 'subsonic' AND ts.external_id = ANY(%s)
              AND ts.source_data->>'coverArt' IS NOT NULL
              AND NOT EXISTS (SELECT 1 FROM motion_artworks ma WHERE ma.cover_sha256 = tma.cover_sha256
-                             AND ma.recipe_hash = %s AND ma.status = 'complete')""",
-        (library_id, list(external_ids), recipe.hash()),
+                             AND (%s OR ma.recipe_hash = %s) AND ma.status = 'complete')""",
+        (library_id, list(external_ids), not regenerate_outdated, recipe.hash()),
     )
     return {row["external_id"] if isinstance(row, dict) else row[0] for row in cursor.fetchall()}
 
@@ -158,7 +181,9 @@ def sync_selection(connection, library_id, external_ids: list[str]) -> set[str]:
             and (settings.generate_on_modal if on_modal else settings.generate_during_sync)
         ):
             return set()
-        return missing_external_ids(cursor, library_id, external_ids, settings.recipe())
+        return missing_external_ids(
+            cursor, library_id, external_ids, settings.recipe(), settings.regenerate_outdated
+        )
 
 
 def clear_loops() -> dict[str, int]:

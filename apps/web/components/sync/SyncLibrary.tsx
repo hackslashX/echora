@@ -4,8 +4,10 @@ import { toast } from "sonner";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useDurableJob } from "../jobs/useDurableJob";
-import { jobPresentation } from "../jobs/durableJobs";
+import { jobPresentation, jobRequest } from "../jobs/durableJobs";
 import BatchStatusList from "../jobs/BatchStatusList";
+import type { Batch } from "../jobs/batchStatus";
+import { runtimeConfig } from "../runtime/runtimeConfig";
 import { Button } from "../ui/button";
 import { Notice } from "../ui/notice";
 import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from "../ui/table";
@@ -57,6 +59,12 @@ export default function SyncLibrary() {
   const [busy, setBusy] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
+  // Progress phases of the running batches, so the model list can show what is in use now.
+  // Kept with their job, so a new sync never shows the previous sync's phases.
+  const [batchPhases, setBatchPhases] = useState<{ jobId: string; phases: string[] }>({
+    jobId: "",
+    phases: [],
+  });
 
   function scan(connection: string) {
     setBusy(true);
@@ -168,6 +176,46 @@ export default function SyncLibrary() {
         ? "This setup step does not report track progress"
         : presentation.detail;
   const showBatches = active && job?.unit === "batches";
+  const batchJobId = showBatches ? job.job_id || job.id || "" : "";
+  useEffect(() => {
+    if (!batchJobId) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try {
+        // Running batches are listed first.
+        const { batches } = await jobRequest<{ batches: Batch[] }>(
+          `/jobs/${encodeURIComponent(batchJobId)}/batches?limit=10`,
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        const phases = batches
+          .filter((batch) => batch.status === "running" && batch.phase)
+          .map((batch) => batch.phase);
+        setBatchPhases((current) =>
+          current.jobId === batchJobId && current.phases.join() === phases.join()
+            ? current
+            : { jobId: batchJobId, phases },
+        );
+      } catch {
+        if (controller.signal.aborted) return;
+      }
+      timer = setTimeout(poll, runtimeConfig().batch_poll_ms);
+    }
+    void poll();
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [batchJobId]);
+  // Jobs without batches (such as the semantic fusion build) report their phase directly.
+  const activePhases = showBatches
+    ? batchPhases.jobId === batchJobId
+      ? batchPhases.phases
+      : []
+    : active && job?.phase
+      ? [job.phase]
+      : [];
   const showJobDetails = active && !showBatches;
   const pendingLabel = `${status?.missing ?? "—"} new ${status?.missing === 1 ? "track" : "tracks"}`;
   const modes = [
@@ -201,7 +249,7 @@ export default function SyncLibrary() {
       <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)] md:grid-cols-[340px_minmax(0,1fr)]">
         <div className="hidden min-h-0 border-r border-border bg-rail md:block">
           <SidePanel title="About sync" subtitle="What happens when you sync">
-            {<SyncExplanation />}
+            {<SyncExplanation activePhases={activePhases} />}
           </SidePanel>
         </div>
         <Pane
@@ -234,7 +282,7 @@ export default function SyncLibrary() {
                 About sync and analysis models
               </summary>
               <div className="mt-4">
-                <SyncExplanation />
+                <SyncExplanation activePhases={activePhases} />
               </div>
             </details>
             <section aria-label="Library totals">
