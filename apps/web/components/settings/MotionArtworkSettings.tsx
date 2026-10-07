@@ -18,6 +18,7 @@ import {
 import { SectionHeading, Toggle, Choice, ChoiceItem, LocationToggles } from "./Presentation";
 import { SettingRow } from "./SettingRow";
 import { SettingsNotice } from "./SettingsNotice";
+import { RangeControl } from "./RangeControl";
 import styles from "./ExternalAISettings.module.css";
 import layout from "./SettingsView.module.css";
 
@@ -27,6 +28,7 @@ type Configuration = {
   resolution: number;
   frames: number;
   upscale: boolean;
+  camera_lock: number;
   prompt_mode: "auto" | "external" | "fixed";
   instructions: string;
   fixed_prompt: string;
@@ -327,6 +329,27 @@ export default function MotionArtworkSettings({ connectionId }: { connectionId: 
                 </ChoiceItem>
               ))}
             </Choice>
+          </SettingRow>
+          <SettingRow
+            label={
+              <>
+                <b>Camera lock</b>
+                <output className="font-normal tabular-nums">
+                  {value.camera_lock === 0 ? "Off" : `${Math.round(value.camera_lock * 100)}%`}
+                </output>
+              </>
+            }
+            htmlFor="motion-artwork-camera-lock"
+            description="Strength of Lightricks' static-camera LoRA. Higher holds the framing more firmly against zooms and drift, but also damps the movement of the subject."
+          >
+            <RangeControl
+              id="motion-artwork-camera-lock"
+              min="0"
+              max="1"
+              step="0.05"
+              value={value.camera_lock}
+              onChange={(event) => update({ camera_lock: Number(event.target.value) })}
+            />
           </SettingRow>
           <SettingRow
             label="Loop length"

@@ -19,7 +19,13 @@ from fastapi.responses import FileResponse
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .motion_artwork_render import DEFAULT_INSTRUCTIONS, MODEL_FILES, REQUIRED_LOADERS, Recipe
+from .motion_artwork_render import (
+    CAMERA_LORA_STRENGTH,
+    DEFAULT_INSTRUCTIONS,
+    MODEL_FILES,
+    REQUIRED_LOADERS,
+    Recipe,
+)
 from .settings import get_settings
 
 FIELDS = (
@@ -28,6 +34,7 @@ FIELDS = (
     "resolution",
     "frames",
     "upscale",
+    "camera_lock",
     "prompt_mode",
     "instructions",
     "fixed_prompt",
@@ -47,6 +54,8 @@ class MotionArtworkSettings(BaseModel):
     # 5 or 10 seconds at 24 fps; the cover is the first and last frame.
     frames: Literal[121, 241] = 241
     upscale: bool = True
+    # Strength of Lightricks' static-camera LoRA: higher holds the framing harder but damps motion.
+    camera_lock: float = Field(CAMERA_LORA_STRENGTH, ge=0, le=1)
     # "external" asks the configured External AI model; "auto" uses the built-in Gemma 4 E2B.
     prompt_mode: Literal["auto", "external", "fixed"] = "auto"
     # Blank means the built-in instructions.
@@ -96,6 +105,7 @@ class MotionArtworkSettings(BaseModel):
             resolution=self.resolution,
             frames=self.frames,
             upscale=self.upscale,
+            camera_lock=self.camera_lock,
             prompt_mode=self.prompt_mode,
             instructions=instructions,
             fixed_prompt=self.fixed_prompt.strip(),

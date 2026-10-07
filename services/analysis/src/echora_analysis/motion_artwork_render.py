@@ -33,8 +33,8 @@ UPSCALER = "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
 CAMERA_LORA_REPOSITORY = "Lightricks/LTX-2-19b-LoRA-Camera-Control-Static"
 CAMERA_LORA_REVISION = "ba623881aa5d59559a8b26c41beb4b28253b8cae"
 CAMERA_LORA = "ltx-2-19b-lora-camera-control-static.safetensors"
-# Full strength holds the camera but damps the subject's motion too.
-CAMERA_LORA_STRENGTH = 0.7
+# The default "camera lock". Full strength holds the camera but damps the subject's motion too.
+CAMERA_LORA_STRENGTH = 0.5
 PROMPT_MODEL = "gemma4_e2b_it_int8_convrot.safetensors"
 # (repository, revision, path in repository); ComfyUI resolves them by file name.
 MODEL_FILES = (
@@ -85,6 +85,7 @@ class Recipe:
     resolution: int = 768
     frames: int = 241
     upscale: bool = True
+    camera_lock: float = CAMERA_LORA_STRENGTH
     prompt_mode: str = "auto"
     instructions: str = DEFAULT_INSTRUCTIONS
     fixed_prompt: str = ""
@@ -106,7 +107,7 @@ class Recipe:
             "output_resolution": self.output_resolution,
             "frames": self.frames,
             "upscale": f"{LTX_REPOSITORY}@{LTX_REVISION}:{UPSCALER}" if self.upscale else None,
-            "camera_lora": f"{CAMERA_LORA_REPOSITORY}@{CAMERA_LORA_REVISION}:{CAMERA_LORA_STRENGTH}",
+            "camera_lora": f"{CAMERA_LORA_REPOSITORY}@{CAMERA_LORA_REVISION}:{self.camera_lock}",
             "fps": FPS,
             "prompt_mode": self.prompt_mode,
             "instructions": self.instructions if self.prompt_mode != "fixed" else None,
@@ -281,7 +282,7 @@ def build_graph(
             "inputs": {
                 "model": ["2_model", 0],
                 "lora_name": CAMERA_LORA,
-                "strength_model": CAMERA_LORA_STRENGTH,
+                "strength_model": recipe.camera_lock,
             },
         },
         "4_vae": {"class_type": "VAELoader", "inputs": {"vae_name": VAE}},

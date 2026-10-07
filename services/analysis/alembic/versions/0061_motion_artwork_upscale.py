@@ -19,6 +19,7 @@ def upgrade():
         ALTER TABLE motion_artwork_settings
             ADD COLUMN upscale boolean NOT NULL DEFAULT true,
             ADD COLUMN regenerate_outdated boolean NOT NULL DEFAULT false,
+            ADD COLUMN camera_lock real NOT NULL DEFAULT 0.5 CHECK (camera_lock BETWEEN 0 AND 1),
             DROP COLUMN mid_anchor_strength,
             DROP CONSTRAINT motion_artwork_settings_frames_check,
             ALTER COLUMN resolution SET DEFAULT 768,
@@ -37,6 +38,7 @@ def downgrade():
             DROP CONSTRAINT motion_artwork_settings_frames_check,
             DROP COLUMN upscale,
             DROP COLUMN regenerate_outdated,
+            DROP COLUMN camera_lock,
             ADD COLUMN mid_anchor_strength real NOT NULL DEFAULT 0
                 CHECK (mid_anchor_strength BETWEEN 0 AND 1),
             ALTER COLUMN resolution SET DEFAULT 1536,

@@ -48,6 +48,7 @@ def test_recipe_hash_tracks_only_settings_that_change_the_output():
     assert base.hash() == Recipe().hash()
     assert Recipe(resolution=512).hash() != base.hash()
     assert Recipe(upscale=False).hash() != base.hash()
+    assert Recipe(camera_lock=0.7).hash() != base.hash()
     # Instructions are unused in fixed mode and the fixed prompt is unused in auto mode.
     assert Recipe(fixed_prompt="ignored").hash() == base.hash()
     fixed = Recipe(prompt_mode="fixed", fixed_prompt="Rain falls.")
@@ -100,7 +101,11 @@ def test_video_graph_loops_on_the_cover_with_the_given_prompt():
     assert graph["19_decode"]["inputs"]["samples"] == ["18_crop_guides", 2]
     # The static-camera LoRA drives sampling.
     lora = graph["2b_camera_lora"]["inputs"]
-    assert lora["lora_name"] == CAMERA_LORA and lora["strength_model"] == CAMERA_LORA_STRENGTH
+    assert (
+        lora["lora_name"] == CAMERA_LORA and lora["strength_model"] == CAMERA_LORA_STRENGTH == 0.5
+    )
+    firmer = build_graph(Recipe(camera_lock=0.7), "cover.jpg", 7, "prefix", "text")
+    assert firmer["2b_camera_lora"]["inputs"]["strength_model"] == 0.7
     assert graph["14_guider"]["inputs"]["model"] == ["2b_camera_lora", 0]
     assert graph["13_noise"]["inputs"]["noise_seed"] == 7
     assert "31_write_prompt" not in graph and "23_upscale" not in graph
@@ -260,7 +265,9 @@ def test_finish_drops_the_closing_cover_frame(tmp_path):
 def test_settings_validation_and_recipe_defaults():
     settings = MotionArtworkSettings()
     assert not settings.enabled and settings.resolution == 768
-    assert settings.upscale and settings.frames == 241
+    assert settings.upscale and settings.frames == 241 and settings.recipe().camera_lock == 0.5
+    with pytest.raises(ValidationError):
+        MotionArtworkSettings(camera_lock=1.5)
     assert settings.recipe().output_resolution == 1536
     assert MotionArtworkSettings(resolution=1536, upscale=False).recipe().output_resolution == 1536
     with pytest.raises(ValidationError):

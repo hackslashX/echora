@@ -2,7 +2,7 @@
 
 Echora can render a short, song-guided looping video for each track and play it in the full-screen player. It is optional and off by default.
 
-Rendering uses [LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5) through ComfyUI. The cover is pinned as both the first and the last frame of a 10-second clip, so the motion returns to the cover and the loop wraps seamlessly. Lightricks' [static-camera LoRA](https://huggingface.co/Lightricks/LTX-2-19b-LoRA-Camera-Control-Static) holds the framing at strength 0.7: LTX otherwise tends to zoom or drift whatever the prompt says, and full strength damps the subject's movement too. The LoRA was trained on LTX-2 19B; its layers match LTX-2.5 22B and it loads completely.
+Rendering uses [LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5) through ComfyUI. The cover is pinned as both the first and the last frame of a 10-second clip, so the motion returns to the cover and the loop wraps seamlessly. Lightricks' [static-camera LoRA](https://huggingface.co/Lightricks/LTX-2-19b-LoRA-Camera-Control-Static) holds the framing (the **Camera lock** setting, 0.5 by default): LTX otherwise tends to zoom or drift whatever the prompt says, and higher strengths damp the subject's movement too. The LoRA was trained on LTX-2 19B; its layers match LTX-2.5 22B and it loads completely.
 
 By default the clip renders at 768 × 768 and goes through Lightricks' two-stage pipeline: the [LTX-2.5 spatial upscaler](https://huggingface.co/Lightricks/LTX-2.5/tree/main/latent_upscale_models) doubles the latent to 1536 and three distilled steps refine it, with the cover pinned to both ends again. That is sharper than rendering at 1536 directly and takes a little over half the time.
 
@@ -75,6 +75,7 @@ A track that fails to render is recorded and retried on the next run.
 | External ComfyUI URL | Blank | Blank uses the built-in ComfyUI. |
 | Upscale | On | Render at 512 or 768 and double it with the LTX-2.5 spatial upscaler. Off renders natively at 512, 768, 1024 or 1536. |
 | Resolution | 768 × 768 (1536 × 1536 upscaled) | The size LTX renders at. |
+| Camera lock | 50% | Strength of the static-camera LoRA. Higher holds the framing more firmly but damps the subject's movement. |
 | Loop length | 10 seconds | Or 5 seconds, at 24 fps. The cover is always the first and last frame. |
 | Seed | 42 | Blank picks a new seed per album. The upscale stage uses the seed plus one. |
 | Regenerate loops made with other settings | Off | Entire-library syncs render existing loops again when they were made with different settings. |
